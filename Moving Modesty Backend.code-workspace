@@ -1,0 +1,29 @@
+{
+    "folders": [
+        {
+            "name": "Moving Modesty Backend",
+            "path": "."
+        }
+    ],
+    "settings": {
+        "files.exclude": {
+            "**/.next": true
+        },
+        "search.exclude": {
+            "**/.next": true,
+            "**/node_modules": true
+        },
+        "typescript.tsdk": "node_modules/typescript/lib",
+        "terminal.integrated.profiles.windows": {
+            "Windows PowerShell": {
+                "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+            }
+        },
+        "terminal.integrated.defaultProfile.windows": "Windows PowerShell"
+    },
+    "extensions": {
+        "recommendations": [
+            "dbaeumer.vscode-eslint"
+        ]
+    }
+}
