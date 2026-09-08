@@ -2,7 +2,14 @@ import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import * as schema from "./schema";
 
-const connectionString = process.env.DATABASE_URL;
+// Vercel's Neon integration prefixes generated variables with the integration
+// name. Accept both the conventional key and the names produced when the
+// integration itself is named "DATABASE_URL".
+const connectionString =
+  process.env.DATABASE_URL ??
+  process.env.DATABASE_URL_DATABASE_URL ??
+  process.env.DATABASE_URL_POSTGRES_URL ??
+  process.env.DATABASE_URL_POSTGRES_PRISMA_URL;
 
 export const db = connectionString
   ? drizzle(neon(connectionString), { schema })

@@ -31,7 +31,7 @@ When authentication values are missing, the portal uses a local-development-only
 
 ## Neon
 
-Use a pooled Neon connection string as `DATABASE_URL` in Vercel. The database definition is in `lib/db/schema.ts`, and the initial migration is in `drizzle/`.
+Use a pooled Neon connection string as `DATABASE_URL` in Vercel. The backend also recognises the prefixed variable names created automatically when the Vercel Neon integration is named `DATABASE_URL`. The database definition is in `lib/db/schema.ts`, and the initial migration is in `drizzle/`.
 
 After configuring `DATABASE_URL`, apply migrations with:
 
