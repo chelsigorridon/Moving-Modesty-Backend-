@@ -146,19 +146,25 @@ export default function AdminPortal(props: AdminPortalProps) {
     const liveEnabled = backendConfigured && !isStatic
 
     useEffect(() => {
-        if (!liveEnabled) return
+        if (!liveEnabled || view === "login") return
+        const adminToken = token()
+        if (!adminToken) {
+            route("/admin/login")
+            return
+        }
         let active = true
         startTransition(() => setLoading(true))
         fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data`, {
-            headers: token() ? { Authorization: `Bearer ${token()}` } : {},
+            headers: { Authorization: `Bearer ${adminToken}` },
         })
             .then(async (response) => {
                 if (response.status === 401) {
                     route("/admin/login")
                     throw new Error("Please sign in again.")
                 }
-                if (!response.ok) throw new Error("The admin data could not be loaded.")
-                return response.json()
+                const data = await response.json().catch(() => null)
+                if (!response.ok) throw new Error(data?.error || "The admin data could not be loaded.")
+                return data
             })
             .then((data: Snapshot) => {
                 if (!active) return
@@ -178,7 +184,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         return () => {
             active = false
         }
-    }, [apiBaseUrl, liveEnabled])
+    }, [apiBaseUrl, liveEnabled, view])
 
     const selectedOrder =
         snapshot.orders.find((order) => order.id === selectedOrderId) || snapshot.orders[0]
