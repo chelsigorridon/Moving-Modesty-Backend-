@@ -65,10 +65,18 @@ interface Snapshot {
     products: AdminProduct[]
 }
 
+interface CmsSyncResult {
+    configured: boolean
+    synced: boolean
+    published: boolean
+    itemCount: number
+    urls: string[]
+    warning?: string
+}
+
 interface AdminPortalProps {
     view: View
     apiBaseUrl: string
-    demoMode: boolean
     background: string
     surface: string
     softSurface: string
@@ -79,87 +87,7 @@ interface AdminPortalProps {
     style?: CSSProperties
 }
 
-const demoSnapshot: Snapshot = {
-    orders: [
-        {
-            id: "MM-1048",
-            customer: "Naledi Mokoena",
-            email: "naledi@example.com",
-            phone: "+27 72 555 0148",
-            placedAt: "28 Aug, 10:42",
-            total: 1498,
-            paymentStatus: "Paid",
-            status: "New",
-            deliveryMethod: "To be confirmed",
-            address: "18 Acacia Avenue, Midrand, Gauteng, 1685",
-            items: [
-                { name: "Amina Abaya", variant: "Black · Size 54", quantity: 1, price: 749 },
-                { name: "Amina Abaya", variant: "Lilac · Size 54", quantity: 1, price: 749 },
-            ],
-        },
-        {
-            id: "MM-1047",
-            customer: "Aisha Khan",
-            email: "aisha@example.com",
-            phone: "+27 82 555 0112",
-            placedAt: "28 Aug, 09:16",
-            total: 899,
-            paymentStatus: "Paid",
-            status: "Processing",
-            deliveryMethod: "Courier",
-            address: "42 Rosebank Road, Cape Town, Western Cape, 7700",
-            items: [{ name: "Hawa Dress", variant: "Soft Pink · Size 52", quantity: 1, price: 899 }],
-        },
-        {
-            id: "MM-1046",
-            customer: "Zanele Dlamini",
-            email: "zanele@example.com",
-            phone: "+27 71 555 0166",
-            placedAt: "27 Aug, 16:03",
-            total: 2147,
-            paymentStatus: "Paid",
-            status: "Ready",
-            deliveryMethod: "Collection",
-            items: [
-                { name: "Amina Abaya", variant: "Black · Size 56", quantity: 1, price: 749 },
-                { name: "Hawa Dress", variant: "Soft Pink · Size 54", quantity: 1, price: 899 },
-            ],
-        },
-    ],
-    products: [
-        {
-            id: "amina-abaya",
-            name: "Amina Abaya",
-            category: "Abayas",
-            price: 749,
-            status: "Active",
-            variants: [
-                { size: "52", colour: "Black", sku: "AMN-BLK-52", stock: 6 },
-                { size: "54", colour: "Black", sku: "AMN-BLK-54", stock: 1 },
-                { size: "56", colour: "Lilac", sku: "AMN-LIL-56", stock: 2 },
-            ],
-        },
-        {
-            id: "hawa-dress",
-            name: "Hawa Dress",
-            category: "Dresses",
-            price: 899,
-            status: "Active",
-            variants: [
-                { size: "52", colour: "Soft Pink", sku: "HAW-PNK-52", stock: 0 },
-                { size: "54", colour: "Soft Pink", sku: "HAW-PNK-54", stock: 8 },
-            ],
-        },
-        {
-            id: "essential-hijab",
-            name: "Essential Hijab",
-            category: "Accessories",
-            price: 499,
-            status: "Draft",
-            variants: [{ size: "One size", colour: "Taupe", sku: "HIJ-TAU-OS", stock: 12 }],
-        },
-    ],
-}
+const emptySnapshot: Snapshot = { orders: [], products: [] }
 
 const money = new Intl.NumberFormat("en-ZA", {
     style: "currency",
@@ -196,7 +124,6 @@ export default function AdminPortal(props: AdminPortalProps) {
     const {
         view = "dashboard",
         apiBaseUrl = "",
-        demoMode = true,
         background = "#F5F3F0",
         surface = "#EEEAE6",
         softSurface = "#CDD2CE",
@@ -208,14 +135,15 @@ export default function AdminPortal(props: AdminPortalProps) {
     } = props
 
     const isStatic = useIsStaticRenderer()
-    const [snapshot, setSnapshot] = useState<Snapshot>(demoSnapshot)
+    const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot)
     const [loading, setLoading] = useState(false)
     const [notice, setNotice] = useState("")
-    const [selectedOrderId, setSelectedOrderId] = useState(demoSnapshot.orders[0]?.id || "")
+    const [selectedOrderId, setSelectedOrderId] = useState("")
     const [orderFilter, setOrderFilter] = useState("All orders")
     const [search, setSearch] = useState("")
 
-    const liveEnabled = Boolean(normalizeBaseUrl(apiBaseUrl)) && !isStatic
+    const backendConfigured = Boolean(normalizeBaseUrl(apiBaseUrl))
+    const liveEnabled = backendConfigured && !isStatic
 
     useEffect(() => {
         if (!liveEnabled) return
@@ -273,13 +201,7 @@ export default function AdminPortal(props: AdminPortalProps) {
 
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (!liveEnabled) {
-            startTransition(() => {
-                setSnapshot((current) => ({
-                    ...current,
-                    orders: current.orders.map((item) => (item.id === order.id ? { ...item, status } : item)),
-                }))
-                setNotice(`Demo updated: ${order.id} is now ${status.toLowerCase()}.`)
-            })
+            startTransition(() => setNotice("Open the Framer preview to manage live orders."))
             return
         }
         startTransition(() => setLoading(true))
@@ -325,16 +247,8 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
 
         if (!liveEnabled) {
-            startTransition(() => {
-                setSnapshot((current) => ({
-                    ...current,
-                    products: isNew
-                        ? [normalizedProduct, ...current.products]
-                        : current.products.map((item) => (item.id === product.id ? normalizedProduct : item)),
-                }))
-                setNotice(`${normalizedProduct.name} saved in demo mode.`)
-            })
-            return true
+            startTransition(() => setNotice("Open the Framer preview to save and publish products."))
+            return false
         }
 
         startTransition(() => setLoading(true))
@@ -355,10 +269,12 @@ export default function AdminPortal(props: AdminPortalProps) {
                     image: product.image || "",
                     status: product.status,
                     variants: normalizedProduct.variants,
+                    publish: true,
                 }),
             })
             const data = await response.json()
             if (!response.ok || !data.product) throw new Error(data.error || "The product could not be saved.")
+            const cms = data.cms as CmsSyncResult | undefined
             startTransition(() => {
                 setSnapshot((current) => ({
                     ...current,
@@ -366,7 +282,13 @@ export default function AdminPortal(props: AdminPortalProps) {
                         ? [data.product, ...current.products]
                         : current.products.map((item) => (item.id === product.id ? data.product : item)),
                 }))
-                setNotice(`${data.product.name} and its inventory were saved.`)
+                if (cms?.published) {
+                    setNotice(`${data.product.name}, its inventory, and ${cms.itemCount} storefront ${cms.itemCount === 1 ? "card" : "cards"} were published.`)
+                } else if (cms?.synced) {
+                    setNotice(cms.warning || `${data.product.name} was saved and synced to the Framer CMS.`)
+                } else {
+                    setNotice(cms?.warning || `${data.product.name} and its inventory were saved.`)
+                }
             })
             return true
         } catch (error) {
@@ -402,7 +324,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         <section className="mm-admin" style={cssVariables} aria-busy={loading}>
             <style>{styles}</style>
             {view === "login" ? (
-                <LoginView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} demoMode={demoMode} />
+                <LoginView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} backendConfigured={backendConfigured} />
             ) : (
                 <div className="mm-admin__page">
                     {notice ? <div className="mm-admin__notice">{notice}</div> : null}
@@ -428,16 +350,13 @@ export default function AdminPortal(props: AdminPortalProps) {
                             loading={loading}
                         />
                     )}
-                    {!liveEnabled && demoMode ? (
-                        <p className="mm-admin__demo">Demo data · Add the Vercel API URL in this component’s Framer properties to go live.</p>
-                    ) : null}
                 </div>
             )}
         </section>
     )
 }
 
-function LoginView({ apiBaseUrl, liveEnabled, demoMode }: { apiBaseUrl: string; liveEnabled: boolean; demoMode: boolean }) {
+function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl: string; liveEnabled: boolean; backendConfigured: boolean }) {
     const [email, setEmail] = useState("")
     const [password, setPassword] = useState("")
     const [loading, setLoading] = useState(false)
@@ -446,8 +365,7 @@ function LoginView({ apiBaseUrl, liveEnabled, demoMode }: { apiBaseUrl: string; 
     async function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault()
         if (!liveEnabled) {
-            if (demoMode) route("/admin")
-            else startTransition(() => setError("Add the Vercel API URL in Framer before signing in."))
+            startTransition(() => setError(backendConfigured ? "Open the Framer preview to sign in." : "Admin connection is unavailable."))
             return
         }
         startTransition(() => {
@@ -486,7 +404,6 @@ function LoginView({ apiBaseUrl, liveEnabled, demoMode }: { apiBaseUrl: string; 
                         autoComplete="username"
                         value={email}
                         onChange={(event) => setEmail(event.target.value)}
-                        placeholder="owner@movingmodesty.co.za"
                         required
                     />
                 </label>
@@ -506,7 +423,7 @@ function LoginView({ apiBaseUrl, liveEnabled, demoMode }: { apiBaseUrl: string; 
                     {loading ? "Signing in…" : "Sign in"}
                 </button>
                 <p className="mm-admin__helper">
-                    {liveEnabled ? "Secure administrator session." : "Demo access until the Vercel API URL is connected."}
+                    {backendConfigured ? "Secure administrator session." : ""}
                 </p>
             </form>
         </div>
@@ -518,7 +435,7 @@ function PageHeader({ eyebrow, title, action, onAction }: { eyebrow: string; tit
         <header className="mm-admin__header">
             <div>
                 <p className="mm-admin__eyebrow">{eyebrow}</p>
-                <h1 className="mm-admin__title">{title}</h1>
+                <h1 className={`mm-admin__title ${title === "Dashboard" ? "mm-admin__title--dashboard" : ""}`}>{title}</h1>
             </div>
             <button className="mm-admin__button" type="button" onClick={onAction}>{action}</button>
         </header>
@@ -551,6 +468,9 @@ function DashboardView({ snapshot, logout }: { snapshot: Snapshot; logout: () =>
                 <button className="mm-admin__button" type="button" onClick={() => route("/admin/orders")}>Manage orders</button>
             </div>
             <div className="mm-admin__order-table">
+                {snapshot.orders.length === 0 ? (
+                    <div className="mm-admin__empty"><strong>No orders yet</strong><span>New customer orders will appear here.</span></div>
+                ) : null}
                 {snapshot.orders.slice(0, 5).map((order) => (
                     <button className="mm-admin__order-row" type="button" key={order.id} onClick={() => route("/admin/orders")}>
                         <strong>{order.id}</strong>
@@ -654,7 +574,7 @@ function OrdersView({
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Delivered"} onClick={() => updateOrderStatus(selected, "Delivered")}>Mark delivered</button>
                         </div>
                     </article>
-                ) : <p>No orders match this filter.</p>}
+                ) : <div className="mm-admin__empty"><strong>No orders yet</strong><span>Orders matching this view will appear here.</span></div>}
             </div>
         </>
     )
@@ -774,11 +694,11 @@ function ProductsView({
                     <div className="mm-admin__editor-grid">
                         <label className="mm-admin__field">
                             <span>Product name</span>
-                            <input value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} placeholder="Amina Abaya" required />
+                            <input value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} placeholder="Product name" required />
                         </label>
                         <label className="mm-admin__field">
                             <span>Category</span>
-                            <input value={editor.category} onChange={(event) => setEditor({ ...editor, category: event.target.value })} placeholder="Abayas" required />
+                            <input value={editor.category} onChange={(event) => setEditor({ ...editor, category: event.target.value })} placeholder="Category" required />
                         </label>
                         <label className="mm-admin__field">
                             <span>Status</span>
@@ -804,9 +724,9 @@ function ProductsView({
                         {editor.variants.map((variant, index) => (
                             <fieldset className="mm-admin__variant-editor" key={variant.id || `new-variant-${index}`}>
                                 <legend>Variant {index + 1}</legend>
-                                <label className="mm-admin__field"><span>Size</span><input value={variant.size} onChange={(event) => updateVariant(index, { size: event.target.value })} placeholder="54" required /></label>
-                                <label className="mm-admin__field"><span>Colour</span><input value={variant.colour} onChange={(event) => updateVariant(index, { colour: event.target.value })} placeholder="Black" required /></label>
-                                <label className="mm-admin__field"><span>SKU</span><input value={variant.sku} onChange={(event) => updateVariant(index, { sku: event.target.value.toUpperCase() })} placeholder="AMN-BLK-54" required /></label>
+                                <label className="mm-admin__field"><span>Size</span><input value={variant.size} onChange={(event) => updateVariant(index, { size: event.target.value })} placeholder="Size" required /></label>
+                                <label className="mm-admin__field"><span>Colour</span><input value={variant.colour} onChange={(event) => updateVariant(index, { colour: event.target.value })} placeholder="Colour" required /></label>
+                                <label className="mm-admin__field"><span>SKU</span><input value={variant.sku} onChange={(event) => updateVariant(index, { sku: event.target.value.toUpperCase() })} placeholder="SKU" required /></label>
                                 <label className="mm-admin__field"><span>Price (R)</span><input type="number" min="0" step="0.01" value={variant.price ?? editor.price} onChange={(event) => updateVariant(index, { price: Number(event.target.value) })} required /></label>
                                 <label className="mm-admin__field"><span>Stock</span><input type="number" min="0" step="1" value={variant.stock} onChange={(event) => updateVariant(index, { stock: Number(event.target.value) })} required /></label>
                                 <label className="mm-admin__field"><span>Low at</span><input type="number" min="0" step="1" value={variant.lowStockThreshold ?? 3} onChange={(event) => updateVariant(index, { lowStockThreshold: Number(event.target.value) })} required /></label>
@@ -815,12 +735,15 @@ function ProductsView({
                     </div>
                     {editorError ? <p className="mm-admin__error" role="alert">{editorError}</p> : null}
                     <div className="mm-admin__actions">
-                        <button className="mm-admin__button" type="submit" disabled={loading}>{loading ? "Saving…" : "Save product"}</button>
+                        <button className="mm-admin__button" type="submit" disabled={loading}>{loading ? "Publishing…" : "Save & publish"}</button>
                         <button className="mm-admin__secondary-button" type="button" onClick={() => setEditor(null)}>Cancel</button>
                     </div>
                 </form>
             ) : null}
             <div className="mm-admin__product-list">
+                {products.length === 0 ? (
+                    <div className="mm-admin__empty"><strong>No products yet</strong><span>Choose Add product to create the first real product.</span></div>
+                ) : null}
                 {products.map((product) => {
                     const stock = product.variants.reduce((sum, variant) => sum + variant.stock, 0)
                     const lowStock = product.variants.some((variant) => variant.stock <= (variant.lowStockThreshold ?? 3))
@@ -872,6 +795,7 @@ const styles = `
 .mm-admin__header, .mm-admin__section-heading, .mm-admin__product-toolbar, .mm-admin__order-card-top, .mm-admin__actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .mm-admin__eyebrow { margin: 0 0 8px; color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
 .mm-admin__title { margin: 0; color: #fff; font-family: Montserrat, Inter, sans-serif; font-size: clamp(46px, 6vw, 72px); font-weight: 400; letter-spacing: -.035em; line-height: .95; text-transform: uppercase; }
+.mm-admin__title--dashboard { color: var(--mm-ink); }
 .mm-admin__button { appearance: none; border: 0; border-radius: 0; background: var(--mm-sage); color: #fff !important; cursor: pointer; font-weight: 700; padding: 13px 20px; transition: opacity .18s ease; }
 .mm-admin__button:hover { opacity: .82; }
 .mm-admin__button:disabled { cursor: not-allowed; opacity: .45; }
@@ -934,7 +858,8 @@ const styles = `
 .mm-admin__variant-row em { justify-self: end; }
 .mm-admin__inventory-note { border: 1px solid var(--mm-border); background: var(--mm-soft); padding: 24px; }
 .mm-admin__inventory-note p:last-child { margin: 0; max-width: 780px; letter-spacing: .04em; text-transform: uppercase; }
-.mm-admin__demo { margin: 0; color: var(--mm-muted); font-size: 12px; }
+.mm-admin__empty { display: flex; flex-direction: column; gap: 6px; background: var(--mm-surface); color: var(--mm-muted); padding: 28px; }
+.mm-admin__empty strong { color: var(--mm-ink); font-size: 18px; }
 .mm-admin__login-stage { display: grid; min-height: 720px; place-items: center; background: var(--mm-soft); padding: 32px 20px; }
 .mm-admin__login-card { display: flex; flex-direction: column; gap: 18px; width: min(440px, 100%); border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 40px; }
 .mm-admin__login-title { margin: 2px 0 0; font-family: Montserrat, Inter, sans-serif; font-size: 42px; font-weight: 500; letter-spacing: -.04em; text-transform: uppercase; }
@@ -994,11 +919,6 @@ addPropertyControls(AdminPortal, {
         title: "Vercel API",
         defaultValue: "",
         placeholder: "https://admin-api.vercel.app",
-    },
-    demoMode: {
-        type: ControlType.Boolean,
-        title: "Demo Data",
-        defaultValue: true,
     },
     background: { type: ControlType.Color, title: "Background", defaultValue: "#F5F3F0" },
     surface: { type: ControlType.Color, title: "Surface", defaultValue: "#EEEAE6" },

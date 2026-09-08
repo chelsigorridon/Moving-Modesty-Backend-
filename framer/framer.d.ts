@@ -9,6 +9,10 @@ declare module "framer" {
         Boolean: unknown
         Color: unknown
         Enum: unknown
+        Number: unknown
+        Object: unknown
+        Array: unknown
+        ResponsiveImage: unknown
         String: unknown
     }
 

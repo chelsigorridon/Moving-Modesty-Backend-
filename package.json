@@ -2,6 +2,9 @@
   "name": "moving-modesty-admin",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -14,6 +17,7 @@
   "dependencies": {
     "@neondatabase/serverless": "latest",
     "drizzle-orm": "latest",
+    "framer-api": "^5.0.0",
     "lucide-react": "latest",
     "next": "latest",
     "react": "latest",
