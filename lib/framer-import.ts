@@ -1,5 +1,6 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { connect, type CollectionItem } from "framer-api";
 import { db } from "./db";
 import { products, productVariants } from "./db/schema";
@@ -142,46 +143,56 @@ export async function importFramerProductsIfInventoryEmpty() {
       groups.set(slug, group);
     }
 
-    let importedProducts = 0;
-    let importedVariants = 0;
-    await db.transaction(async (transaction) => {
-      for (const group of groups.values()) {
-        const [createdProduct] = await transaction
-          .insert(products)
-          .values({
-            name: group.name,
-            slug: group.slug,
-            category: group.category,
-            description: group.description || null,
-            primaryImageUrl: group.image || null,
-            status: group.active ? "active" : "draft",
-          })
-          .onConflictDoNothing({ target: products.slug })
-          .returning({ id: products.id });
-        if (!createdProduct) continue;
+    const productRows = [];
+    const variantRows = [];
 
-        importedProducts += 1;
-        if (!group.variants.length) continue;
-        const createdVariants = await transaction
+    for (const group of groups.values()) {
+      const productId = randomUUID();
+      productRows.push({
+        id: productId,
+        name: group.name,
+        slug: group.slug,
+        category: group.category,
+        description: group.description || null,
+        primaryImageUrl: group.image || null,
+        status: group.active ? ("active" as const) : ("draft" as const),
+      });
+      variantRows.push(
+        ...group.variants.map((variant) => ({
+          productId,
+          sku: skuFor(group.slug, variant.colour, variant.size),
+          size: variant.size,
+          colour: variant.colour,
+          price: variant.price.toFixed(2),
+          stockOnHand: variant.stock,
+          lowStockThreshold: 3,
+        }))
+      );
+    }
+
+    if (!productRows.length) return { importedProducts: 0, importedVariants: 0 };
+
+    const insertProducts = db
+      .insert(products)
+      .values(productRows)
+      .onConflictDoNothing({ target: products.slug });
+
+    if (variantRows.length) {
+      await db.batch([
+        insertProducts,
+        db
           .insert(productVariants)
-          .values(
-            group.variants.map((variant) => ({
-              productId: createdProduct.id,
-              sku: skuFor(group.slug, variant.colour, variant.size),
-              size: variant.size,
-              colour: variant.colour,
-              price: variant.price.toFixed(2),
-              stockOnHand: variant.stock,
-              lowStockThreshold: 3,
-            }))
-          )
-          .onConflictDoNothing({ target: productVariants.sku })
-          .returning({ id: productVariants.id });
-        importedVariants += createdVariants.length;
-      }
-    });
+          .values(variantRows)
+          .onConflictDoNothing({ target: productVariants.sku }),
+      ]);
+    } else {
+      await insertProducts;
+    }
 
-    return { importedProducts, importedVariants };
+    return {
+      importedProducts: productRows.length,
+      importedVariants: variantRows.length,
+    };
   } finally {
     await framer.disconnect();
   }
