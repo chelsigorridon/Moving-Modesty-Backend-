@@ -149,7 +149,10 @@ export async function syncProductToFramer(
       };
 
       const imageFieldId = fieldIds.get("image");
-      if (imageFieldId && product.image.trim()) {
+      // Images are managed manually per colour in Framer. Only use the admin
+      // product image when creating a brand-new CMS item so saving inventory
+      // does not replace existing colour-specific photography.
+      if (imageFieldId && product.image.trim() && !existing) {
         fieldData[imageFieldId] = {
           type: "image",
           value: product.image.trim(),
