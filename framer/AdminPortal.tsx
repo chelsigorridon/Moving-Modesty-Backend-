@@ -39,39 +39,8 @@ interface AdminOrder {
     items: OrderItem[]
 }
 
-interface ProductVariant {
-    id?: string
-    size: string
-    colour: string
-    sku: string
-    stock: number
-    price?: number
-    lowStockThreshold?: number
-}
-
-interface AdminProduct {
-    id: string
-    name: string
-    category: string
-    description?: string
-    price: number
-    image?: string
-    status: "Active" | "Draft"
-    variants: ProductVariant[]
-}
-
 interface Snapshot {
     orders: AdminOrder[]
-    products: AdminProduct[]
-}
-
-interface CmsSyncResult {
-    configured: boolean
-    synced: boolean
-    published: boolean
-    itemCount: number
-    urls: string[]
-    warning?: string
 }
 
 interface AdminPortalProps {
@@ -87,14 +56,13 @@ interface AdminPortalProps {
     style?: CSSProperties
 }
 
-const emptySnapshot: Snapshot = { orders: [], products: [] }
+const emptySnapshot: Snapshot = { orders: [] }
 
 const money = new Intl.NumberFormat("en-ZA", {
     style: "currency",
     currency: "ZAR",
     maximumFractionDigits: 0,
 })
-
 function normalizeBaseUrl(value: string) {
     return value.trim().replace(/\/$/, "")
 }
@@ -140,7 +108,6 @@ export default function AdminPortal(props: AdminPortalProps) {
     const [notice, setNotice] = useState("")
     const [selectedOrderId, setSelectedOrderId] = useState("")
     const [orderFilter, setOrderFilter] = useState("All orders")
-    const [search, setSearch] = useState("")
 
     const backendConfigured = Boolean(normalizeBaseUrl(apiBaseUrl))
     const liveEnabled = backendConfigured && !isStatic
@@ -195,16 +162,6 @@ export default function AdminPortal(props: AdminPortalProps) {
         return snapshot.orders
     }, [orderFilter, snapshot.orders])
 
-    const filteredProducts = useMemo(() => {
-        const query = search.trim().toLowerCase()
-        if (!query) return snapshot.products
-        return snapshot.products.filter((product) =>
-            `${product.name} ${product.category} ${product.variants.map((variant) => variant.sku).join(" ")}`
-                .toLowerCase()
-                .includes(query)
-        )
-    }, [search, snapshot.products])
-
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (!liveEnabled) {
             startTransition(() => setNotice("Open the Framer preview to manage live orders."))
@@ -231,75 +188,6 @@ export default function AdminPortal(props: AdminPortalProps) {
             })
         } catch (error) {
             startTransition(() => setNotice(error instanceof Error ? error.message : "Update failed."))
-        } finally {
-            startTransition(() => setLoading(false))
-        }
-    }
-
-    async function saveProduct(product: AdminProduct) {
-        const isNew = product.id.startsWith("new:")
-        const normalizedProduct: AdminProduct = {
-            ...product,
-            id: isNew
-                ? product.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `product-${Date.now()}`
-                : product.id,
-            price: product.variants[0]?.price ?? product.price,
-            variants: product.variants.map((variant) => ({
-                ...variant,
-                price: Number(variant.price ?? product.price),
-                stock: Number(variant.stock),
-                lowStockThreshold: Number(variant.lowStockThreshold ?? 3),
-            })),
-        }
-
-        if (!liveEnabled) {
-            startTransition(() => setNotice("Open the Framer preview to save and publish products."))
-            return false
-        }
-
-        startTransition(() => setLoading(true))
-        try {
-            const endpoint = isNew
-                ? `${normalizeBaseUrl(apiBaseUrl)}/api/admin/products`
-                : `${normalizeBaseUrl(apiBaseUrl)}/api/admin/products/${encodeURIComponent(product.id)}`
-            const response = await fetch(endpoint, {
-                method: isNew ? "POST" : "PATCH",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token()}`,
-                },
-                body: JSON.stringify({
-                    name: product.name,
-                    category: product.category,
-                    description: product.description || "",
-                    image: product.image || "",
-                    status: product.status,
-                    variants: normalizedProduct.variants,
-                    publish: true,
-                }),
-            })
-            const data = await response.json()
-            if (!response.ok || !data.product) throw new Error(data.error || "The product could not be saved.")
-            const cms = data.cms as CmsSyncResult | undefined
-            startTransition(() => {
-                setSnapshot((current) => ({
-                    ...current,
-                    products: isNew
-                        ? [data.product, ...current.products]
-                        : current.products.map((item) => (item.id === product.id ? data.product : item)),
-                }))
-                if (cms?.published) {
-                    setNotice(`${data.product.name}, its inventory, and ${cms.itemCount} storefront ${cms.itemCount === 1 ? "card" : "cards"} were published.`)
-                } else if (cms?.synced) {
-                    setNotice(cms.warning || `${data.product.name} was saved and synced to the Framer CMS.`)
-                } else {
-                    setNotice(cms?.warning || `${data.product.name} and its inventory were saved.`)
-                }
-            })
-            return true
-        } catch (error) {
-            startTransition(() => setNotice(error instanceof Error ? error.message : "The product could not be saved."))
-            return false
         } finally {
             startTransition(() => setLoading(false))
         }
@@ -348,13 +236,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             loading={loading}
                         />
                     ) : (
-                        <ProductsView
-                            products={filteredProducts}
-                            search={search}
-                            setSearch={setSearch}
-                            saveProduct={saveProduct}
-                            loading={loading}
-                        />
+                        <ProductsView />
                     )}
                 </div>
             )}
@@ -489,9 +371,9 @@ function DashboardView({ snapshot, logout }: { snapshot: Snapshot; logout: () =>
             </div>
             <div className="mm-admin__quick-grid">
                 <article className="mm-admin__quick-card">
-                    <h3>Inventory</h3>
-                    <p>Manage products, variants, and stock levels.</p>
-                    <button className="mm-admin__button" type="button" onClick={() => route("/admin/products")}>Open</button>
+                    <h3>Products</h3>
+                    <p>Product content and collection items are managed directly in Framer CMS.</p>
+                    <span className="mm-admin__muted-label">CMS is the storefront source of truth</span>
                 </article>
                 <article className="mm-admin__quick-card">
                     <h3>Delivery</h3>
@@ -590,202 +472,17 @@ function Detail({ title, children }: { title: string; children: ReactNode }) {
     return <section className="mm-admin__detail-block"><h3>{title}</h3>{children}</section>
 }
 
-function editableProduct(product?: AdminProduct): AdminProduct {
-    if (!product) {
-        return {
-            id: `new:${Date.now()}`,
-            name: "",
-            category: "",
-            description: "",
-            price: 0,
-            image: "",
-            status: "Draft",
-            variants: [{ size: "", colour: "", sku: "", stock: 0, price: 0, lowStockThreshold: 3 }],
-        }
-    }
-    return {
-        ...product,
-        description: product.description || "",
-        variants: product.variants.map((variant) => ({
-            ...variant,
-            price: variant.price ?? product.price,
-            lowStockThreshold: variant.lowStockThreshold ?? 3,
-        })),
-    }
-}
-
-function ProductsView({
-    products,
-    search,
-    setSearch,
-    saveProduct,
-    loading,
-}: {
-    products: AdminProduct[]
-    search: string
-    setSearch: (value: string) => void
-    saveProduct: (product: AdminProduct) => Promise<boolean>
-    loading: boolean
-}) {
-    const [editor, setEditor] = useState<AdminProduct | null>(null)
-    const [editorError, setEditorError] = useState("")
-
-    function updateVariant(index: number, values: Partial<ProductVariant>) {
-        setEditor((current) => current ? {
-            ...current,
-            variants: current.variants.map((variant, variantIndex) =>
-                variantIndex === index ? { ...variant, ...values } : variant
-            ),
-        } : current)
-    }
-
-    function addVariant() {
-        setEditor((current) => current ? {
-            ...current,
-            variants: [
-                ...current.variants,
-                {
-                    size: "",
-                    colour: "",
-                    sku: "",
-                    stock: 0,
-                    price: current.variants[0]?.price ?? current.price,
-                    lowStockThreshold: 3,
-                },
-            ],
-        } : current)
-    }
-
-    async function submitProduct(event: FormEvent<HTMLFormElement>) {
-        event.preventDefault()
-        if (!editor) return
-        const normalizedSkus = editor.variants.map((variant) => variant.sku.trim().toLowerCase())
-        if (!editor.name.trim() || !editor.category.trim()) {
-            setEditorError("Product name and category are required.")
-            return
-        }
-        if (editor.variants.some((variant) => !variant.size.trim() || !variant.colour.trim() || !variant.sku.trim())) {
-            setEditorError("Every variant needs a size, colour, and SKU.")
-            return
-        }
-        if (new Set(normalizedSkus).size !== normalizedSkus.length) {
-            setEditorError("Each variant needs a unique SKU.")
-            return
-        }
-        if (editor.variants.some((variant) => Number(variant.price) < 0 || variant.stock < 0 || Number(variant.lowStockThreshold) < 0)) {
-            setEditorError("Price, stock, and low-stock thresholds cannot be negative.")
-            return
-        }
-        setEditorError("")
-        if (await saveProduct(editor)) setEditor(null)
-    }
-
+function ProductsView() {
     return (
         <>
-            <PageHeader eyebrow="ADMIN / INVENTORY" title="Products & stock" action="Back to dashboard" onAction={() => route("/admin")} />
-            <div className="mm-admin__product-toolbar">
-                <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search products or SKU" aria-label="Search products" />
-                <p className="mm-admin__eyebrow">{products.length} PRODUCTS</p>
-                <button className="mm-admin__button" type="button" onClick={() => { setEditor(editableProduct()); setEditorError("") }}>Add product</button>
-            </div>
-            {editor ? (
-                <form className="mm-admin__product-editor" onSubmit={submitProduct}>
-                    <div className="mm-admin__editor-heading">
-                        <div>
-                            <p className="mm-admin__eyebrow">{editor.id.startsWith("new:") ? "NEW PRODUCT" : "EDIT PRODUCT"}</p>
-                            <h2>{editor.id.startsWith("new:") ? "Add product" : editor.name}</h2>
-                        </div>
-                        <button className="mm-admin__text-button" type="button" onClick={() => setEditor(null)}>Close</button>
-                    </div>
-                    <div className="mm-admin__editor-grid">
-                        <label className="mm-admin__field">
-                            <span>Product name</span>
-                            <input value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} placeholder="Product name" required />
-                        </label>
-                        <label className="mm-admin__field">
-                            <span>Category</span>
-                            <input value={editor.category} onChange={(event) => setEditor({ ...editor, category: event.target.value })} placeholder="Category" required />
-                        </label>
-                        <label className="mm-admin__field">
-                            <span>Status</span>
-                            <select value={editor.status} onChange={(event) => setEditor({ ...editor, status: event.target.value as "Active" | "Draft" })}>
-                                <option value="Draft">Draft</option>
-                                <option value="Active">Active</option>
-                            </select>
-                        </label>
-                        <label className="mm-admin__field mm-admin__field--wide">
-                            <span>Image URL</span>
-                            <input type="url" value={editor.image || ""} onChange={(event) => setEditor({ ...editor, image: event.target.value })} placeholder="https://…" />
-                        </label>
-                        <label className="mm-admin__field mm-admin__field--wide">
-                            <span>Description</span>
-                            <textarea value={editor.description || ""} onChange={(event) => setEditor({ ...editor, description: event.target.value })} placeholder="Product description" rows={4} />
-                        </label>
-                    </div>
-                    <div className="mm-admin__editor-heading mm-admin__editor-heading--variants">
-                        <div><p className="mm-admin__eyebrow">VARIANTS & STOCK</p><p className="mm-admin__editor-help">Stock changes are logged as inventory movements when Neon is connected.</p></div>
-                        <button className="mm-admin__secondary-button" type="button" onClick={addVariant}>Add variant</button>
-                    </div>
-                    <div className="mm-admin__variant-editor-list">
-                        {editor.variants.map((variant, index) => (
-                            <fieldset className="mm-admin__variant-editor" key={variant.id || `new-variant-${index}`}>
-                                <legend>Variant {index + 1}</legend>
-                                <label className="mm-admin__field"><span>Size</span><input value={variant.size} onChange={(event) => updateVariant(index, { size: event.target.value })} placeholder="Size" required /></label>
-                                <label className="mm-admin__field"><span>Colour</span><input value={variant.colour} onChange={(event) => updateVariant(index, { colour: event.target.value })} placeholder="Colour" required /></label>
-                                <label className="mm-admin__field"><span>SKU</span><input value={variant.sku} onChange={(event) => updateVariant(index, { sku: event.target.value.toUpperCase() })} placeholder="SKU" required /></label>
-                                <label className="mm-admin__field"><span>Price (R)</span><input type="number" min="0" step="0.01" value={variant.price ?? editor.price} onChange={(event) => updateVariant(index, { price: Number(event.target.value) })} required /></label>
-                                <label className="mm-admin__field"><span>Stock</span><input type="number" min="0" step="1" value={variant.stock} onChange={(event) => updateVariant(index, { stock: Number(event.target.value) })} required /></label>
-                                <label className="mm-admin__field"><span>Low at</span><input type="number" min="0" step="1" value={variant.lowStockThreshold ?? 3} onChange={(event) => updateVariant(index, { lowStockThreshold: Number(event.target.value) })} required /></label>
-                            </fieldset>
-                        ))}
-                    </div>
-                    {editorError ? <p className="mm-admin__error" role="alert">{editorError}</p> : null}
-                    <div className="mm-admin__actions">
-                        <button className="mm-admin__button" type="submit" disabled={loading}>{loading ? "Publishing…" : "Save & publish"}</button>
-                        <button className="mm-admin__secondary-button" type="button" onClick={() => setEditor(null)}>Cancel</button>
-                    </div>
-                </form>
-            ) : null}
-            <div className="mm-admin__product-list">
-                {products.length === 0 ? (
-                    <div className="mm-admin__empty"><strong>No products yet</strong><span>Choose Add product to create the first real product.</span></div>
-                ) : null}
-                {products.map((product) => {
-                    const stock = product.variants.reduce((sum, variant) => sum + variant.stock, 0)
-                    const lowStock = product.variants.some((variant) => variant.stock <= (variant.lowStockThreshold ?? 3))
-                    return (
-                        <article className="mm-admin__product-card" key={product.id}>
-                            <div className="mm-admin__product-row">
-                                <div className="mm-admin__product-thumb" aria-hidden="true">
-                                    {product.image ? <img src={product.image} alt="" /> : product.name.slice(0, 1)}
-                                </div>
-                                <div><h3>{product.name}</h3><p>{product.category}</p></div>
-                                <div><p className="mm-admin__eyebrow">FROM</p><strong>{money.format(product.variants.length ? Math.min(...product.variants.map((variant) => variant.price ?? product.price)) : product.price)}</strong></div>
-                                <div><p className="mm-admin__eyebrow">VARIANTS</p><strong>{product.variants.length}</strong></div>
-                                <div><p className="mm-admin__eyebrow">STOCK</p><strong>{stock}</strong></div>
-                                <em className={badgeClass(lowStock ? "Low stock" : product.status)}>{lowStock ? "Low stock" : product.status}</em>
-                                <button className="mm-admin__button" type="button" onClick={() => { setEditor(editableProduct(product)); setEditorError("") }}>Edit</button>
-                            </div>
-                            <div className="mm-admin__variant-list">
-                                {product.variants.map((variant, index) => (
-                                    <div className="mm-admin__variant-row" key={variant.id || `${variant.sku}-${index}`}>
-                                        <span><small>SKU</small><strong>{variant.sku}</strong></span>
-                                        <span><small>OPTION</small>{variant.colour} · {variant.size}</span>
-                                        <span><small>PRICE</small>{money.format(variant.price ?? product.price)}</span>
-                                        <span><small>STOCK</small><strong>{variant.stock}</strong></span>
-                                        <em className={badgeClass(variant.stock === 0 ? "Out of stock" : variant.stock <= (variant.lowStockThreshold ?? 3) ? "Low stock" : "In stock")}>
-                                            {variant.stock === 0 ? "Out of stock" : variant.stock <= (variant.lowStockThreshold ?? 3) ? "Low stock" : "In stock"}
-                                        </em>
-                                    </div>
-                                ))}
-                            </div>
-                        </article>
-                    )
-                })}
-            </div>
-            <div className="mm-admin__inventory-note">
-                <p className="mm-admin__eyebrow">INVENTORY WORKFLOW</p>
-                <p>Product details, variant prices, SKUs, stock levels, and low-stock thresholds are managed here. Stock corrections are recorded separately so inventory changes remain traceable.</p>
+            <PageHeader eyebrow="ADMIN / PRODUCTS" title="Products" action="Back to dashboard" onAction={() => route("/admin")} />
+            <div className="mm-admin__cms-note">
+                <p className="mm-admin__eyebrow">FRAMER CMS</p>
+                <h2>Products are managed in the CMS</h2>
+                <p>
+                    Add and edit product collection items directly in Framer. The admin portal no longer imports,
+                    updates, or publishes storefront products.
+                </p>
             </div>
         </>
     )
@@ -824,6 +521,9 @@ const styles = `
 .mm-admin__quick-card { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 26px; }
 .mm-admin__quick-card h3 { margin: 0 0 8px; font-size: 21px; }
 .mm-admin__quick-card p { margin: 0 0 18px; color: var(--mm-muted); letter-spacing: .05em; text-transform: uppercase; }
+.mm-admin__cms-note { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: clamp(28px, 6vw, 64px); }
+.mm-admin__cms-note h2 { max-width: 720px; margin: 0 0 18px; font-family: Montserrat, Inter, sans-serif; font-size: clamp(34px, 5vw, 58px); font-weight: 500; letter-spacing: -.04em; line-height: 1; text-transform: uppercase; }
+.mm-admin__cms-note > p:last-child { max-width: 680px; margin: 0; color: var(--mm-muted); font-size: 17px; line-height: 1.65; }
 .mm-admin__muted-label { color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .mm-admin__filters { display: flex; flex-wrap: wrap; gap: 12px; }
 .mm-admin__orders-layout { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.1fr); align-items: start; gap: 24px; }

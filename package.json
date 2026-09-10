@@ -17,7 +17,6 @@
   "dependencies": {
     "@neondatabase/serverless": "latest",
     "drizzle-orm": "latest",
-    "framer-api": "^5.0.0",
     "lucide-react": "latest",
     "next": "latest",
     "react": "latest",

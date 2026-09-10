@@ -12,7 +12,6 @@ import {
 } from "./db/schema";
 import { orders as demoOrders, products as demoProducts, type OrderStatus } from "./store-data";
 import type { ProductInput } from "./product-input";
-import { importFramerProductsIfInventoryEmpty } from "./framer-import";
 
 export type AdminOrder = (typeof demoOrders)[number];
 export type AdminProduct = {
@@ -87,8 +86,6 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     if (process.env.NODE_ENV === "development") return getDemoAdminSnapshot();
     throw new Error("DATABASE_URL is not configured.");
   }
-
-  await importFramerProductsIfInventoryEmpty();
 
   const [orderRows, itemRows, productRows, variantRows] = await Promise.all([
     db

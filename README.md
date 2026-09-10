@@ -2,7 +2,7 @@
 
 The administration portal for Moving Modesty. It is a Next.js application designed for Vercel, with Neon Postgres for durable data and Resend for transactional customer email.
 
-The customer-facing site and admin interface live in the connected Framer project. This repository is the secure Vercel API layer; it keeps Neon, authentication, and Resend credentials out of Framer.
+The customer-facing site and admin interface live in the connected Framer project. This repository is the secure Vercel API layer; it keeps Neon, authentication, and Resend credentials out of Framer. Product content and collection items are managed directly in Framer CMS and are intentionally independent from the admin portal.
 
 ## Included in the first version
 
@@ -15,8 +15,7 @@ The customer-facing site and admin interface live in the connected Framer projec
 - Neon-compatible Drizzle schema and initial migration
 - Resend order-status email service
 - Cross-origin bearer-token API for the Framer admin component
-- Product and stock synchronisation from the admin portal to the Framer Products CMS
-- Optional Framer publish after each product save
+- Framer CMS as the independent source of truth for storefront products
 
 Until a courier is selected, delivery remains provider-neutral. Courier name, tracking number, tracking URL, delivery fee and notes are all optional fields.
 
@@ -52,14 +51,7 @@ Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_K
 - `RESEND_API_KEY`
 - `RESEND_FROM_EMAIL`
 - `STORE_URL`
-- `FRAMER_PROJECT_ID`
-- `FRAMER_API_KEY`
-- `FRAMER_PRODUCTS_COLLECTION_ID`
-- `FRAMER_AUTO_PUBLISH`
-- `FRAMER_DEPLOY_TO_PRODUCTION`
 
-Create the project API key in the Moving Modesty Framer project settings and add it to Vercel as `FRAMER_API_KEY`. Keep it server-only. The supplied project and collection IDs already point to the Moving Modesty project and its Products collection.
-
-With `FRAMER_AUTO_PUBLISH=true`, **Save & publish** writes the product and its variants to Neon, creates or updates one Framer CMS item per colour, and publishes the Framer project. The CMS item keeps existing Framer images, carousel images, care details, and delivery details when the admin form does not replace them. `FRAMER_DEPLOY_TO_PRODUCTION` should normally remain `false`; only enable it if Framer staging is configured and every save should also be promoted to the custom domain.
+No Framer API credentials are required by the Vercel backend. Editing a product in Framer CMS does not import it into Neon, and admin API actions do not create, update, or publish CMS collection items.
 
 After deploying, paste the Vercel deployment URL into the **Vercel API** property on each `AdminPortal` instance in Framer.
