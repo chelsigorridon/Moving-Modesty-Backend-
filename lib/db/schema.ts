@@ -3,7 +3,7 @@ import { boolean, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, uni
 export const adminRole = pgEnum("admin_role", ["owner", "manager", "fulfilment"]);
 export const productStatus = pgEnum("product_status", ["draft", "active", "archived"]);
 export const paymentStatus = pgEnum("payment_status", ["pending", "paid", "failed", "refunded"]);
-export const orderStatus = pgEnum("order_status", ["new", "confirmed", "processing", "ready", "dispatched", "delivered", "cancelled"]);
+export const orderStatus = pgEnum("order_status", ["new", "confirmed", "processing", "ready", "dispatched", "collected", "delivered", "cancelled"]);
 export const deliveryMethod = pgEnum("delivery_method", ["courier", "collection", "to_be_confirmed"]);
 export const inventoryMovementType = pgEnum("inventory_movement_type", ["stock_received", "order_allocated", "correction", "return"]);
 export const emailStatus = pgEnum("email_status", ["queued", "sent", "delivered", "failed"]);
@@ -96,8 +96,12 @@ export const orders = pgTable("orders", {
   trackingUrl: text("tracking_url"),
   deliveryNotes: text("delivery_notes"),
   paymentReference: text("payment_reference"),
+  checkoutToken: text("checkout_token"),
   ...timestamps,
-}, (table) => [uniqueIndex("orders_order_number_idx").on(table.orderNumber)]);
+}, (table) => [
+  uniqueIndex("orders_order_number_idx").on(table.orderNumber),
+  uniqueIndex("orders_checkout_token_idx").on(table.checkoutToken),
+]);
 
 export const orderItems = pgTable("order_items", {
   id: uuid("id").defaultRandom().primaryKey(),

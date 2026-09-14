@@ -5,7 +5,7 @@ import { getRequestAdmin } from "@/lib/auth";
 import { sendOrderStatusEmail } from "@/lib/email";
 
 const updateSchema = z.object({
-  status: z.enum(["New", "Confirmed", "Processing", "Ready", "Dispatched", "Delivered"]),
+  status: z.enum(["New", "Confirmed", "Preparing", "Ready", "Dispatched", "Collected", "Delivered", "Cancelled"]),
 });
 
 export function OPTIONS() {

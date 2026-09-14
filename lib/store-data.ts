@@ -1,19 +1,8 @@
-export type OrderStatus = "New" | "Confirmed" | "Processing" | "Ready" | "Dispatched" | "Delivered";
+import type { AdminOrder as Order, OrderStatus } from "./admin-types";
 
-export type Order = {
-  id: string;
-  customer: string;
-  email: string;
-  phone: string;
-  placedAt: string;
-  placedDate: string;
-  total: number;
-  paymentStatus: "Paid" | "Pending";
-  status: OrderStatus;
-  deliveryMethod: "Courier" | "Collection" | "To be confirmed";
-  address?: string;
-  items: Array<{ name: string; variant: string; quantity: number; price: number; image: string }>;
-};
+export type { OrderStatus } from "./admin-types";
+
+export type { Order };
 
 export type Product = {
   id: string;
@@ -37,7 +26,7 @@ export const orders: Order[] = [
   },
   {
     id: "MM-1047", customer: "Aisha Khan", email: "aisha@example.com", phone: "+27 82 555 0112",
-    placedAt: "28 Aug, 09:16", placedDate: "28 August 2026 at 09:16", total: 899, paymentStatus: "Paid", status: "Processing",
+    placedAt: "28 Aug, 09:16", placedDate: "28 August 2026 at 09:16", total: 899, paymentStatus: "Paid", status: "Preparing",
     deliveryMethod: "Courier", address: "42 Rosebank Road, Cape Town, Western Cape, 7700",
     items: [{ name: "Hawa Dress", variant: "Soft Pink · Size 52", quantity: 1, price: 899, image: "/products/hawa-soft-pink.jpeg" }],
   },
@@ -58,7 +47,7 @@ export const orders: Order[] = [
   },
   {
     id: "MM-1044", customer: "Fatima Essop", email: "fatima@example.com", phone: "+27 83 555 0188",
-    placedAt: "26 Aug, 14:21", placedDate: "26 August 2026 at 14:21", total: 1648, paymentStatus: "Pending", status: "Confirmed",
+    placedAt: "26 Aug, 14:21", placedDate: "26 August 2026 at 14:21", total: 1648, paymentStatus: "Pending payment", status: "Confirmed",
     deliveryMethod: "To be confirmed", address: "74 Musgrave Road, Durban, KwaZulu-Natal, 4001",
     items: [
       { name: "Hawa Dress", variant: "Soft Pink · Size 56", quantity: 1, price: 899, image: "/products/hawa-soft-pink.jpeg" },

@@ -13,10 +13,13 @@ type View = "login" | "dashboard" | "orders" | "products"
 type OrderStatus =
     | "New"
     | "Confirmed"
-    | "Processing"
+    | "Preparing"
     | "Ready"
     | "Dispatched"
+    | "Collected"
     | "Delivered"
+    | "Cancelled"
+type PaymentStatus = "Pending payment" | "Paid" | "Failed" | "Refunded"
 
 interface OrderItem {
     name: string
@@ -32,7 +35,7 @@ interface AdminOrder {
     phone: string
     placedAt: string
     total: number
-    paymentStatus: "Paid" | "Pending"
+    paymentStatus: PaymentStatus
     status: OrderStatus
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
@@ -76,6 +79,12 @@ function route(path: string) {
     if (typeof window !== "undefined") window.location.href = path
 }
 
+function rememberAdminReturnPath() {
+    if (typeof window === "undefined") return
+    const path = window.location.pathname
+    if (path !== "/admin/login") window.sessionStorage.setItem("moving_modesty_admin_return", path)
+}
+
 function badgeClass(status: string) {
     return `mm-admin__badge mm-admin__badge--${status.toLowerCase().replaceAll(" ", "-")}`
 }
@@ -116,6 +125,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         if (!liveEnabled || view === "login") return
         const adminToken = token()
         if (!adminToken) {
+            rememberAdminReturnPath()
             route("/admin/login")
             return
         }
@@ -153,14 +163,17 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }, [apiBaseUrl, liveEnabled, view])
 
-    const selectedOrder =
-        snapshot.orders.find((order) => order.id === selectedOrderId) || snapshot.orders[0]
-
     const filteredOrders = useMemo(() => {
         if (orderFilter === "Paid") return snapshot.orders.filter((order) => order.paymentStatus === "Paid")
-        if (orderFilter === "Pending") return snapshot.orders.filter((order) => order.paymentStatus === "Pending")
+        if (orderFilter === "Pending payment") return snapshot.orders.filter((order) => order.paymentStatus === "Pending payment")
+        if (orderFilter === "Failed") return snapshot.orders.filter((order) => order.paymentStatus === "Failed")
+        if (orderFilter === "Refunded") return snapshot.orders.filter((order) => order.paymentStatus === "Refunded")
+        if (orderFilter === "Cancelled") return snapshot.orders.filter((order) => order.status === "Cancelled")
         return snapshot.orders
     }, [orderFilter, snapshot.orders])
+
+    const selectedOrder =
+        filteredOrders.find((order) => order.id === selectedOrderId) || filteredOrders[0]
 
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (!liveEnabled) {
@@ -270,6 +283,10 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
             if (!response.ok || !data.token) throw new Error(data.error || "Sign-in failed.")
             if (typeof window !== "undefined") {
                 window.sessionStorage.setItem("moving_modesty_admin_token", data.token)
+                const returnPath = window.sessionStorage.getItem("moving_modesty_admin_return") || "/admin"
+                window.sessionStorage.removeItem("moving_modesty_admin_return")
+                route(returnPath)
+                return
             }
             route("/admin")
         } catch (caught) {
@@ -282,6 +299,7 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
     return (
         <div className="mm-admin__login-stage">
             <form className="mm-admin__login-card" onSubmit={submit}>
+                <a className="mm-admin__brand" href="/" aria-label="Back to Moving Modesty website">MM</a>
                 <p className="mm-admin__eyebrow">MOVING MODESTY / ADMIN</p>
                 <h1 className="mm-admin__login-title">Sign in</h1>
                 <p className="mm-admin__lead">Administrator access only.</p>
@@ -313,20 +331,32 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
                 <p className="mm-admin__helper">
                     {backendConfigured ? "Secure administrator session." : ""}
                 </p>
+                <a className="mm-admin__website-link" href="/">← Back to the website</a>
             </form>
         </div>
     )
 }
 
-function PageHeader({ eyebrow, title, action, onAction }: { eyebrow: string; title: string; action: string; onAction: () => void }) {
+function PageHeader({ eyebrow, title, action, onAction }: { eyebrow: string; title: string; action?: string; onAction?: () => void }) {
     return (
         <header className="mm-admin__header">
             <div>
                 <p className="mm-admin__eyebrow">{eyebrow}</p>
                 <h1 className={`mm-admin__title ${title === "Dashboard" ? "mm-admin__title--dashboard" : ""}`}>{title}</h1>
             </div>
-            <button className="mm-admin__button" type="button" onClick={onAction}>{action}</button>
+            {action && onAction ? <button className="mm-admin__button" type="button" onClick={onAction}>{action}</button> : null}
         </header>
+    )
+}
+
+function AdminNav({ current }: { current: "dashboard" | "orders" | "products" }) {
+    return (
+        <nav className="mm-admin__nav" aria-label="Admin navigation">
+            <a className={current === "dashboard" ? "is-active" : ""} href="/admin">Dashboard</a>
+            <a className={current === "orders" ? "is-active" : ""} href="/admin/orders">Orders</a>
+            <a className={current === "products" ? "is-active" : ""} href="/admin/products">Products</a>
+            <a href="/">View website</a>
+        </nav>
     )
 }
 
@@ -336,13 +366,14 @@ function DashboardView({ snapshot, logout }: { snapshot: Snapshot; logout: () =>
         .reduce((sum, order) => sum + order.total, 0)
     const stats = [
         ["New orders", snapshot.orders.filter((order) => order.status === "New").length],
-        ["Processing", snapshot.orders.filter((order) => order.status === "Processing").length],
+        ["Preparing", snapshot.orders.filter((order) => order.status === "Preparing").length],
         ["Ready", snapshot.orders.filter((order) => order.status === "Ready").length],
         ["Revenue", money.format(paidRevenue)],
     ]
     return (
         <>
             <PageHeader eyebrow="ADMIN PORTAL" title="Dashboard" action="Log out" onAction={logout} />
+            <AdminNav current="dashboard" />
             <div className="mm-admin__stats">
                 {stats.map(([label, value]) => (
                     <article className="mm-admin__stat" key={String(label)}>
@@ -406,9 +437,10 @@ function OrdersView({
 }) {
     return (
         <>
-            <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" action="Back to dashboard" onAction={() => route("/admin")} />
+            <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" />
+            <AdminNav current="orders" />
             <div className="mm-admin__filters" role="group" aria-label="Order filters">
-                {["All orders", "Pending", "Paid"].map((label) => (
+                {["All orders", "Pending payment", "Paid", "Failed", "Refunded", "Cancelled"].map((label) => (
                     <button
                         className={`mm-admin__button ${filter === label ? "is-active" : ""}`}
                         type="button"
@@ -457,9 +489,18 @@ function OrdersView({
                             <p>{selected.deliveryMethod}</p><p>{selected.address || "Collection address to be confirmed."}</p>
                         </Detail>
                         <div className="mm-admin__actions">
+                            <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Confirmed"} onClick={() => updateOrderStatus(selected, "Confirmed")}>Confirm order</button>
+                            <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Preparing"} onClick={() => updateOrderStatus(selected, "Preparing")}>Mark preparing</button>
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Ready"} onClick={() => updateOrderStatus(selected, "Ready")}>Mark ready</button>
-                            <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Dispatched"} onClick={() => updateOrderStatus(selected, "Dispatched")}>Mark dispatched</button>
-                            <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Delivered"} onClick={() => updateOrderStatus(selected, "Delivered")}>Mark delivered</button>
+                            {selected.deliveryMethod === "Collection" ? (
+                                <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Collected"} onClick={() => updateOrderStatus(selected, "Collected")}>Mark collected</button>
+                            ) : (
+                                <>
+                                    <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Dispatched"} onClick={() => updateOrderStatus(selected, "Dispatched")}>Mark dispatched</button>
+                                    <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Delivered"} onClick={() => updateOrderStatus(selected, "Delivered")}>Mark delivered</button>
+                                </>
+                            )}
+                            <button className="mm-admin__secondary-button" type="button" disabled={loading || selected.status === "Cancelled"} onClick={() => updateOrderStatus(selected, "Cancelled")}>Cancel order</button>
                         </div>
                     </article>
                 ) : <div className="mm-admin__empty"><strong>No orders yet</strong><span>Orders matching this view will appear here.</span></div>}
@@ -475,7 +516,8 @@ function Detail({ title, children }: { title: string; children: ReactNode }) {
 function ProductsView() {
     return (
         <>
-            <PageHeader eyebrow="ADMIN / PRODUCTS" title="Products" action="Back to dashboard" onAction={() => route("/admin")} />
+            <PageHeader eyebrow="ADMIN / PRODUCTS" title="Products" />
+            <AdminNav current="products" />
             <div className="mm-admin__cms-note">
                 <p className="mm-admin__eyebrow">FRAMER CMS</p>
                 <h2>Products are managed in the CMS</h2>
@@ -483,6 +525,7 @@ function ProductsView() {
                     Add and edit product collection items directly in Framer. The admin portal no longer imports,
                     updates, or publishes storefront products.
                 </p>
+                <a className="mm-admin__cms-link" href="https://framer.com/projects/HSoQpURWMbVB013b2Lkg" target="_blank" rel="noreferrer">Open Framer CMS ↗</a>
             </div>
         </>
     )
@@ -497,12 +540,15 @@ const styles = `
 .mm-admin__notice { border: 1px solid var(--mm-border); background: var(--mm-soft); padding: 12px 16px; }
 .mm-admin__header, .mm-admin__section-heading, .mm-admin__product-toolbar, .mm-admin__order-card-top, .mm-admin__actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .mm-admin__eyebrow { margin: 0 0 8px; color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
-.mm-admin__title { margin: 0; color: #fff; font-family: Montserrat, Inter, sans-serif; font-size: clamp(46px, 6vw, 72px); font-weight: 400; letter-spacing: -.035em; line-height: .95; text-transform: uppercase; }
+.mm-admin__title { margin: 0; color: var(--mm-ink); font-family: Montserrat, Inter, sans-serif; font-size: clamp(46px, 6vw, 72px); font-weight: 400; letter-spacing: -.035em; line-height: .95; text-transform: uppercase; }
 .mm-admin__title--dashboard { color: var(--mm-ink); }
 .mm-admin__button { appearance: none; border: 0; border-radius: 0; background: var(--mm-sage); color: #fff !important; cursor: pointer; font-weight: 700; padding: 13px 20px; transition: opacity .18s ease; }
 .mm-admin__button:hover { opacity: .82; }
 .mm-admin__button:disabled { cursor: not-allowed; opacity: .45; }
 .mm-admin__button.is-active { box-shadow: inset 0 0 0 2px var(--mm-ink); }
+.mm-admin__nav { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--mm-border); padding-bottom: 16px; }
+.mm-admin__nav a { min-height: 44px; display: inline-flex; align-items: center; padding: 10px 14px; color: var(--mm-ink); text-decoration: none; }
+.mm-admin__nav a:hover, .mm-admin__nav a.is-active { background: var(--mm-soft); }
 .mm-admin__secondary-button, .mm-admin__text-button { appearance: none; border: 1px solid var(--mm-border); background: transparent; color: var(--mm-ink); cursor: pointer; font-weight: 700; padding: 12px 18px; }
 .mm-admin__text-button { border: 0; padding: 8px 0; text-decoration: underline; }
 .mm-admin__stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
@@ -517,13 +563,15 @@ const styles = `
 .mm-admin__badge { display: inline-block; border: 1px solid var(--mm-border); background: #E3E8DF; color: #536047; font-size: 11px; font-style: normal; font-weight: 700; padding: 3px 8px; white-space: nowrap; }
 .mm-admin__badge--pending, .mm-admin__badge--new, .mm-admin__badge--low-stock { background: #F1E7D2; color: #765C35; }
 .mm-admin__badge--delivered, .mm-admin__badge--active, .mm-admin__badge--paid { background: #E1E9DD; color: #4E6545; }
+.mm-admin__badge--failed, .mm-admin__badge--refunded, .mm-admin__badge--cancelled { background: #F0DDDA; color: #7A352B; }
 .mm-admin__quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .mm-admin__quick-card { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 26px; }
 .mm-admin__quick-card h3 { margin: 0 0 8px; font-size: 21px; }
 .mm-admin__quick-card p { margin: 0 0 18px; color: var(--mm-muted); letter-spacing: .05em; text-transform: uppercase; }
 .mm-admin__cms-note { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: clamp(28px, 6vw, 64px); }
 .mm-admin__cms-note h2 { max-width: 720px; margin: 0 0 18px; font-family: Montserrat, Inter, sans-serif; font-size: clamp(34px, 5vw, 58px); font-weight: 500; letter-spacing: -.04em; line-height: 1; text-transform: uppercase; }
-.mm-admin__cms-note > p:last-child { max-width: 680px; margin: 0; color: var(--mm-muted); font-size: 17px; line-height: 1.65; }
+.mm-admin__cms-note > p { max-width: 680px; color: var(--mm-muted); font-size: 17px; line-height: 1.65; }
+.mm-admin__cms-link { display: inline-flex; min-height: 48px; align-items: center; margin-top: 12px; padding: 13px 18px; background: var(--mm-sage); color: #fff; font-weight: 700; text-decoration: none; }
 .mm-admin__muted-label { color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .mm-admin__filters { display: flex; flex-wrap: wrap; gap: 12px; }
 .mm-admin__orders-layout { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(360px, 1.1fr); align-items: start; gap: 24px; }
@@ -568,6 +616,8 @@ const styles = `
 .mm-admin__empty strong { color: var(--mm-ink); font-size: 18px; }
 .mm-admin__login-stage { display: grid; min-height: 720px; place-items: center; background: var(--mm-soft); padding: 32px 20px; }
 .mm-admin__login-card { display: flex; flex-direction: column; gap: 18px; width: min(440px, 100%); border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 40px; }
+.mm-admin__brand { display: grid; width: 52px; height: 52px; place-items: center; border: 1px solid var(--mm-border); color: var(--mm-ink); font-family: Montserrat, Inter, sans-serif; font-size: 18px; font-weight: 600; text-decoration: none; }
+.mm-admin__website-link { color: var(--mm-ink); text-underline-offset: 3px; }
 .mm-admin__login-title { margin: 2px 0 0; font-family: Montserrat, Inter, sans-serif; font-size: 42px; font-weight: 500; letter-spacing: -.04em; text-transform: uppercase; }
 .mm-admin__lead { margin: 0 0 2px; letter-spacing: .08em; text-transform: uppercase; }
 .mm-admin__field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
@@ -607,8 +657,9 @@ const styles = `
   .mm-admin__login-card { padding: 28px; }
 }
 @container (max-width: 430px) {
-  .mm-admin__stats { grid-template-columns: 1fr; }
   .mm-admin__variant-editor, .mm-admin__variant-row { grid-template-columns: 1fr; }
+  .mm-admin__stat { min-height: 108px; padding: 18px; }
+  .mm-admin__stat strong { font-size: 30px; }
 }
 `
 

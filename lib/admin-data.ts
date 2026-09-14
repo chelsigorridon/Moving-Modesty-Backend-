@@ -10,10 +10,11 @@ import {
   products as productsTable,
   productVariants,
 } from "./db/schema";
-import { orders as demoOrders, products as demoProducts, type OrderStatus } from "./store-data";
+import type { AdminOrder, OrderStatus, PaymentStatus } from "./admin-types";
+import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
 
-export type AdminOrder = (typeof demoOrders)[number];
+export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
   id: string;
   name: string;
@@ -41,11 +42,19 @@ export type AdminSnapshot = {
 const statusLabels: Record<string, OrderStatus> = {
   new: "New",
   confirmed: "Confirmed",
-  processing: "Processing",
+  processing: "Preparing",
   ready: "Ready",
   dispatched: "Dispatched",
+  collected: "Collected",
   delivered: "Delivered",
-  cancelled: "Delivered",
+  cancelled: "Cancelled",
+};
+
+const paymentLabels: Record<string, PaymentStatus> = {
+  pending: "Pending payment",
+  paid: "Paid",
+  failed: "Failed",
+  refunded: "Refunded",
 };
 
 const deliveryLabels = {
@@ -64,6 +73,12 @@ const dateFormatter = new Intl.DateTimeFormat("en-ZA", {
 
 function formatAddress(parts: Array<string | null | undefined>) {
   return parts.filter(Boolean).join(", ");
+}
+
+function snapshotImage(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const image = (value as Record<string, unknown>).image;
+  return typeof image === "string" ? image : "";
 }
 
 export function getDemoAdminSnapshot(): AdminSnapshot {
@@ -120,6 +135,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         variant: orderItems.variantName,
         quantity: orderItems.quantity,
         price: orderItems.unitPrice,
+        productSnapshot: orderItems.productSnapshot,
       })
       .from(orderItems),
     db
@@ -156,7 +172,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       variant: item.variant,
       quantity: item.quantity,
       price: Number(item.price),
-      image: "",
+      image: snapshotImage(item.productSnapshot),
     });
     itemsByOrder.set(item.orderId, items);
   }
@@ -188,7 +204,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       placedAt: dateFormatter.format(order.createdAt),
       placedDate: order.createdAt.toISOString(),
       total: Number(order.total),
-      paymentStatus: order.paymentStatus === "paid" ? "Paid" : "Pending",
+      paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
       status: statusLabels[order.status] ?? "New",
       deliveryMethod: deliveryLabels[order.deliveryMethod],
       address: formatAddress([
@@ -334,13 +350,17 @@ export async function saveProduct(input: ProductInput, existingSlug?: string) {
 
 export async function updateOrderStatus(orderNumber: string, nextStatus: OrderStatus) {
   if (!db) throw new Error("DATABASE_URL is not configured.");
-  const databaseStatus = nextStatus.toLowerCase() as
-    | "new"
-    | "confirmed"
-    | "processing"
-    | "ready"
-    | "dispatched"
-    | "delivered";
+  const statusValues = {
+    New: "new",
+    Confirmed: "confirmed",
+    Preparing: "processing",
+    Ready: "ready",
+    Dispatched: "dispatched",
+    Collected: "collected",
+    Delivered: "delivered",
+    Cancelled: "cancelled",
+  } as const;
+  const databaseStatus = statusValues[nextStatus];
   const [existing] = await db
     .select({ id: ordersTable.id, status: ordersTable.status })
     .from(ordersTable)

@@ -9,6 +9,8 @@ interface ResponsiveImage {
 
 interface CartItem {
     id: string
+    sku: string
+    productSlug: string
     name: string
     colour: string
     size: string
@@ -19,11 +21,14 @@ interface CartItem {
 }
 
 interface Props {
+    sku: string
+    productSlug: string
     productName: string
     price: string
     image?: ResponsiveImage | string
     sizeMode: "hawa" | "oneSize"
     sizeOptions?: string
+    showDetailLink: boolean
     buttonLabel: string
     surfaceColor: string
     textColor: string
@@ -54,6 +59,45 @@ function getImageSource(image?: ResponsiveImage | string): string {
     return image?.src || ""
 }
 
+function sizeCode(size: string): string {
+    const normalized = size.trim().toLowerCase()
+    if (normalized === "small") return "S"
+    if (normalized === "large") return "L"
+    if (normalized.includes("one size")) return "OS"
+    return normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").toUpperCase()
+}
+
+function checkoutSku(base: string, size: string): string {
+    const normalizedBase = base.trim().toUpperCase()
+    if (!normalizedBase) return ""
+    const suffix = sizeCode(size)
+    return suffix && !normalizedBase.endsWith(`-${suffix}`)
+        ? `${normalizedBase}-${suffix}`
+        : normalizedBase
+}
+
+function productDetailSlug(productSlug: string, sku: string, productName: string): string {
+    if (productSlug.trim()) return productSlug.trim().replace(/^\/+|\/+$/g, "")
+
+    const baseSku = sku.trim().toUpperCase().replace(/-(?:S|L|OS)$/, "")
+    const knownSlugs: Record<string, string> = {
+        "AMINA-LAV": "amina-tie-back-lavender",
+        "AMINA-LIL": "amina-tie-back-lilac",
+        "AMINA-BLK": "amina-tie-back-black",
+        "HAWA-BLK": "hawa-tri-instant-scarf-black",
+        "HAWA-PNK": "hawa-tri-instant-scarf-soft-pink",
+        "HAWA-SGE": "hawa-tri-instant-scarf-sage",
+        "HAWA-GRY": "hawa-tri-instant-scarf-grey",
+    }
+    if (knownSlugs[baseSku]) return knownSlugs[baseSku]
+
+    return productName
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+}
+
 function readCart(): CartItem[] {
     if (typeof window === "undefined") return []
     try {
@@ -82,11 +126,14 @@ function parseSizeOptions(value: string | undefined, mode: Props["sizeMode"]): s
  */
 export default function ProductPurchase(props: Props) {
     const {
+        sku = "",
+        productSlug = "",
         productName = "Scarf",
         price = "R 0.00",
         image,
         sizeMode = "hawa",
         sizeOptions = "",
+        showDetailLink = true,
         buttonLabel = "Add to cart",
         surfaceColor = "#EAE6E3",
         textColor = "#332B25",
@@ -106,6 +153,7 @@ export default function ProductPurchase(props: Props) {
     const [selectedSize, setSelectedSize] = useState(oneSize ? availableSizes[0] : "")
     const [message, setMessage] = useState("")
     const resetTimer = useRef<number | undefined>(undefined)
+    const resolvedDetailSlug = productDetailSlug(productSlug, sku, productName)
 
     useEffect(() => {
         setSelectedSize(oneSize ? availableSizes[0] : "")
@@ -132,26 +180,43 @@ export default function ProductPurchase(props: Props) {
 
         const numericPrice = parsePrice(price)
         const colour = deriveColour(productName)
-        const id = [productName, selectedSize].join("::").toLowerCase()
+        const imageSource = getImageSource(image)
+        const stableSku = checkoutSku(sku, selectedSize)
+        const id = stableSku || [productSlug || productName, selectedSize].join("::").toLowerCase()
         const current = readCart()
         const existingIndex = current.findIndex((item) => item.id === id)
         let next: CartItem[]
 
         if (existingIndex >= 0) {
             next = current.map((item, index) =>
-                index === existingIndex ? { ...item, quantity: item.quantity + 1 } : item
+                index === existingIndex
+                    ? {
+                        ...item,
+                        sku: stableSku || item.sku || "",
+                        productSlug: productSlug || item.productSlug || "",
+                        name: productName,
+                        colour,
+                        size: selectedSize,
+                        price: numericPrice,
+                        priceLabel: price,
+                        image: imageSource || item.image,
+                        quantity: item.quantity + 1,
+                    }
+                    : item
             )
         } else {
             next = [
                 ...current,
                 {
                     id,
+                    sku: stableSku,
+                    productSlug,
                     name: productName,
                     colour,
                     size: selectedSize,
                     price: numericPrice,
                     priceLabel: price,
-                    image: getImageSource(image),
+                    image: imageSource,
                     quantity: 1,
                 },
             ]
@@ -169,6 +234,9 @@ export default function ProductPurchase(props: Props) {
         ".mm-product-button:hover{opacity:.92;transform:translateY(-1px)}",
         ".mm-product-button:active{opacity:1;transform:translateY(0) scale(.98);transition-duration:.16s}",
         ".mm-product-button:focus-visible{outline:2px solid currentColor;outline-offset:3px}",
+        ".mm-product-detail-link{display:flex;align-items:center;justify-content:center;min-height:44px;color:inherit;text-decoration:underline;text-underline-offset:4px;transition:opacity .2s ease}",
+        ".mm-product-detail-link:hover{opacity:.68}",
+        ".mm-product-detail-link:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
     ].join("")
 
     return (
@@ -226,6 +294,17 @@ export default function ProductPurchase(props: Props) {
                 </select>
             </label>
 
+            {showDetailLink && resolvedDetailSlug ? (
+                <a
+                    className="mm-product-detail-link"
+                    href={`/products/${resolvedDetailSlug}`}
+                    aria-label={`View details for ${productName}`}
+                    style={{ fontSize: 14, lineHeight: 1.3 }}
+                >
+                    View product details
+                </a>
+            ) : null}
+
             <button
                 className="mm-product-button"
                 type="button"
@@ -266,6 +345,8 @@ export default function ProductPurchase(props: Props) {
 }
 
 addPropertyControls(ProductPurchase, {
+    sku: { type: ControlType.String, title: "SKU", defaultValue: "", placeholder: "HAWA-BLK" },
+    productSlug: { type: ControlType.String, title: "CMS Slug", defaultValue: "" },
     productName: { type: ControlType.String, title: "Product", defaultValue: "Scarf" },
     price: { type: ControlType.String, title: "Price", defaultValue: "R 0.00" },
     image: { type: ControlType.ResponsiveImage, title: "Image" },
@@ -283,6 +364,7 @@ addPropertyControls(ProductPurchase, {
         defaultValue: "",
         placeholder: "Small / Large",
     },
+    showDetailLink: { type: ControlType.Boolean, title: "Detail link", defaultValue: true },
     buttonLabel: { type: ControlType.String, title: "Button", defaultValue: "Add to cart" },
     surfaceColor: { type: ControlType.Color, title: "Surface", defaultValue: "#EAE6E3" },
     textColor: { type: ControlType.Color, title: "Text", defaultValue: "#332B25" },
