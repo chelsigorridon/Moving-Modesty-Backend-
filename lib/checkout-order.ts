@@ -8,8 +8,10 @@ import {
   orderItems,
   orders,
   orderStatusHistory,
+  shipments,
 } from "./db/schema";
 import { resolveCheckoutItem, type CheckoutCatalogueItem } from "./checkout-catalogue";
+import { calculateShippingQuote } from "./shipping/policy";
 
 const addressSchema = z.object({
   line1: z.string().trim().min(2).max(180),
@@ -76,8 +78,8 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
   const lines = resolveLines(input.items);
   if (!db) throw new Error("DATABASE_URL is not configured.");
   const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
-  const deliveryFee = 0;
-  const total = subtotal + deliveryFee;
+  const quote = calculateShippingQuote(subtotal, input.fulfilmentMethod);
+  const { deliveryFee, total } = quote;
   const email = input.customer.email.toLowerCase();
   const deliveryMethod = input.fulfilmentMethod === "delivery"
     ? "courier"
@@ -199,6 +201,23 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
       },
     })));
 
+    if (deliveryMethod === "courier") {
+      await transaction
+        .insert(shipments)
+        .values({
+          orderId: orderId!,
+          provider: "bobgo",
+          status: "not_ready",
+          senderLocationName: "Constantia Emporium",
+        })
+        .onConflictDoUpdate({
+          target: shipments.orderId,
+          set: { updatedAt: new Date() },
+        });
+    } else {
+      await transaction.delete(shipments).where(eq(shipments.orderId, orderId!));
+    }
+
     return { orderNumber: orderNumber!, created };
   });
 
@@ -210,6 +229,8 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
     subtotal,
     deliveryFee,
     total,
+    qualifiesForFreeDelivery: quote.qualifiesForFreeDelivery,
+    amountUntilFreeDelivery: quote.amountUntilFreeDelivery,
     paymentStatus: "pending" as const,
   };
 }

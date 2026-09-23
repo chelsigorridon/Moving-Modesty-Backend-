@@ -9,8 +9,11 @@ import {
   orderStatusHistory,
   products as productsTable,
   productVariants,
+  shipments,
 } from "./db/schema";
 import type { AdminOrder, OrderStatus, PaymentStatus } from "./admin-types";
+import { getBobGoConfiguration } from "./integrations/bobgo/configuration";
+import { shipmentBookingBlockers } from "./shipping/readiness";
 import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
 
@@ -63,6 +66,15 @@ const deliveryLabels = {
   to_be_confirmed: "To be confirmed",
 } as const;
 
+const shipmentStatusLabels = {
+  not_ready: "Not ready",
+  ready_to_book: "Ready to book",
+  booking: "Booking",
+  booked: "Booked",
+  failed: "Failed",
+  cancelled: "Cancelled",
+} as const;
+
 const dateFormatter = new Intl.DateTimeFormat("en-ZA", {
   day: "2-digit",
   month: "short",
@@ -102,7 +114,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     throw new Error("DATABASE_URL is not configured.");
   }
 
-  const [orderRows, itemRows, productRows, variantRows] = await Promise.all([
+  const [orderRows, itemRows, productRows, variantRows, shipmentRows] = await Promise.all([
     db
       .select({
         id: ordersTable.id,
@@ -110,6 +122,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         status: ordersTable.status,
         paymentStatus: ordersTable.paymentStatus,
         deliveryMethod: ordersTable.deliveryMethod,
+        subtotal: ordersTable.subtotal,
+        deliveryFee: ordersTable.deliveryFee,
         total: ordersTable.total,
         createdAt: ordersTable.createdAt,
         customerFirstName: customers.firstName,
@@ -162,7 +176,25 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         lowStockThreshold: productVariants.lowStockThreshold,
       })
       .from(productVariants),
+    db
+      .select({
+        orderId: shipments.orderId,
+        status: shipments.status,
+        senderLocationName: shipments.senderLocationName,
+        pickupPointLocationId: shipments.pickupPointLocationId,
+        weightGrams: shipments.weightGrams,
+        lengthCm: shipments.lengthCm,
+        widthCm: shipments.widthCm,
+        heightCm: shipments.heightCm,
+        waybillReference: shipments.waybillReference,
+        trackingNumber: shipments.trackingNumber,
+        trackingUrl: shipments.trackingUrl,
+      })
+      .from(shipments),
   ]);
+
+  const bobGo = getBobGoConfiguration();
+  const shipmentByOrder = new Map(shipmentRows.map((shipment) => [shipment.orderId, shipment]));
 
   const itemsByOrder = new Map<string, AdminOrder["items"]>();
   for (const item of itemRows) {
@@ -193,7 +225,23 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
   }
 
   return {
-    orders: orderRows.map((order) => ({
+    orders: orderRows.map((order) => {
+      const shipment = shipmentByOrder.get(order.id);
+      const blockers = shipmentBookingBlockers({
+        deliveryMethod: order.deliveryMethod,
+        paymentStatus: order.paymentStatus,
+        hasDeliveryAddress: Boolean(order.line1 && order.city && order.province && order.postalCode),
+        weightGrams: shipment?.weightGrams,
+        lengthCm: shipment?.lengthCm ? Number(shipment.lengthCm) : null,
+        widthCm: shipment?.widthCm ? Number(shipment.widthCm) : null,
+        heightCm: shipment?.heightCm ? Number(shipment.heightCm) : null,
+        integrationEnabled: bobGo.enabled,
+        apiTokenConfigured: bobGo.apiTokenConfigured,
+        senderContactConfigured: Boolean(bobGo.senderEmail && bobGo.senderPhone),
+        pickupPointLocationId: shipment?.pickupPointLocationId || bobGo.pickupPointLocationId,
+      });
+
+      return {
       id: order.orderNumber,
       customer:
         `${order.customerFirstName ?? ""} ${order.customerLastName ?? ""}`.trim() ||
@@ -203,6 +251,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       phone: order.customerPhone ?? "",
       placedAt: dateFormatter.format(order.createdAt),
       placedDate: order.createdAt.toISOString(),
+      subtotal: Number(order.subtotal),
+      deliveryFee: Number(order.deliveryFee ?? 0),
       total: Number(order.total),
       paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
       status: statusLabels[order.status] ?? "New",
@@ -216,7 +266,23 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         order.postalCode,
       ]),
       items: itemsByOrder.get(order.id) ?? [],
-    })),
+      shipping: order.deliveryMethod === "courier" ? {
+        provider: "Bob Go" as const,
+        status: shipment ? shipmentStatusLabels[shipment.status] : "Not ready" as const,
+        senderLocationName: shipment?.senderLocationName || bobGo.senderLocationName,
+        pickupPointLocationId: shipment?.pickupPointLocationId || bobGo.pickupPointLocationId,
+        weightGrams: shipment?.weightGrams ?? undefined,
+        lengthCm: shipment?.lengthCm ? Number(shipment.lengthCm) : undefined,
+        widthCm: shipment?.widthCm ? Number(shipment.widthCm) : undefined,
+        heightCm: shipment?.heightCm ? Number(shipment.heightCm) : undefined,
+        waybillReference: shipment?.waybillReference ?? undefined,
+        trackingNumber: shipment?.trackingNumber ?? undefined,
+        trackingUrl: shipment?.trackingUrl ?? undefined,
+        bookingEnabled: blockers.length === 0,
+        blockers,
+      } : undefined,
+    };
+    }),
     products: productRows.map((product) => {
       const variants = variantsByProduct.get(product.id) ?? [];
       const firstPrice = variantRows.find((variant) => variant.productId === product.id)?.price;

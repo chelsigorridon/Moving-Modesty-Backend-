@@ -26,6 +26,8 @@ type FulfilmentMethod = "delivery" | "collection"
 const CART_KEY = "moving-modesty-cart-v1"
 const FULFILMENT_KEY = "moving-modesty-fulfilment-v1"
 const FULFILMENT_EVENT = "moving-modesty-fulfilment-updated"
+const STANDARD_DELIVERY_FEE = 99
+const FREE_DELIVERY_THRESHOLD = 1500
 const previewItems: CartItem[] = [{
     id: "checkout-preview",
     name: "Hawa Tri-Instant Scarf — Black",
@@ -33,9 +35,35 @@ const previewItems: CartItem[] = [{
     size: "Small",
     price: 450,
     priceLabel: "R 450.00",
-    image: "",
+    image: "https://framerusercontent.com/images/i6owtTY1yDSiItsUFxWH0UF63zg.jpg",
     quantity: 1,
 }]
+
+function normalizeImage(value: unknown): string {
+    if (!value) return ""
+    if (typeof value === "string") return value
+    if (typeof value !== "object") return ""
+
+    const image = value as {
+        src?: unknown
+        url?: unknown
+        value?: unknown
+        fieldData?: Record<string, unknown>
+    }
+    if (typeof image.src === "string") return image.src
+    if (typeof image.url === "string") return image.url
+    if (image.value) {
+        const nested = normalizeImage(image.value)
+        if (nested) return nested
+    }
+    if (image.fieldData) {
+        for (const nestedValue of Object.values(image.fieldData)) {
+            const nested = normalizeImage(nestedValue)
+            if (nested) return nested
+        }
+    }
+    return ""
+}
 
 function readCart(): CartItem[] {
     if (typeof window === "undefined") return []
@@ -43,7 +71,11 @@ function readCart(): CartItem[] {
         const value = window.localStorage.getItem(CART_KEY)
         if (!value) return []
         const parsed = JSON.parse(value)
-        return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === "string") : []
+        return Array.isArray(parsed)
+            ? parsed
+                  .filter((item) => item && typeof item.id === "string")
+                  .map((item) => ({ ...item, image: normalizeImage(item.image) }))
+            : []
     } catch {
         return []
     }
@@ -154,6 +186,9 @@ export default function CheckoutOrderSummary(props: Props) {
     )
 
     const isCollection = fulfilmentMethod === "collection"
+    const qualifiesForFreeDelivery = subtotal >= FREE_DELIVERY_THRESHOLD
+    const deliveryFee = isCollection || subtotal <= 0 || qualifiesForFreeDelivery ? 0 : STANDARD_DELIVERY_FEE
+    const total = subtotal + deliveryFee
     const css = [
         ".mm-checkout-order-item{display:grid;grid-template-columns:84px minmax(0,1fr);gap:16px;padding:20px 0;border-bottom:1px solid var(--checkout-border)}",
         ".mm-checkout-order-image{width:84px;height:104px}",
@@ -241,12 +276,19 @@ export default function CheckoutOrderSummary(props: Props) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 20 }}>
                     <span>{isCollection ? "Collection" : "Delivery"}</span>
-                    <span style={{ textAlign: "right" }}>{isCollection ? "No delivery fee" : "Calculated at checkout"}</span>
+                    <span style={{ textAlign: "right" }}>
+                        {isCollection ? "No delivery fee" : subtotal <= 0 ? "—" : qualifiesForFreeDelivery ? "Free" : formatMoney(deliveryFee)}
+                    </span>
                 </div>
+                {!isCollection && !qualifiesForFreeDelivery && subtotal > 0 ? (
+                    <p style={{ margin: 0, color: "rgba(51,43,37,.7)", fontSize: 13, lineHeight: 1.45 }}>
+                        Add {formatMoney(FREE_DELIVERY_THRESHOLD - subtotal)} more for free delivery.
+                    </p>
+                ) : null}
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 20, marginTop: 23, paddingTop: 20, borderTop: "1px solid " + borderColor, fontSize: 21, letterSpacing: ".035em", textTransform: "uppercase" }}>
                 <span>Total</span>
-                <strong style={{ fontWeight: 500 }}>{formatMoney(subtotal)}</strong>
+                <strong style={{ fontWeight: 500 }}>{formatMoney(total)}</strong>
             </div>
             <div style={{ display: "flex", minHeight: 53, boxSizing: "border-box", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 24, padding: "17px 24px", background: accentColor, color: buttonTextColor, fontSize: 19, fontWeight: 400, lineHeight: 1, letterSpacing: "0em" }}>
                 <LockIcon /> Secure checkout

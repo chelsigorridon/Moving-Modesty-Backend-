@@ -20,7 +20,19 @@ The customer-facing site and admin interface live in the connected Framer projec
 - Full payment states: pending, paid, failed, and refunded
 - Full fulfilment states, including collected and cancelled
 
-Until a courier is selected, delivery remains provider-neutral. Courier name, tracking number, tracking URL, delivery fee and notes are all optional fields.
+## Shipping foundation
+
+Checkout pricing is enforced by the backend in `lib/shipping/policy.ts`:
+
+- nationwide door delivery: R99
+- free delivery for merchandise subtotals of R1500 or more
+- local collection: no delivery fee
+
+Bob Go support is isolated under `lib/integrations/bobgo/` and shipment state is stored separately from orders. New delivery orders receive a shipment record, while collection orders do not. The Framer admin order panel shows booking readiness and a manual **Book Bob Go shipment** button. The button intentionally remains disabled until payment, delivery address, packed weight and dimensions, the private sender contact, Bob Go API token, and the real API pickup-point ID are available.
+
+The public Constantia Emporium Bob Box listing is a human-facing reference only; its public location number is not treated as the Bob Go API pickup-point ID.
+
+No external Bob Go booking or PayFast payment call is enabled by this foundation. Apply migration `0002_past_lester.sql` before deploying the updated checkout API.
 
 ## Local development
 
@@ -64,6 +76,19 @@ Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_K
 - `STORE_URL`
 - `FRAMER_ADMIN_URL`
 - `CHECKOUT_CATALOGUE_JSON` (optional override)
+- `BOBGO_INTEGRATION_ENABLED` (keep `false` until sandbox sign-off)
+- `BOBGO_ENVIRONMENT`
+- `BOBGO_API_TOKEN`
+- `BOBGO_SENDER_NAME`
+- `BOBGO_SENDER_EMAIL`
+- `BOBGO_SENDER_PHONE`
+- `BOBGO_SENDER_LOCATION_NAME`
+- `BOBGO_PICKUP_POINT_LOCATION_ID`
+- `PAYFAST_INTEGRATION_ENABLED` (keep `false` until account verification)
+- `PAYFAST_ENVIRONMENT`
+- `PAYFAST_MERCHANT_ID`
+- `PAYFAST_MERCHANT_KEY`
+- `PAYFAST_PASSPHRASE`
 
 No Framer API credentials are required by the Vercel backend. Editing a product in Framer CMS does not import it into Neon, and admin API actions do not create, update, or publish CMS collection items.
 

@@ -34,12 +34,29 @@ interface AdminOrder {
     email: string
     phone: string
     placedAt: string
+    subtotal?: number
+    deliveryFee?: number
     total: number
     paymentStatus: PaymentStatus
     status: OrderStatus
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
     items: OrderItem[]
+    shipping?: {
+        provider: "Bob Go"
+        status: "Not ready" | "Ready to book" | "Booking" | "Booked" | "Failed" | "Cancelled"
+        senderLocationName: string
+        pickupPointLocationId?: string
+        weightGrams?: number
+        lengthCm?: number
+        widthCm?: number
+        heightCm?: number
+        waybillReference?: string
+        trackingNumber?: string
+        trackingUrl?: string
+        bookingEnabled: boolean
+        blockers: string[]
+    }
 }
 
 interface Snapshot {
@@ -206,6 +223,24 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
+    async function bookShipment(order: AdminOrder) {
+        if (!liveEnabled || !order.shipping?.bookingEnabled) return
+        startTransition(() => setLoading(true))
+        try {
+            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/book-shipment`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token()}` },
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok) throw new Error(data?.error || "The shipment could not be booked.")
+            startTransition(() => setNotice(`${order.id} was booked with Bob Go.`))
+        } catch (error) {
+            startTransition(() => setNotice(error instanceof Error ? error.message : "Shipment booking failed."))
+        } finally {
+            startTransition(() => setLoading(false))
+        }
+    }
+
     function logout() {
         if (typeof window !== "undefined") window.sessionStorage.removeItem("moving_modesty_admin_token")
         route("/admin/login")
@@ -246,6 +281,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             filter={orderFilter}
                             setFilter={setOrderFilter}
                             updateOrderStatus={updateOrderStatus}
+                            bookShipment={bookShipment}
                             loading={loading}
                         />
                     ) : (
@@ -424,6 +460,7 @@ function OrdersView({
     filter,
     setFilter,
     updateOrderStatus,
+    bookShipment,
     loading,
 }: {
     orders: AdminOrder[]
@@ -433,6 +470,7 @@ function OrdersView({
     filter: string
     setFilter: (filter: string) => void
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
+    bookShipment: (order: AdminOrder) => void
     loading: boolean
 }) {
     return (
@@ -484,10 +522,31 @@ function OrdersView({
                         </Detail>
                         <Detail title="Payment">
                             <p>{selected.paymentStatus} · {money.format(selected.total)}</p>
+                            {selected.deliveryFee !== undefined ? <p>Delivery fee: {selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}</p> : null}
                         </Detail>
                         <Detail title="Fulfilment">
                             <p>{selected.deliveryMethod}</p><p>{selected.address || "Collection address to be confirmed."}</p>
                         </Detail>
+                        {selected.shipping ? (
+                            <Detail title="Bob Go delivery">
+                                <p>Status: {selected.shipping.status}</p>
+                                <p>Drop-off: {selected.shipping.senderLocationName}</p>
+                                {selected.shipping.trackingNumber ? <p>Tracking: {selected.shipping.trackingNumber}</p> : null}
+                                {selected.shipping.blockers.length ? (
+                                    <ul className="mm-admin__blockers">
+                                        {selected.shipping.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                                    </ul>
+                                ) : <p>All required booking details are ready.</p>}
+                                <button
+                                    className="mm-admin__button"
+                                    type="button"
+                                    disabled={loading || !selected.shipping.bookingEnabled}
+                                    onClick={() => bookShipment(selected)}
+                                >
+                                    Book Bob Go shipment
+                                </button>
+                            </Detail>
+                        ) : null}
                         <div className="mm-admin__actions">
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Confirmed"} onClick={() => updateOrderStatus(selected, "Confirmed")}>Confirm order</button>
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Preparing"} onClick={() => updateOrderStatus(selected, "Preparing")}>Mark preparing</button>
@@ -533,6 +592,8 @@ function ProductsView() {
 
 const styles = `
 .mm-admin, .mm-admin * { box-sizing: border-box; }
+.mm-admin__blockers { margin: 12px 0 18px; padding-left: 19px; color: var(--mm-muted); }
+.mm-admin__blockers li + li { margin-top: 6px; }
 .mm-admin { font-family: Inter, Arial, sans-serif; font-size: 15px; line-height: 1.45; }
 .mm-admin button, .mm-admin input, .mm-admin select, .mm-admin textarea { font: inherit; }
 .mm-admin button { color: inherit; }

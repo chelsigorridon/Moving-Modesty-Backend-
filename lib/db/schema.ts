@@ -7,6 +7,7 @@ export const orderStatus = pgEnum("order_status", ["new", "confirmed", "processi
 export const deliveryMethod = pgEnum("delivery_method", ["courier", "collection", "to_be_confirmed"]);
 export const inventoryMovementType = pgEnum("inventory_movement_type", ["stock_received", "order_allocated", "correction", "return"]);
 export const emailStatus = pgEnum("email_status", ["queued", "sent", "delivered", "failed"]);
+export const shipmentStatus = pgEnum("shipment_status", ["not_ready", "ready_to_book", "booking", "booked", "failed", "cancelled"]);
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -116,6 +117,27 @@ export const orderItems = pgTable("order_items", {
   productSnapshot: jsonb("product_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const shipments = pgTable("shipments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").default("bobgo").notNull(),
+  status: shipmentStatus("status").default("not_ready").notNull(),
+  senderLocationName: text("sender_location_name").default("Constantia Emporium").notNull(),
+  pickupPointLocationId: text("pickup_point_location_id"),
+  weightGrams: integer("weight_grams"),
+  lengthCm: numeric("length_cm", { precision: 8, scale: 2 }),
+  widthCm: numeric("width_cm", { precision: 8, scale: 2 }),
+  heightCm: numeric("height_cm", { precision: 8, scale: 2 }),
+  providerShipmentId: text("provider_shipment_id"),
+  serviceLevelCode: text("service_level_code"),
+  waybillReference: text("waybill_reference"),
+  trackingNumber: text("tracking_number"),
+  trackingUrl: text("tracking_url"),
+  lastError: text("last_error"),
+  bookedAt: timestamp("booked_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId)]);
 
 export const orderStatusHistory = pgTable("order_status_history", {
   id: uuid("id").defaultRandom().primaryKey(),

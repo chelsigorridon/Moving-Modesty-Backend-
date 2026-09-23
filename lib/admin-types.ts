@@ -18,6 +18,22 @@ export type AdminOrderItem = {
   image: string;
 };
 
+export type AdminShipment = {
+  provider: "Bob Go";
+  status: "Not ready" | "Ready to book" | "Booking" | "Booked" | "Failed" | "Cancelled";
+  senderLocationName: string;
+  pickupPointLocationId?: string;
+  weightGrams?: number;
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
+  waybillReference?: string;
+  trackingNumber?: string;
+  trackingUrl?: string;
+  bookingEnabled: boolean;
+  blockers: string[];
+};
+
 export type AdminOrder = {
   id: string;
   customer: string;
@@ -25,10 +41,13 @@ export type AdminOrder = {
   phone: string;
   placedAt: string;
   placedDate: string;
+  subtotal?: number;
+  deliveryFee?: number;
   total: number;
   paymentStatus: PaymentStatus;
   status: OrderStatus;
   deliveryMethod: "Courier" | "Collection" | "To be confirmed";
   address?: string;
   items: AdminOrderItem[];
+  shipping?: AdminShipment;
 };

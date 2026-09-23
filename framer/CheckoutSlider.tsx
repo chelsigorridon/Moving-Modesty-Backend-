@@ -520,6 +520,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
                 throw new Error(data?.error || "Your order could not be saved. Please try again.")
             }
             orderReference = data.order.orderNumber
+            window.dispatchEvent(new CustomEvent("moving-modesty-order-updated", { detail: data.order }))
             if (stage === "complete") {
                 window.localStorage.removeItem(CART_KEY)
                 window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
