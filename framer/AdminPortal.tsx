@@ -531,6 +531,9 @@ function OrdersView({
                             <Detail title="Bob Go delivery">
                                 <p>Status: {selected.shipping.status}</p>
                                 <p>Drop-off: {selected.shipping.senderLocationName}</p>
+                                {selected.shipping.weightGrams && selected.shipping.lengthCm && selected.shipping.widthCm && selected.shipping.heightCm ? (
+                                    <p>Parcel: {selected.shipping.lengthCm} × {selected.shipping.widthCm} × {selected.shipping.heightCm} cm · {selected.shipping.weightGrams} g</p>
+                                ) : null}
                                 {selected.shipping.trackingNumber ? <p>Tracking: {selected.shipping.trackingNumber}</p> : null}
                                 {selected.shipping.blockers.length ? (
                                     <ul className="mm-admin__blockers">

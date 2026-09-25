@@ -6,6 +6,10 @@ import {
   STANDARD_DELIVERY_FEE,
 } from "../lib/shipping/policy.ts";
 import { shipmentBookingBlockers } from "../lib/shipping/readiness.ts";
+import {
+  HAWA_AND_AMINA_PACKAGE,
+  resolveVerifiedPackage,
+} from "../lib/shipping/packages.ts";
 
 test("delivery costs R99 below the free-delivery threshold", () => {
   assert.deepEqual(calculateShippingQuote(450, "delivery"), {
@@ -65,4 +69,19 @@ test("a complete paid delivery can be marked ready", () => {
     senderContactConfigured: true,
     pickupPointLocationId: "api-location-id",
   }), []);
+});
+
+test("the verified Hawa and Amina parcel is applied to that exact combination", () => {
+  assert.deepEqual(resolveVerifiedPackage([
+    { sku: "HAWA-BLK-S", quantity: 1 },
+    { sku: "AMINA-LAV-OS", quantity: 1 },
+  ]), HAWA_AND_AMINA_PACKAGE);
+});
+
+test("unmeasured product combinations do not receive estimated dimensions", () => {
+  assert.equal(resolveVerifiedPackage([{ sku: "HAWA-BLK-S", quantity: 1 }]), null);
+  assert.equal(resolveVerifiedPackage([
+    { sku: "HAWA-BLK-S", quantity: 2 },
+    { sku: "AMINA-LAV-OS", quantity: 1 },
+  ]), null);
 });

@@ -34,6 +34,12 @@ The public Constantia Emporium Bob Box listing is a human-facing reference only;
 
 No external Bob Go booking or PayFast payment call is enabled by this foundation. Apply migration `0002_past_lester.sql` before deploying the updated checkout API.
 
+### Verified parcel presets
+
+- exactly 1 × Hawa and 1 × Amina: 25 × 20.5 × 3.5 cm, 412 g packed
+
+Only verified combinations receive automatic parcel measurements. Single-product orders and other quantities remain blocked until their packed measurements are supplied; the backend does not estimate them.
+
 ## Local development
 
 1. Install dependencies with `npm install`.

@@ -12,6 +12,7 @@ import {
 } from "./db/schema";
 import { resolveCheckoutItem, type CheckoutCatalogueItem } from "./checkout-catalogue";
 import { calculateShippingQuote } from "./shipping/policy";
+import { resolveVerifiedPackage } from "./shipping/packages";
 
 const addressSchema = z.object({
   line1: z.string().trim().min(2).max(180),
@@ -80,6 +81,10 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
   const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
   const quote = calculateShippingQuote(subtotal, input.fulfilmentMethod);
   const { deliveryFee, total } = quote;
+  const verifiedPackage = resolveVerifiedPackage(lines.map(({ product, quantity }) => ({
+    sku: product.sku,
+    quantity,
+  })));
   const email = input.customer.email.toLowerCase();
   const deliveryMethod = input.fulfilmentMethod === "delivery"
     ? "courier"
@@ -209,10 +214,20 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
           provider: "bobgo",
           status: "not_ready",
           senderLocationName: "Constantia Emporium",
+          weightGrams: verifiedPackage?.weightGrams ?? null,
+          lengthCm: verifiedPackage?.lengthCm.toFixed(2) ?? null,
+          widthCm: verifiedPackage?.widthCm.toFixed(2) ?? null,
+          heightCm: verifiedPackage?.heightCm.toFixed(2) ?? null,
         })
         .onConflictDoUpdate({
           target: shipments.orderId,
-          set: { updatedAt: new Date() },
+          set: {
+            weightGrams: verifiedPackage?.weightGrams ?? null,
+            lengthCm: verifiedPackage?.lengthCm.toFixed(2) ?? null,
+            widthCm: verifiedPackage?.widthCm.toFixed(2) ?? null,
+            heightCm: verifiedPackage?.heightCm.toFixed(2) ?? null,
+            updatedAt: new Date(),
+          },
         });
     } else {
       await transaction.delete(shipments).where(eq(shipments.orderId, orderId!));
