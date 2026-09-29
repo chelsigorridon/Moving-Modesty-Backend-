@@ -144,7 +144,6 @@ export async function sendPaidOrderEmails(orderId: string) {
     })
     .from(orderItems)
     .where(eq(orderItems.orderId, order.id));
-  const itemRows = items.map((item) => `<tr><td style="padding:10px 0;border-bottom:1px solid #e3ded8"><strong>${item.quantity} × ${escapeHtml(item.name)}</strong><br><span style="color:#746d65;font-size:13px">${escapeHtml(item.variant)}</span></td><td style="padding:10px 0;border-bottom:1px solid #e3ded8;text-align:right">${money(item.lineTotal)}</td></tr>`).join("");
   const fulfilment = order.deliveryMethod === "courier" ? "Delivery" : "Collection";
   const customerNextStep = order.deliveryMethod === "courier"
     ? "You will receive your delivery details soon."
@@ -152,9 +151,6 @@ export async function sendPaidOrderEmails(orderId: string) {
   const customerItems = items
     .map((item) => `${item.quantity} × ${item.name}${item.variant ? ` — ${item.variant}` : ""}`)
     .join(" · ");
-  const totals = `<table style="width:100%;border-collapse:collapse;margin-top:20px"><tr><td style="padding:5px 0;color:#746d65">Subtotal</td><td style="padding:5px 0;text-align:right">${money(order.subtotal)}</td></tr><tr><td style="padding:5px 0;color:#746d65">Delivery</td><td style="padding:5px 0;text-align:right">${Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee)}</td></tr><tr><td style="padding:12px 0 0;font-size:18px;font-weight:700">Total paid</td><td style="padding:12px 0 0;text-align:right;font-size:18px;font-weight:700">${money(order.total)}</td></tr></table>`;
-
-  const ownerHtml = emailShell(`<p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">New paid order</p><h1 style="margin:0 0 18px;font-family:Georgia,serif;font-size:34px;font-weight:400">${escapeHtml(order.orderNumber)}</h1><p style="line-height:1.7"><strong>${escapeHtml(`${order.firstName} ${order.lastName}`)}</strong><br>${escapeHtml(order.email)}<br>${escapeHtml(order.phone ?? "No phone supplied")}</p><table style="width:100%;border-collapse:collapse;margin-top:22px">${itemRows}</table>${totals}<p style="margin:24px 0 0;padding:16px;background:#eef0e9"><strong>Fulfilment:</strong> ${fulfilment}</p>`);
   const ownerEmail = process.env.ORDER_NOTIFICATION_EMAIL?.trim() || "movingmodesty@gmail.com";
 
   const [customer, owner] = await Promise.all([
@@ -182,8 +178,21 @@ export async function sendPaidOrderEmails(orderId: string) {
       recipient: ownerEmail,
       template: "paid-order-owner",
       idempotencyKey: `order-${order.orderNumber}-paid-owner`,
-      subject: `New paid order · ${order.orderNumber}`,
-      html: ownerHtml,
+      hostedTemplate: {
+        id: process.env.RESEND_ADMIN_NEW_ORDER_TEMPLATE?.trim() || "admin-new-paid-order",
+        variables: {
+          ORDER_NUMBER: order.orderNumber,
+          CUSTOMER_NAME: `${order.firstName} ${order.lastName}`.trim(),
+          CUSTOMER_EMAIL: order.email,
+          CUSTOMER_PHONE: order.phone || "No phone supplied",
+          ORDER_ITEMS: customerItems || "No order items were recorded",
+          SUBTOTAL: money(order.subtotal),
+          DELIVERY_FEE: Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee),
+          ORDER_TOTAL: money(order.total),
+          FULFILMENT_METHOD: fulfilment,
+          ADMIN_PORTAL_URL: process.env.FRAMER_ADMIN_URL?.trim() || "https://holistic-brand-492217.framer.app",
+        },
+      },
     }),
   ]);
   return { skipped: false as const, customer, owner };

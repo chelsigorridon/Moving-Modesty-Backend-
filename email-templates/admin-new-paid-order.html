@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>New paid order</title>
+  </head>
+  <body style="margin:0;background:#ece9e5;font-family:Arial,Helvetica,sans-serif;color:#302a24;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#ece9e5;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="620" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:620px;background:#ffffff;border:1px solid #d8d2ca;">
+            <tr>
+              <td align="center" style="padding:26px 28px;border-bottom:1px solid #d8d2ca;">
+                <img src="https://movingmodesty.vercel.app/brand/moving-modesty-email-logo.png" width="150" alt="Moving Modesty" style="display:block;width:150px;max-width:100%;height:auto;margin:0 auto;border:0;">
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px 28px;">
+                <p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Admin order alert</p>
+                <h1 style="margin:0 0 18px;font-family:Georgia,'Times New Roman',serif;font-size:34px;line-height:1.15;font-weight:400;color:#302a24;">New paid order</h1>
+                <p style="margin:0 0 22px;font-size:16px;line-height:1.7;color:#514a44;">Hi Zarina, PayFast has confirmed payment for order <strong>{{{ORDER_NUMBER}}}</strong>.</p>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;background:#f7f5f1;border:1px solid #e3ded8;">
+                  <tr><td style="padding:12px 16px;border-bottom:1px solid #e3ded8;color:#746d65;">Customer</td><td align="right" style="padding:12px 16px;border-bottom:1px solid #e3ded8;font-weight:700;">{{{CUSTOMER_NAME}}}</td></tr>
+                  <tr><td style="padding:12px 16px;border-bottom:1px solid #e3ded8;color:#746d65;">Email</td><td align="right" style="padding:12px 16px;border-bottom:1px solid #e3ded8;">{{{CUSTOMER_EMAIL}}}</td></tr>
+                  <tr><td style="padding:12px 16px;border-bottom:1px solid #e3ded8;color:#746d65;">Phone</td><td align="right" style="padding:12px 16px;border-bottom:1px solid #e3ded8;">{{{CUSTOMER_PHONE}}}</td></tr>
+                  <tr><td style="padding:12px 16px;color:#746d65;">Fulfilment</td><td align="right" style="padding:12px 16px;font-weight:700;">{{{FULFILMENT_METHOD}}}</td></tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin-top:20px;background:#ffffff;border:1px solid #e3ded8;">
+                  <tr><td style="padding:14px 16px;border-bottom:1px solid #e3ded8;color:#667458;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Order items</td></tr>
+                  <tr><td style="padding:16px;font-size:15px;line-height:1.7;">{{{ORDER_ITEMS}}}</td></tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin-top:20px;">
+                  <tr><td style="padding:5px 0;color:#746d65;">Subtotal</td><td align="right" style="padding:5px 0;">{{{SUBTOTAL}}}</td></tr>
+                  <tr><td style="padding:5px 0;color:#746d65;">Delivery</td><td align="right" style="padding:5px 0;">{{{DELIVERY_FEE}}}</td></tr>
+                  <tr><td style="padding:12px 0 0;font-size:18px;font-weight:700;">Total paid</td><td align="right" style="padding:12px 0 0;font-size:18px;font-weight:700;">{{{ORDER_TOTAL}}}</td></tr>
+                </table>
+
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin-top:26px;">
+                  <tr><td style="background:#737d65;"><a href="{{{ADMIN_PORTAL_URL}}}" style="display:inline-block;padding:14px 20px;color:#ffffff;text-decoration:none;font-weight:700;">Open admin portal</a></td></tr>
+                </table>
+                <p style="margin:18px 0 0;font-size:13px;line-height:1.6;color:#746d65;">Review the order, confirm stock and begin preparing it for delivery or collection.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 28px;background:#f4f1ed;color:#746d65;font-size:12px;line-height:1.6;">This is an internal Moving Modesty order notification.</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
