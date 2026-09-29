@@ -8,6 +8,7 @@ import type { Order, OrderStatus } from "./store-data";
 
 const apiKey = process.env.RESEND_API_KEY;
 const resend = apiKey ? new Resend(apiKey) : null;
+const testSender = "Moving Modesty <onboarding@resend.dev>";
 
 const messages: Record<OrderStatus, { subject: string; heading: string; body: string }> = {
   New: { subject: "We received your Moving Modesty order", heading: "Thank you for your order", body: "Your order is safely with us. We’ll confirm it as soon as payment and stock have been checked." },
@@ -30,6 +31,14 @@ function money(value: string | number | null | undefined) {
     currency: "ZAR",
     minimumFractionDigits: 2,
   }).format(Number(value ?? 0));
+}
+
+function configuredSender() {
+  const configured = process.env.RESEND_FROM_EMAIL?.trim().replace(/^(['"])(.*)\1$/, "$2").trim();
+  if (!configured) return testSender;
+  const address = "[^\\s<>@]+@[^\\s<>@]+\\.[^\\s<>@]+";
+  const validSender = new RegExp(`^(?:${address}|[^<>]+\\s<${address}>)$`);
+  return validSender.test(configured) ? configured : testSender;
 }
 
 function emailShell(content: string) {
@@ -78,7 +87,7 @@ async function sendRecordedEmail(input: {
   if (!eventId) throw new Error("The email notification could not be queued.");
 
   try {
-    const from = process.env.RESEND_FROM_EMAIL ?? "Moving Modesty <orders@movingmodesty.co.za>";
+    const from = configuredSender();
     const result = await resend.emails.send({
       from,
       to: input.recipient,
@@ -162,10 +171,22 @@ export async function sendPaidOrderEmails(orderId: string) {
   return { skipped: false as const, customer, owner };
 }
 
+export async function resendPaidOrderEmails(orderNumber: string) {
+  const database = requireDatabase();
+  const [order] = await database
+    .select({ id: orders.id, paymentStatus: orders.paymentStatus })
+    .from(orders)
+    .where(eq(orders.orderNumber, orderNumber))
+    .limit(1);
+  if (!order) throw new Error("Order not found.");
+  if (order.paymentStatus !== "paid") throw new Error("Payment has not been confirmed for this order.");
+  return sendPaidOrderEmails(order.id);
+}
+
 export async function sendOrderStatusEmail(order: Order, status: OrderStatus) {
   if (!resend) return { skipped: true as const, reason: "RESEND_API_KEY is not configured" };
   const message = messages[status];
-  const from = process.env.RESEND_FROM_EMAIL ?? "Moving Modesty <orders@movingmodesty.co.za>";
+  const from = configuredSender();
   const storeUrl = process.env.STORE_URL ?? "https://movingmodesty.co.za";
   const idempotencyKey = `order-${order.id}-${status.toLowerCase()}`;
   const result = await resend.emails.send({

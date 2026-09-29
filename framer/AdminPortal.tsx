@@ -248,6 +248,24 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
+    async function resendPaidEmail(order: AdminOrder) {
+        if (!liveEnabled || order.paymentStatus !== "Paid") return
+        startTransition(() => setLoading(true))
+        try {
+            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/resend-paid-email`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token()}` },
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok) throw new Error(data?.error || "The payment email could not be sent.")
+            startTransition(() => setNotice(`Payment confirmation email sent for ${order.id}.`))
+        } catch (error) {
+            startTransition(() => setNotice(error instanceof Error ? error.message : "Email resend failed."))
+        } finally {
+            startTransition(() => setLoading(false))
+        }
+    }
+
     function logout() {
         if (typeof window !== "undefined") window.sessionStorage.removeItem("moving_modesty_admin_token")
         route("/admin/login")
@@ -289,6 +307,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             setFilter={setOrderFilter}
                             updateOrderStatus={updateOrderStatus}
                             bookShipment={bookShipment}
+                            resendPaidEmail={resendPaidEmail}
                             loading={loading}
                         />
                     ) : (
@@ -468,6 +487,7 @@ function OrdersView({
     setFilter,
     updateOrderStatus,
     bookShipment,
+    resendPaidEmail,
     loading,
 }: {
     orders: AdminOrder[]
@@ -478,6 +498,7 @@ function OrdersView({
     setFilter: (filter: string) => void
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
     bookShipment: (order: AdminOrder) => void
+    resendPaidEmail: (order: AdminOrder) => void
     loading: boolean
 }) {
     return (
@@ -561,6 +582,9 @@ function OrdersView({
                             </Detail>
                         ) : null}
                         <div className="mm-admin__actions">
+                            {selected.paymentStatus === "Paid" ? (
+                                <button className="mm-admin__button" type="button" disabled={loading} onClick={() => resendPaidEmail(selected)}>Resend payment email</button>
+                            ) : null}
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Confirmed"} onClick={() => updateOrderStatus(selected, "Confirmed")}>Confirm order</button>
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Preparing"} onClick={() => updateOrderStatus(selected, "Preparing")}>Mark preparing</button>
                             <button className="mm-admin__button" type="button" disabled={loading || selected.status === "Ready"} onClick={() => updateOrderStatus(selected, "Ready")}>Mark ready</button>
