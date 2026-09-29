@@ -139,6 +139,24 @@ export const shipments = pgTable("shipments", {
   ...timestamps,
 }, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId)]);
 
+export const payments = pgTable("payments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").default("payfast").notNull(),
+  merchantPaymentId: text("merchant_payment_id").notNull(),
+  providerPaymentId: text("provider_payment_id"),
+  status: paymentStatus("status").default("pending").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  providerStatus: text("provider_status"),
+  failureReason: text("failure_reason"),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("payments_order_idx").on(table.orderId),
+  uniqueIndex("payments_merchant_payment_id_idx").on(table.merchantPaymentId),
+  uniqueIndex("payments_provider_payment_id_idx").on(table.providerPaymentId),
+]);
+
 export const orderStatusHistory = pgTable("order_status_history", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),

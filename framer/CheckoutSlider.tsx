@@ -33,6 +33,41 @@ interface StoredCartItem {
     quantity?: number
 }
 
+interface PayFastPayment {
+    action: string
+    fields: Record<string, string>
+}
+
+function paymentReturnState() {
+    const params = new URLSearchParams(window.location.search)
+    const payment = params.get("payment")
+    return {
+        payment: payment === "processing" || payment === "cancelled" ? payment : "",
+        orderNumber: params.get("order")?.trim() || "",
+    }
+}
+
+function submitPayFastForm(payment: PayFastPayment) {
+    const destination = new URL(payment.action)
+    if (!["www.payfast.co.za", "sandbox.payfast.co.za"].includes(destination.hostname)) {
+        throw new Error("The payment destination is invalid.")
+    }
+
+    const form = document.createElement("form")
+    form.method = "POST"
+    form.action = destination.toString()
+    form.style.display = "none"
+    Object.entries(payment.fields).forEach(([name, value]) => {
+        const input = document.createElement("input")
+        input.type = "hidden"
+        input.name = name
+        input.value = value
+        form.appendChild(input)
+    })
+    document.body.appendChild(form)
+    form.submit()
+}
+
 function fieldValue(root: HTMLElement, ...names: string[]): string {
     for (const name of names) {
         const field = root.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
@@ -288,7 +323,12 @@ function setupSlider(root: HTMLElement): Cleanup | null {
 
     if (steps.length !== STEP_NAMES.length) return null
 
-    if (readCartItems().length === 0 && window.location.pathname.replace(/\/$/, "") === "/checkout") {
+    const returnState = paymentReturnState()
+    if (
+        readCartItems().length === 0 &&
+        returnState.payment !== "processing" &&
+        window.location.pathname.replace(/\/$/, "") === "/checkout"
+    ) {
         window.location.replace("/cart")
         return null
     }
@@ -296,14 +336,14 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     const submit = directChildren.find((child) => !steps.includes(child))
     const cleanups: Cleanup[] = []
     const injectedNodes: HTMLElement[] = []
-    let activeIndex = 0
+    let activeIndex = returnState.payment ? 3 : 0
     let animating = false
     let fulfilmentMethod: FulfilmentMethod = "delivery"
-    let orderReference = ""
+    let orderReference = returnState.orderNumber
     let requestInFlight = false
 
     root.dataset.mmCheckoutReady = "true"
-    root.dataset.mmActiveStep = "1"
+    root.dataset.mmActiveStep = String(activeIndex + 1)
     if (submit) submit.dataset.mmCheckoutSubmit = "true"
 
     const blockNativeSubmit = (event: Event) => {
@@ -461,6 +501,18 @@ function setupSlider(root: HTMLElement): Cleanup | null {
         feedback.dataset.tone = tone
     }
 
+    if (returnState.payment === "processing") {
+        window.localStorage.removeItem(CART_KEY)
+        window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
+        window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: [] }))
+        showFeedback(
+            `Thank you. PayFast is confirming payment for ${orderReference || "your order"}. We will email you once it is confirmed.`,
+            "success"
+        )
+    } else if (returnState.payment === "cancelled") {
+        showFeedback("The payment was cancelled. Your cart is still available and you can try again.")
+    }
+
     function checkoutPayload(stage: CheckoutStage) {
         const firstName = fieldValue(root, "checkoutFullName", "firstName")
         const lastName = fieldValue(root, "lastName")
@@ -521,15 +573,46 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             }
             orderReference = data.order.orderNumber
             window.dispatchEvent(new CustomEvent("moving-modesty-order-updated", { detail: data.order }))
-            if (stage === "complete") {
-                window.localStorage.removeItem(CART_KEY)
-                window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
-                window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: [] }))
-                showFeedback(`Order ${orderReference} has been created and is awaiting payment.`, "success")
-            }
             return true
         } catch (error) {
             showFeedback(error instanceof Error ? error.message : "Your order could not be saved.")
+            return false
+        } finally {
+            requestInFlight = false
+            root.querySelectorAll<HTMLButtonElement>(".mm-checkout-nav button").forEach((button) => {
+                button.disabled = false
+            })
+        }
+    }
+
+    async function beginPayFastPayment(): Promise<boolean> {
+        if (!orderReference) {
+            const synced = await syncOrder("complete")
+            if (!synced) return false
+        }
+
+        requestInFlight = true
+        showFeedback("")
+        root.querySelectorAll<HTMLButtonElement>(".mm-checkout-nav button").forEach((button) => {
+            button.disabled = true
+        })
+        try {
+            const response = await fetch(`${ORDER_API_BASE}/api/payments/payfast/checkout`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    orderNumber: orderReference,
+                    checkoutToken: getCheckoutToken(),
+                }),
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok || !data?.payment?.action || !data?.payment?.fields) {
+                throw new Error(data?.error || "Secure payment could not be started. Please try again.")
+            }
+            submitPayFastForm(data.payment as PayFastPayment)
+            return true
+        } catch (error) {
+            showFeedback(error instanceof Error ? error.message : "Secure payment could not be started.")
             return false
         } finally {
             requestInFlight = false
@@ -628,8 +711,8 @@ function setupSlider(root: HTMLElement): Cleanup | null {
 
     steps.forEach((step, index) => {
         step.dataset.mmCheckoutStep = String(index + 1)
-        step.dataset.mmActive = String(index === 0)
-        step.setAttribute("aria-hidden", String(index !== 0))
+        step.dataset.mmActive = String(index === activeIndex)
+        step.setAttribute("aria-hidden", String(index !== activeIndex))
 
         const nav = document.createElement("div")
         nav.className = "mm-checkout-nav"
@@ -654,13 +737,15 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             const next = document.createElement("button")
             next.type = "button"
             next.className = "mm-checkout-next"
-            next.textContent = index === steps.length - 1 ? "Create order" : "Continue"
-            next.setAttribute("aria-label", index === steps.length - 1 ? "Create order" : "Continue to the next checkout step")
+            next.textContent = index === steps.length - 1 ? "Pay securely" : "Continue"
+            next.setAttribute("aria-label", index === steps.length - 1 ? "Pay securely with PayFast" : "Continue to the next checkout step")
             const onNext = async () => {
                 const stage: CheckoutStage = index === 0 ? "started" : index === 1 ? "fulfilment" : index === 2 ? "address" : "complete"
                 if (index === steps.length - 1) {
-                    const synced = await syncOrder("complete")
-                    if (!synced) return
+                    next.textContent = "Opening PayFast…"
+                    const started = await beginPayFastPayment()
+                    if (!started) next.textContent = "Pay securely"
+                    return
                 } else {
                     try {
                         checkoutPayload(stage)
@@ -670,24 +755,24 @@ function setupSlider(root: HTMLElement): Cleanup | null {
                         return
                     }
                 }
-                if (index === steps.length - 1) {
-                    next.disabled = true
-                    next.textContent = "Order created"
-                    return
-                }
                 const nextIndex = index === 1 && fulfilmentMethod === "collection" ? 3 : index + 1
                 void goTo(nextIndex)
             }
             next.addEventListener("click", onNext as EventListener)
             cleanups.push(() => next.removeEventListener("click", onNext as EventListener))
             nav.appendChild(next)
+
+            if (index === steps.length - 1 && returnState.payment === "processing") {
+                next.disabled = true
+                next.textContent = "Payment submitted"
+            }
         }
 
         step.appendChild(nav)
         injectedNodes.push(nav)
     })
 
-    updateProgress(0)
+    updateProgress(activeIndex)
 
     return () => {
         cleanups.forEach((cleanup) => cleanup())

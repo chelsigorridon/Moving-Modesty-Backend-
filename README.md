@@ -32,7 +32,7 @@ Bob Go support is isolated under `lib/integrations/bobgo/` and shipment state is
 
 The public Constantia Emporium Bob Box listing is a human-facing reference only; its public location number is not treated as the Bob Go API pickup-point ID.
 
-No external Bob Go booking or PayFast payment call is enabled by this foundation. Apply migration `0002_past_lester.sql` before deploying the updated checkout API.
+No external Bob Go booking is enabled by this foundation. Apply migration `0002_past_lester.sql` before deploying the updated checkout API.
 
 ### Verified parcel presets
 
@@ -71,6 +71,12 @@ The seven current CMS product colours are included in the built-in catalogue. `C
 
 Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_KEY` and `RESEND_FROM_EMAIL`. The email service uses a stable idempotency key for each order/status combination to prevent duplicate customer updates.
 
+## PayFast
+
+The PayFast flow is guarded by `PAYFAST_INTEGRATION_ENABLED`. The checkout endpoint loads the order by its private checkout token, recalculates the current server-side catalogue total, signs the hosted-payment form, and never accepts a browser-supplied amount. The notification endpoint verifies the signature, merchant ID, source IP, stored order total, and PayFast validation response before marking an order paid. A browser return does not confirm payment.
+
+Apply migration `0003_slippery_pet_avengers.sql` before enabling PayFast. Test with sandbox-only credentials in a non-production Vercel environment first. Keep the Production switch `false` until a complete sandbox payment, cancellation, duplicate notification, and failed-payment run have all passed.
+
 ## Vercel environment values
 
 - `DATABASE_URL`
@@ -95,6 +101,7 @@ Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_K
 - `PAYFAST_MERCHANT_ID`
 - `PAYFAST_MERCHANT_KEY`
 - `PAYFAST_PASSPHRASE`
+- `PAYFAST_SOURCE_IP_VALIDATION` (keep `true` in production)
 
 No Framer API credentials are required by the Vercel backend. Editing a product in Framer CMS does not import it into Neon, and admin API actions do not create, update, or publish CMS collection items.
 
