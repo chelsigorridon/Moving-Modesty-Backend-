@@ -165,7 +165,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
     );
   }
   if (payment.status === "paid" && payment.orderPaymentStatus === "paid") {
-    return { duplicate: true, paymentStatus: "paid" as const };
+    return { duplicate: true, paymentStatus: "paid" as const, orderId: payment.orderId };
   }
 
   await validateWithPayFast(
@@ -220,5 +220,5 @@ export async function processPayFastNotification(request: Request, rawBody: stri
     }
   });
 
-  return { duplicate: false, paymentStatus: nextStatus };
+  return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId };
 }
