@@ -4,7 +4,11 @@ import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "@/lib/db";
 import { orderStatusHistory, orders, payments } from "@/lib/db/schema";
 import { requirePayFastConfiguration } from "./configuration";
-import { createPayFastSignature, fieldsFromSearchParams, signaturesMatch } from "./signature";
+import {
+  createPayFastNotificationSignature,
+  payFastNotificationParameterString,
+  signaturesMatch,
+} from "./signature";
 import { isPayFastSourceIp, requestSourceIp } from "./source";
 
 export class PayFastNotificationError extends Error {
@@ -19,13 +23,13 @@ function cents(value: string | null | undefined) {
   return Math.round(amount * 100);
 }
 
-async function validateWithPayFast(validationUrl: string, rawBody: string) {
+async function validateWithPayFast(validationUrl: string, parameterString: string) {
   let response: Response;
   try {
     response = await fetch(validationUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: rawBody,
+      body: parameterString,
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),
     });
@@ -42,7 +46,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
   const configuration = requirePayFastConfiguration();
   const params = new URLSearchParams(rawBody);
   const receivedSignature = params.get("signature") ?? "";
-  const expectedSignature = createPayFastSignature(fieldsFromSearchParams(params), configuration.passphrase);
+  const expectedSignature = createPayFastNotificationSignature(params, configuration.passphrase);
   if (!receivedSignature || !signaturesMatch(receivedSignature, expectedSignature)) {
     throw new PayFastNotificationError("Invalid PayFast signature.");
   }
@@ -96,7 +100,10 @@ export async function processPayFastNotification(request: Request, rawBody: stri
     return { duplicate: true, paymentStatus: "paid" as const };
   }
 
-  await validateWithPayFast(configuration.validationUrl, rawBody);
+  await validateWithPayFast(
+    configuration.validationUrl,
+    payFastNotificationParameterString(params),
+  );
 
   const nextStatus = providerStatus === "COMPLETE"
     ? "paid"

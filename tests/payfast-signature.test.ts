@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createPayFastNotificationSignature,
   createPayFastSignature,
   fieldsFromSearchParams,
+  payFastNotificationParameterString,
   payFastParameterString,
   signaturesMatch,
   type PayFastField,
@@ -43,6 +45,20 @@ test("notification fields retain their received order", () => {
     ["amount_gross", "549.00"],
     ["signature", "abc"],
   ]);
+});
+
+test("notification signatures preserve blank callback fields and stop before signature", () => {
+  const params = new URLSearchParams(
+    "m_payment_id=MM-TEST-1&pf_payment_id=123&payment_status=COMPLETE&item_name=Test+product&item_description=&amount_gross=840.00&custom_str1=&merchant_id=10004002&signature=received",
+  );
+  assert.equal(
+    payFastNotificationParameterString(params),
+    "m_payment_id=MM-TEST-1&pf_payment_id=123&payment_status=COMPLETE&item_name=Test+product&item_description=&amount_gross=840.00&custom_str1=&merchant_id=10004002",
+  );
+  assert.equal(
+    createPayFastNotificationSignature(params, "payfast"),
+    "d3959dd7a4ad5a4c1aa3cd09c1fc78a6",
+  );
 });
 
 test("signature comparison is case insensitive and rejects mismatches", () => {
