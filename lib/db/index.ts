@@ -1,5 +1,5 @@
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import { Pool } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema";
 
 // Vercel's Neon integration prefixes generated variables with the integration
@@ -11,9 +11,12 @@ const connectionString =
   process.env.DATABASE_URL_POSTGRES_URL ??
   process.env.DATABASE_URL_POSTGRES_PRISMA_URL;
 
-export const db = connectionString
-  ? drizzle(neon(connectionString), { schema })
-  : null;
+// Checkout, payment notifications, and admin status updates all need real
+// multi-statement transactions. Neon's HTTP driver only supports atomic batch
+// queries, so use the WebSocket-backed Pool driver for these interactive flows.
+const pool = connectionString ? new Pool({ connectionString }) : null;
+
+export const db = pool ? drizzle(pool, { schema }) : null;
 
 export function requireDatabase() {
   if (!db) throw new Error("DATABASE_URL is not configured.");
