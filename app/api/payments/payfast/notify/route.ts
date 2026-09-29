@@ -13,6 +13,10 @@ export async function POST(request: Request) {
     return new Response("OK", { status: 200 });
   } catch (error) {
     const status = error instanceof PayFastNotificationError ? error.status : 503;
+    console.error(
+      "PayFast notification rejected:",
+      error instanceof Error ? error.message : "Unknown notification error",
+    );
     return new Response(status === 503 ? "Temporary validation failure" : "Invalid notification", { status });
   }
 }

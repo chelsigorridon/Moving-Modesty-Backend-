@@ -61,6 +61,12 @@ export function requirePayFastConfiguration(): PayFastRuntimeConfiguration {
     processUrl: PAYFAST_URLS[configuration.environment].process,
     validationUrl: PAYFAST_URLS[configuration.environment].validation,
     storeUrl,
-    enforceSourceIp: process.env.PAYFAST_SOURCE_IP_VALIDATION !== "false",
+    // PayFast's sandbox is isolated test infrastructure and can originate from
+    // addresses outside the live payment ranges. Keep the source-IP check for
+    // real payments; sandbox callbacks are still protected by their signature,
+    // merchant ID, order amount, and PayFast's server-to-server validation.
+    enforceSourceIp:
+      configuration.environment === "production" &&
+      process.env.PAYFAST_SOURCE_IP_VALIDATION !== "false",
   };
 }
