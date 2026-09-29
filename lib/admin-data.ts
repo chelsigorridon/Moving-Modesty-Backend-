@@ -7,6 +7,7 @@ import {
   orderItems,
   orders as ordersTable,
   orderStatusHistory,
+  payments,
   products as productsTable,
   productVariants,
   shipments,
@@ -126,6 +127,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         deliveryFee: ordersTable.deliveryFee,
         total: ordersTable.total,
         createdAt: ordersTable.createdAt,
+        providerPaymentId: payments.providerPaymentId,
+        providerStatus: payments.providerStatus,
+        paymentFailureReason: payments.failureReason,
+        paymentUpdatedAt: payments.updatedAt,
         customerFirstName: customers.firstName,
         customerLastName: customers.lastName,
         customerEmail: customers.email,
@@ -141,6 +146,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       .from(ordersTable)
       .leftJoin(customers, eq(ordersTable.customerId, customers.id))
       .leftJoin(addresses, eq(ordersTable.deliveryAddressId, addresses.id))
+      .leftJoin(payments, eq(ordersTable.id, payments.orderId))
       .orderBy(desc(ordersTable.createdAt)),
     db
       .select({
@@ -255,6 +261,13 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       deliveryFee: Number(order.deliveryFee ?? 0),
       total: Number(order.total),
       paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
+      payment: {
+        provider: "PayFast" as const,
+        providerStatus: order.providerStatus ?? undefined,
+        providerPaymentId: order.providerPaymentId ?? undefined,
+        failureReason: order.paymentFailureReason ?? undefined,
+        updatedAt: order.paymentUpdatedAt?.toISOString(),
+      },
       status: statusLabels[order.status] ?? "New",
       deliveryMethod: deliveryLabels[order.deliveryMethod],
       address: formatAddress([

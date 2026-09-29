@@ -45,6 +45,13 @@ export type AdminOrder = {
   deliveryFee?: number;
   total: number;
   paymentStatus: PaymentStatus;
+  payment?: {
+    provider: "PayFast";
+    providerStatus?: string;
+    providerPaymentId?: string;
+    failureReason?: string;
+    updatedAt?: string;
+  };
   status: OrderStatus;
   deliveryMethod: "Courier" | "Collection" | "To be confirmed";
   address?: string;

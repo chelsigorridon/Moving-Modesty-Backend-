@@ -586,10 +586,11 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     }
 
     async function beginPayFastPayment(): Promise<boolean> {
-        if (!orderReference) {
-            const synced = await syncOrder("complete")
-            if (!synced) return false
-        }
+        // Always persist the final checkout state before opening PayFast. This
+        // keeps Neon authoritative even when the customer changed an earlier
+        // field after the order was first created.
+        const synced = await syncOrder("complete")
+        if (!synced) return false
 
         requestInFlight = true
         showFeedback("")
@@ -754,6 +755,11 @@ function setupSlider(root: HTMLElement): Cleanup | null {
                         showFeedback(error instanceof Error ? error.message : "Please complete this step.")
                         return
                     }
+                    // Save each completed checkout stage to Neon. An order is
+                    // therefore visible in admin even if PayFast never opens or
+                    // the customer leaves the checkout before paying.
+                    const saved = await syncOrder(stage)
+                    if (!saved) return
                 }
                 const nextIndex = index === 1 && fulfilmentMethod === "collection" ? 3 : index + 1
                 void goTo(nextIndex)

@@ -3,6 +3,7 @@ import {
   createPayFastCheckout,
   PayFastCheckoutError,
   payFastCheckoutSchema,
+  recordPayFastCheckoutFailure,
 } from "@/lib/integrations/payfast/checkout";
 
 export const runtime = "nodejs";
@@ -20,8 +21,17 @@ export async function POST(request: Request) {
   try {
     return apiJson({ payment: await createPayFastCheckout(parsed.data, request.url) });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "PayFast checkout could not be started.";
+    try {
+      await recordPayFastCheckoutFailure(parsed.data, message);
+    } catch (diagnosticError) {
+      console.error(
+        "Could not save the PayFast checkout failure:",
+        diagnosticError instanceof Error ? diagnosticError.message : "Unknown diagnostic error",
+      );
+    }
     return apiJson(
-      { error: error instanceof Error ? error.message : "PayFast checkout could not be started." },
+      { error: message },
       { status: error instanceof PayFastCheckoutError ? error.status : 503 },
     );
   }

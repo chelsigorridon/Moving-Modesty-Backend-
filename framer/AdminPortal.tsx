@@ -38,6 +38,13 @@ interface AdminOrder {
     deliveryFee?: number
     total: number
     paymentStatus: PaymentStatus
+    payment?: {
+        provider: "PayFast"
+        providerStatus?: string
+        providerPaymentId?: string
+        failureReason?: string
+        updatedAt?: string
+    }
     status: OrderStatus
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
@@ -523,6 +530,9 @@ function OrdersView({
                         <Detail title="Payment">
                             <p>{selected.paymentStatus} · {money.format(selected.total)}</p>
                             {selected.deliveryFee !== undefined ? <p>Delivery fee: {selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}</p> : null}
+                            {selected.payment?.providerStatus ? <p>PayFast check: {selected.payment.providerStatus.replaceAll("_", " ")}</p> : null}
+                            {selected.payment?.providerPaymentId ? <p>PayFast reference: {selected.payment.providerPaymentId}</p> : null}
+                            {selected.payment?.failureReason ? <p className="mm-admin__payment-error">Reason: {selected.payment.failureReason}</p> : null}
                         </Detail>
                         <Detail title="Fulfilment">
                             <p>{selected.deliveryMethod}</p><p>{selected.address || "Collection address to be confirmed."}</p>
@@ -597,6 +607,7 @@ const styles = `
 .mm-admin, .mm-admin * { box-sizing: border-box; }
 .mm-admin__blockers { margin: 12px 0 18px; padding-left: 19px; color: var(--mm-muted); }
 .mm-admin__blockers li + li { margin-top: 6px; }
+.mm-admin__payment-error { color: #8A342C; font-weight: 700; }
 .mm-admin { font-family: Inter, Arial, sans-serif; font-size: 15px; line-height: 1.45; }
 .mm-admin button, .mm-admin input, .mm-admin select, .mm-admin textarea { font: inherit; }
 .mm-admin button { color: inherit; }

@@ -28,11 +28,66 @@ function cents(value: string | number | null) {
   return Math.round(amount * 100);
 }
 
-function safeReturnUrl(storeUrl: string, state: "processing" | "cancelled", orderNumber: string) {
-  const url = new URL("/checkout", `${storeUrl}/`);
-  url.searchParams.set("payment", state);
+function paymentReturnUrl(
+  requestUrl: string,
+  state: "processing" | "cancelled",
+  orderNumber: string,
+  checkoutToken: string,
+) {
+  const url = new URL("/api/payments/payfast/return", requestUrl);
+  url.searchParams.set("state", state);
   url.searchParams.set("order", orderNumber);
+  url.searchParams.set("token", checkoutToken);
   return url.toString();
+}
+
+function diagnosticReason(stage: string, message: string) {
+  return `${stage}: ${message}`.slice(0, 500);
+}
+
+export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, message: string) {
+  const database = requireDatabase();
+  const [order] = await database
+    .select({ id: orders.id, total: orders.total, paymentStatus: orders.paymentStatus })
+    .from(orders)
+    .where(and(
+      eq(orders.orderNumber, input.orderNumber),
+      eq(orders.checkoutToken, input.checkoutToken),
+    ))
+    .limit(1);
+
+  if (!order || order.paymentStatus === "paid") return;
+  const now = new Date();
+  const failureReason = diagnosticReason("PayFast checkout setup failed", message);
+
+  await database.transaction(async (transaction) => {
+    await transaction
+      .insert(payments)
+      .values({
+        orderId: order.id,
+        merchantPaymentId: input.orderNumber,
+        status: "failed",
+        amount: order.total,
+        providerStatus: "CHECKOUT_ERROR",
+        failureReason,
+      })
+      .onConflictDoUpdate({
+        target: payments.orderId,
+        set: {
+          merchantPaymentId: input.orderNumber,
+          status: "failed",
+          amount: order.total,
+          providerStatus: "CHECKOUT_ERROR",
+          failureReason,
+          updatedAt: now,
+        },
+      });
+
+    await transaction
+      .update(orders)
+      .set({ paymentStatus: "failed", updatedAt: now })
+      .where(eq(orders.id, order.id));
+  });
 }
 
 export async function createPayFastCheckout(input: PayFastCheckoutInput, requestUrl: string) {
@@ -95,31 +150,40 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     throw new PayFastCheckoutError("The PayFast notification URL must use HTTPS.", 503);
   }
 
-  await database
-    .insert(payments)
-    .values({
-      orderId: order.id,
-      merchantPaymentId: order.orderNumber,
-      status: "pending",
-      amount,
-    })
-    .onConflictDoUpdate({
-      target: payments.orderId,
-      set: {
+  const checkoutStartedAt = new Date();
+  await database.transaction(async (transaction) => {
+    await transaction
+      .insert(payments)
+      .values({
+        orderId: order.id,
         merchantPaymentId: order.orderNumber,
         status: "pending",
         amount,
-        providerStatus: null,
-        failureReason: null,
-        updatedAt: new Date(),
-      },
-    });
+        providerStatus: "CHECKOUT_STARTED",
+      })
+      .onConflictDoUpdate({
+        target: payments.orderId,
+        set: {
+          merchantPaymentId: order.orderNumber,
+          status: "pending",
+          amount,
+          providerStatus: "CHECKOUT_STARTED",
+          failureReason: null,
+          updatedAt: checkoutStartedAt,
+        },
+      });
+
+    await transaction
+      .update(orders)
+      .set({ paymentStatus: "pending", updatedAt: checkoutStartedAt })
+      .where(eq(orders.id, order.id));
+  });
 
   const fields: PayFastField[] = [
     ["merchant_id", configuration.merchantId],
     ["merchant_key", configuration.merchantKey],
-    ["return_url", safeReturnUrl(configuration.storeUrl, "processing", order.orderNumber)],
-    ["cancel_url", safeReturnUrl(configuration.storeUrl, "cancelled", order.orderNumber)],
+    ["return_url", paymentReturnUrl(requestUrl, "processing", order.orderNumber, input.checkoutToken)],
+    ["cancel_url", paymentReturnUrl(requestUrl, "cancelled", order.orderNumber, input.checkoutToken)],
     ["notify_url", notifyUrl],
     ["name_first", order.firstName],
     ["name_last", order.lastName],
