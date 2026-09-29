@@ -1,6 +1,6 @@
 import "server-only";
 
-import { Resend } from "resend";
+import { Resend, type CreateEmailOptions } from "resend";
 import { eq } from "drizzle-orm";
 import { requireDatabase } from "./db";
 import { customers, emailEvents, orderItems, orders } from "./db/schema";
@@ -47,14 +47,17 @@ function emailShell(content: string) {
   return `<div style="margin:0;background:#ece9e5;padding:32px 16px;font-family:Arial,sans-serif;color:#302a24"><div style="max-width:620px;margin:auto;background:#fff;border:1px solid #d8d2ca"><div style="padding:26px 28px;text-align:center;background:#fff;border-bottom:1px solid #d8d2ca"><a href="${storeUrl}" style="display:inline-block;text-decoration:none"><img src="${logoUrl}" width="150" alt="Moving Modesty" style="display:block;width:150px;max-width:100%;height:auto;margin:0 auto;border:0"></a></div><div style="padding:32px 28px">${content}</div><div style="padding:20px 28px;background:#f4f1ed;color:#746d65;font-size:12px;line-height:1.6"><a href="${storeUrl}" style="color:#667458">Visit Moving Modesty</a><br>Questions? Reply to this email or contact movingmodesty@gmail.com.</div></div></div>`;
 }
 
-async function sendRecordedEmail(input: {
+type RecordedEmailInput = {
   orderId: string;
   recipient: string;
   template: string;
   idempotencyKey: string;
-  subject: string;
-  html: string;
-}) {
+} & (
+  | { subject: string; html: string; hostedTemplate?: never }
+  | { hostedTemplate: { id: string; variables: Record<string, string | number> }; subject?: never; html?: never }
+);
+
+async function sendRecordedEmail(input: RecordedEmailInput) {
   if (!resend) return { skipped: true as const, reason: "RESEND_API_KEY is not configured" };
   const database = requireDatabase();
   const [existing] = await database
@@ -89,12 +92,10 @@ async function sendRecordedEmail(input: {
 
   try {
     const from = configuredSender();
-    const result = await resend.emails.send({
-      from,
-      to: input.recipient,
-      subject: input.subject,
-      html: input.html,
-    }, { idempotencyKey: input.idempotencyKey });
+    const email: CreateEmailOptions = input.hostedTemplate
+      ? { from, to: input.recipient, template: input.hostedTemplate }
+      : { from, to: input.recipient, subject: input.subject, html: input.html };
+    const result = await resend.emails.send(email, { idempotencyKey: input.idempotencyKey });
     if (result.error) throw new Error(result.error.message);
     await database
       .update(emailEvents)
@@ -148,9 +149,11 @@ export async function sendPaidOrderEmails(orderId: string) {
   const customerNextStep = order.deliveryMethod === "courier"
     ? "You will receive your delivery details soon."
     : "You will receive a message soon with your collection details.";
+  const customerItems = items
+    .map((item) => `${item.quantity} × ${item.name}${item.variant ? ` — ${item.variant}` : ""}`)
+    .join(" · ");
   const totals = `<table style="width:100%;border-collapse:collapse;margin-top:20px"><tr><td style="padding:5px 0;color:#746d65">Subtotal</td><td style="padding:5px 0;text-align:right">${money(order.subtotal)}</td></tr><tr><td style="padding:5px 0;color:#746d65">Delivery</td><td style="padding:5px 0;text-align:right">${Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee)}</td></tr><tr><td style="padding:12px 0 0;font-size:18px;font-weight:700">Total paid</td><td style="padding:12px 0 0;text-align:right;font-size:18px;font-weight:700">${money(order.total)}</td></tr></table>`;
 
-  const customerHtml = emailShell(`<p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">Payment confirmed</p><h1 style="margin:0 0 18px;font-family:Georgia,serif;font-size:34px;font-weight:400">Thank you for your order</h1><p style="line-height:1.7">Hello ${escapeHtml(order.firstName)}, your payment has been confirmed and order <strong>${escapeHtml(order.orderNumber)}</strong> is safely with us.</p><table style="width:100%;border-collapse:collapse;margin-top:22px">${itemRows}</table>${totals}<p style="margin:24px 0 0;padding:16px;background:#eef0e9"><strong>Fulfilment:</strong> ${fulfilment}</p><div style="margin:14px 0 0;padding:18px;border:1px solid #cfd5c6;background:#f7f8f4"><p style="margin:0 0 6px;color:#667458;font-size:12px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase">What happens next</p><p style="margin:0;line-height:1.6">${customerNextStep}</p></div>`);
   const ownerHtml = emailShell(`<p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">New paid order</p><h1 style="margin:0 0 18px;font-family:Georgia,serif;font-size:34px;font-weight:400">${escapeHtml(order.orderNumber)}</h1><p style="line-height:1.7"><strong>${escapeHtml(`${order.firstName} ${order.lastName}`)}</strong><br>${escapeHtml(order.email)}<br>${escapeHtml(order.phone ?? "No phone supplied")}</p><table style="width:100%;border-collapse:collapse;margin-top:22px">${itemRows}</table>${totals}<p style="margin:24px 0 0;padding:16px;background:#eef0e9"><strong>Fulfilment:</strong> ${fulfilment}</p>`);
   const ownerEmail = process.env.ORDER_NOTIFICATION_EMAIL?.trim() || "movingmodesty@gmail.com";
 
@@ -160,8 +163,19 @@ export async function sendPaidOrderEmails(orderId: string) {
       recipient: order.email,
       template: "paid-order-customer",
       idempotencyKey: `order-${order.orderNumber}-paid-customer`,
-      subject: `Payment confirmed · ${order.orderNumber}`,
-      html: customerHtml,
+      hostedTemplate: {
+        id: process.env.RESEND_PAYMENT_CONFIRMED_TEMPLATE?.trim() || "customer-payment-confirmed",
+        variables: {
+          CUSTOMER_NAME: order.firstName,
+          ORDER_NUMBER: order.orderNumber,
+          ORDER_ITEMS: customerItems || "Your Moving Modesty order",
+          SUBTOTAL: money(order.subtotal),
+          DELIVERY_FEE: Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee),
+          ORDER_TOTAL: money(order.total),
+          FULFILMENT_METHOD: fulfilment,
+          NEXT_STEP: customerNextStep,
+        },
+      },
     }),
     sendRecordedEmail({
       orderId: order.id,

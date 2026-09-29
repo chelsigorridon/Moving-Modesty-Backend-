@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment confirmed</title>
+  </head>
+  <body style="margin:0;background:#ece9e5;font-family:Arial,Helvetica,sans-serif;color:#302a24;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#ece9e5;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="620" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:620px;background:#ffffff;border:1px solid #d8d2ca;">
+            <tr>
+              <td align="center" style="padding:26px 28px;border-bottom:1px solid #d8d2ca;">
+                <a href="https://movingmodesty.com" style="display:inline-block;text-decoration:none;">
+                  <img src="https://movingmodesty.vercel.app/brand/moving-modesty-email-logo.png" width="150" alt="Moving Modesty" style="display:block;width:150px;max-width:100%;height:auto;margin:0 auto;border:0;">
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px 28px;">
+                <p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Payment confirmed</p>
+                <h1 style="margin:0 0 18px;font-family:Georgia,'Times New Roman',serif;font-size:34px;line-height:1.15;font-weight:400;color:#302a24;">Thank you for your order</h1>
+                <p style="margin:0 0 22px;font-size:16px;line-height:1.7;color:#514a44;">Hello {{{CUSTOMER_NAME}}}, your payment has been confirmed and order <strong>{{{ORDER_NUMBER}}}</strong> is safely with us.</p>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;background:#f7f5f1;">
+                  <tr>
+                    <td style="padding:16px 18px;border-bottom:1px solid #e3ded8;color:#746d65;font-size:13px;text-transform:uppercase;letter-spacing:1px;">Your order</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:16px 18px;font-size:15px;line-height:1.7;color:#302a24;">{{{ORDER_ITEMS}}}</td>
+                  </tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;border-collapse:collapse;margin-top:20px;">
+                  <tr>
+                    <td style="padding:5px 0;color:#746d65;">Subtotal</td>
+                    <td align="right" style="padding:5px 0;color:#302a24;">{{{SUBTOTAL}}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:5px 0;color:#746d65;">Delivery</td>
+                    <td align="right" style="padding:5px 0;color:#302a24;">{{{DELIVERY_FEE}}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 0 0;font-size:18px;font-weight:700;color:#302a24;">Total paid</td>
+                    <td align="right" style="padding:12px 0 0;font-size:18px;font-weight:700;color:#302a24;">{{{ORDER_TOTAL}}}</td>
+                  </tr>
+                </table>
+
+                <p style="margin:24px 0 0;padding:16px;background:#eef0e9;font-size:15px;line-height:1.6;"><strong>Fulfilment:</strong> {{{FULFILMENT_METHOD}}}</p>
+                <div style="margin:14px 0 0;padding:18px;border:1px solid #cfd5c6;background:#f7f8f4;">
+                  <p style="margin:0 0 6px;color:#667458;font-size:12px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">What happens next</p>
+                  <p style="margin:0;font-size:15px;line-height:1.6;color:#514a44;">{{{NEXT_STEP}}}</p>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 28px;background:#f4f1ed;color:#746d65;font-size:12px;line-height:1.6;">
+                <a href="https://movingmodesty.com" style="color:#667458;">Visit Moving Modesty</a><br>
+                Questions? Reply to this email or contact movingmodesty@gmail.com.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
