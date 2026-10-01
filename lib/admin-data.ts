@@ -196,6 +196,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         waybillReference: shipments.waybillReference,
         trackingNumber: shipments.trackingNumber,
         trackingUrl: shipments.trackingUrl,
+        lastError: shipments.lastError,
+        serviceLevelCode: shipments.serviceLevelCode,
+        providerShipmentId: shipments.providerShipmentId,
+        shipmentProvider: shipments.provider,
       })
       .from(shipments),
   ]);
@@ -247,6 +251,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         senderContactConfigured: Boolean(bobGo.senderEmail && bobGo.senderPhone),
         pickupPointLocationId: shipment?.pickupPointLocationId || bobGo.pickupPointLocationId,
       });
+      if (!bobGo.pickupPointProviderSlug) blockers.push("The pickup-point courier provider still needs to be configured.");
+      if (!order.customerPhone || !order.customerEmail) blockers.push("Customer phone and email are required.");
+      if (order.status !== "ready") blockers.push("Mark the packed order ready for courier first.");
+      if (shipment && (["booking", "booked", "cancelled"].includes(shipment.status) || shipment.providerShipmentId)) blockers.push("A shipment already exists or may still be processing. Do not book a duplicate.");
 
       return {
       id: order.orderNumber,
@@ -298,6 +306,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         waybillReference: shipment?.waybillReference ?? undefined,
         trackingNumber: shipment?.trackingNumber ?? undefined,
         trackingUrl: shipment?.trackingUrl ?? undefined,
+        lastError: shipment?.lastError ?? undefined,
+        serviceLevelCode: shipment?.serviceLevelCode ?? undefined,
+        environment: shipment?.shipmentProvider === "bobgo-sandbox" ? "sandbox" as const : shipment?.shipmentProvider === "bobgo-production" ? "production" as const : bobGo.environment,
         bookingEnabled: blockers.length === 0,
         blockers,
       } : undefined,

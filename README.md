@@ -28,11 +28,15 @@ Checkout pricing is enforced by the backend in `lib/shipping/policy.ts`:
 - free delivery for merchandise subtotals of R1500 or more
 - local collection: no delivery fee
 
-Bob Go support is isolated under `lib/integrations/bobgo/` and shipment state is stored separately from orders. New delivery orders receive a shipment record, while collection orders do not. The Framer admin order panel shows booking readiness and a manual **Book Bob Go shipment** button. The button intentionally remains disabled until payment, delivery address, packed weight and dimensions, the private sender contact, Bob Go API token, and the real API pickup-point ID are available.
+Bob Go support is isolated under `lib/integrations/bobgo/` and shipment state is stored separately from orders in Neon. Collection orders do not create a shipment. The Framer admin order panel now provides a manual quote → review → confirm booking → waybill workflow for paid delivery orders marked Ready. The API key never goes to Framer. Quotes use the configured locker as origin and the customer's door address as destination; only courier services actually returned by Bob Go can be booked.
 
 The public Constantia Emporium Bob Box listing is a human-facing reference only; its public location number is not treated as the Bob Go API pickup-point ID.
 
-No external Bob Go booking is enabled by this foundation. Apply migration `0002_past_lester.sql` before deploying the updated checkout API.
+Enable Production with `BOBGO_ENVIRONMENT=production`, the live API token, `BOBGO_INTEGRATION_ENABLED=true`, sender contacts and verified `BOBGO_PICKUP_POINT_LOCATION_ID` / `BOBGO_PICKUP_POINT_PROVIDER_SLUG`. Constantia Emporium was verified as API location `1156`, provider `ie`; each quote rechecks location availability for the packed parcel. Existing migration `0002_past_lester.sql` provides the shipment table; this workflow needs no additional migration. Keep Preview booking disabled, especially when it shares Production's Neon database.
+
+The admin's **Check courier connection (no booking)** performs a read-only live API check. Configuration alone is not proof that the API is reachable. A real booking can charge Bob Go credit; Zarina must approve the displayed service, quote and parcel details. Extra declared-value cover is requested by default and can only be turned off explicitly after reviewing courier terms. Final courier charges may differ from a quote. Customer delivery pricing remains R99/free at R1500 regardless of the courier quote.
+
+Before submitting a shipment, a transaction locks the order and commits a durable Booking state with a unique reconciliation reference. Unknown responses, timeouts and Bob Go's `failed-will-retry` remain locked to prevent duplicate waybills. Use **Check shipment status**, or reconcile in Bob Go with the website administrator if the reference cannot be matched safely. Shipment records are environment-tagged so Sandbox cannot overwrite live bookings. Waybills are fetched on demand because download URLs expire. Booking does not automatically dispatch or email the customer: mark Dispatched only after locker drop-off. Tracking opens Bob Go's official tracker and displays the waybill number to enter. Automatic tracking webhooks and courier cancellation are not implemented in this flow.
 
 ### Verified parcel presets
 
@@ -88,7 +92,7 @@ Apply migration `0003_slippery_pet_avengers.sql` before enabling PayFast. Test w
 - `STORE_URL`
 - `FRAMER_ADMIN_URL`
 - `CHECKOUT_CATALOGUE_JSON` (optional override)
-- `BOBGO_INTEGRATION_ENABLED` (keep `false` until sandbox sign-off)
+- `BOBGO_INTEGRATION_ENABLED` (Production `true` only after sandbox sign-off; Preview stays `false`)
 - `BOBGO_ENVIRONMENT`
 - `BOBGO_API_TOKEN`
 - `BOBGO_SENDER_NAME`
@@ -96,6 +100,7 @@ Apply migration `0003_slippery_pet_avengers.sql` before enabling PayFast. Test w
 - `BOBGO_SENDER_PHONE`
 - `BOBGO_SENDER_LOCATION_NAME`
 - `BOBGO_PICKUP_POINT_LOCATION_ID`
+- `BOBGO_PICKUP_POINT_PROVIDER_SLUG`
 - `PAYFAST_INTEGRATION_ENABLED` (keep `false` until account verification)
 - `PAYFAST_ENVIRONMENT`
 - `PAYFAST_MERCHANT_ID`

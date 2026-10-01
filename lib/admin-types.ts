@@ -30,6 +30,9 @@ export type AdminShipment = {
   waybillReference?: string;
   trackingNumber?: string;
   trackingUrl?: string;
+  lastError?: string;
+  serviceLevelCode?: string;
+  environment?: "sandbox" | "production";
   bookingEnabled: boolean;
   blockers: string[];
 };

@@ -25,25 +25,39 @@ export class BobGoApiError extends Error {
   }
 }
 
-async function bobGoRequest(path: string) {
+export async function bobGoRequest(path: string, input?: Record<string, unknown>) {
   const config = getBobGoConfiguration();
   const response = await fetch(`${config.apiBaseUrl}${path}`, {
+    method: input ? "POST" : "GET",
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${getBobGoApiToken()}`,
+      ...(input ? { "Content-Type": "application/json" } : {}),
     },
     cache: "no-store",
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(input ? 30_000 : 15_000),
+    ...(input ? { body: JSON.stringify(input) } : {}),
   });
 
   const body = await response.json().catch(() => null) as unknown;
   if (!response.ok) {
     throw new BobGoApiError(
-      `Bob Go rejected the connection check (${response.status}).`,
+      `Bob Go rejected the request (${response.status}). Check the account balance, API access and courier setup in Bob Go.`,
       response.status,
     );
   }
   return body;
+}
+
+export async function getConfiguredBobGoLocation(parcel?: { lengthCm: number; widthCm: number; heightCm: number; weightGrams: number }) {
+  const config = getBobGoConfiguration();
+  if (!config.pickupPointLocationId || !config.pickupPointProviderSlug) throw new Error("The Bob Go drop-off location and provider must be configured.");
+  const query = new URLSearchParams({ location_id: config.pickupPointLocationId, provider_slug: config.pickupPointProviderSlug });
+  if (parcel) {
+    query.set("stacked_length", String(parcel.lengthCm)); query.set("stacked_width", String(parcel.widthCm));
+    query.set("stacked_height", String(parcel.heightCm)); query.set("total_weight", String(parcel.weightGrams / 1000));
+  }
+  return bobGoRequest(`/locations?${query}`);
 }
 
 function locationMatches(value: unknown, targetName: string, matches: BobGoLocationMatch[]) {

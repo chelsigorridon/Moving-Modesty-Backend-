@@ -1,6 +1,9 @@
 import { getAdminSnapshot } from "@/lib/admin-data";
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
+import { bookCourierShipment, ShippingConflict } from "@/lib/integrations/bobgo/shipping";
+
+export const maxDuration = 60;
 
 export function OPTIONS() {
   return apiOptions();
@@ -11,28 +14,15 @@ export async function POST(request: Request, context: RouteContext<"/api/admin/o
   const { orderNumber } = await context.params;
 
   try {
+    const body = await request.json().catch(() => null);
+    if (typeof body?.quoteToken !== "string" || body.confirm !== true) return apiJson({ error: "Approve a fresh courier quote before booking." }, { status: 400 });
+    const result = await bookCourierShipment(orderNumber, body.quoteToken);
     const snapshot = await getAdminSnapshot();
-    const order = snapshot.orders.find((item) => item.id === orderNumber);
-    if (!order) return apiJson({ error: "Order not found." }, { status: 404 });
-    if (!order.shipping) {
-      return apiJson({ error: "This order is not set to delivery." }, { status: 409 });
-    }
-    if (!order.shipping.bookingEnabled) {
-      return apiJson({
-        error: "This shipment is not ready to book.",
-        blockers: order.shipping.blockers,
-        shipping: order.shipping,
-      }, { status: 409 });
-    }
-
-    return apiJson({
-      error: "Bob Go sandbox booking is scaffolded but no external booking call is enabled yet.",
-      shipping: order.shipping,
-    }, { status: 501 });
+    return apiJson({ ...result, order: snapshot.orders.find(item => item.id === orderNumber) });
   } catch (error) {
     return apiJson(
-      { error: error instanceof Error ? error.message : "Shipment readiness could not be checked." },
-      { status: 503 },
+      { error: error instanceof Error ? error.message : "Shipment could not be booked. Check Bob Go before retrying." },
+      { status: error instanceof ShippingConflict ? 409 : 503 },
     );
   }
 }

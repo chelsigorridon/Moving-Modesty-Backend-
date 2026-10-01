@@ -62,6 +62,9 @@ interface AdminOrder {
         waybillReference?: string
         trackingNumber?: string
         trackingUrl?: string
+        lastError?: string
+        serviceLevelCode?: string
+        environment?: "sandbox" | "production"
         bookingEnabled: boolean
         blockers: string[]
     }
@@ -76,12 +79,32 @@ interface AdminOrder {
 interface Snapshot {
     orders: AdminOrder[]
     paymentEnvironment?: "sandbox" | "production"
+    bobGoConnection?: { environment: "sandbox" | "production"; enabled: boolean; configured: boolean }
     bobGoSetup?: {
         target: string
         match: Record<string, unknown> | null
         matchCount: number
     } | null
 }
+interface CourierQuote {
+    providerName: string
+    serviceCode: string
+    serviceName: string
+    amount: number
+    quoteToken: string
+}
+interface ShippingResult {
+    order?: AdminOrder
+    rates?: CourierQuote[]
+    expires?: number
+    declaredValue?: number
+    environment?: "sandbox" | "production"
+    url?: string
+    message?: string
+}
+type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill", payload?: Record<string, unknown>) => Promise<ShippingResult>
+type Confirmation = { title: string; description: string; run: () => void }
+const courierMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 })
 
 interface AdminPortalProps {
     view: View
@@ -192,7 +215,6 @@ export default function AdminPortal(props: AdminPortalProps) {
                     const requested = new URLSearchParams(window.location.search).get("order")
                     setSelectedOrderId((current) => current || requested || data.orders[0]?.id || "")
                     setLoadState("ready")
-                    setNotice("")
                 })
             })
             .catch((error: Error) => {
@@ -259,20 +281,49 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
-    async function bookShipment(order: AdminOrder) {
-        if (mutationPending.current || !liveEnabled || !order.shipping?.bookingEnabled) return
+    async function requestShipping(order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}): Promise<ShippingResult> {
+        if (mutationPending.current || !liveEnabled) throw new Error("Wait for the current action to finish, then try again.")
+        mutationPending.current = true
+        startTransition(() => { setLoading(true); setNotice("") })
+        try {
+            const endpoint = action === "book" ? "book-shipment" : "shipment"
+            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                body: JSON.stringify(action === "book" ? { ...payload, confirm: true } : { ...payload, action }),
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok) {
+                if (response.status === 401) route("/admin/login")
+                throw new Error(data?.error || "Bob Go could not complete this request.")
+            }
+            startTransition(() => {
+                if (data.order) setSnapshot((current) => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) }))
+                if (data.message) setNotice(data.message)
+            })
+            return data as ShippingResult
+        } catch (error) {
+            if (action === "book") setRefresh(current => current + 1)
+            const failure = error instanceof Error ? error : new Error("Bob Go request failed.")
+            startTransition(() => setNotice(failure.message))
+            throw failure
+        } finally {
+            mutationPending.current = false
+            startTransition(() => setLoading(false))
+        }
+    }
+
+    async function checkCourierConnection() {
+        if (mutationPending.current || !liveEnabled) return
         mutationPending.current = true
         startTransition(() => setLoading(true))
         try {
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/book-shipment`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token()}` },
-            })
+            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { Authorization: `Bearer ${token()}` } })
             const data = await response.json().catch(() => null)
-            if (!response.ok) throw new Error(data?.error || "The shipment could not be booked.")
-            startTransition(() => setNotice(`${order.id} was booked with Bob Go.`))
+            if (!response.ok || !data?.connected) throw new Error(data?.error || "The drop-off point is not configured.")
+            startTransition(() => setNotice(`Bob Go ${data.environment === "production" ? "LIVE" : "SANDBOX"} API connected. Drop-off verified: ${data.target}. ${data.bookingEnabled && data.senderContactConfigured ? "Manual booking enabled." : "Booking setup is incomplete."} No shipment was booked.`))
         } catch (error) {
-            startTransition(() => setNotice(error instanceof Error ? error.message : "Shipment booking failed."))
+            startTransition(() => setNotice(error instanceof Error ? error.message : "Connection check failed."))
         } finally {
             mutationPending.current = false
             startTransition(() => setLoading(false))
@@ -350,7 +401,10 @@ export default function AdminPortal(props: AdminPortalProps) {
                             method={method}
                             setMethod={setMethod}
                             updateOrderStatus={updateOrderStatus}
-                            bookShipment={bookShipment}
+                            requestShipping={requestShipping}
+                            checkCourierConnection={checkCourierConnection}
+                            bobGoConnection={snapshot.bobGoConnection}
+                            paymentEnvironment={snapshot.paymentEnvironment}
                             resendPaidEmail={resendPaidEmail}
                             bobGoSetup={snapshot.bobGoSetup}
                             loading={loading}
@@ -539,7 +593,10 @@ function OrdersView({
     method,
     setMethod,
     updateOrderStatus,
-    bookShipment,
+    requestShipping,
+    checkCourierConnection,
+    bobGoConnection,
+    paymentEnvironment,
     resendPaidEmail,
     bobGoSetup,
     loading,
@@ -555,7 +612,10 @@ function OrdersView({
     method: string
     setMethod: (value: string) => void
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
-    bookShipment: (order: AdminOrder) => void
+    requestShipping: ShippingRequest
+    checkCourierConnection: () => void
+    bobGoConnection?: Snapshot["bobGoConnection"]
+    paymentEnvironment?: Snapshot["paymentEnvironment"]
     resendPaidEmail: (order: AdminOrder) => void
     bobGoSetup?: Snapshot["bobGoSetup"]
     loading: boolean
@@ -563,7 +623,7 @@ function OrdersView({
     const detailRef = useRef<HTMLElement>(null)
     const listRef = useRef<HTMLDivElement>(null)
     const dialogRef = useRef<HTMLDialogElement>(null)
-    const [confirmation, setConfirmation] = useState<{ title: string; description: string; run: () => void } | null>(null)
+    const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
     const [focusDetail, setFocusDetail] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1199px)").matches && Boolean(new URLSearchParams(window.location.search).get("order")))
 
     useEffect(() => {
@@ -592,7 +652,14 @@ function OrdersView({
         <>
             <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" />
             <AdminNav current="orders" />
-            {bobGoSetup ? (
+            {bobGoConnection ? (
+                <section className="mm-admin__setup-card" aria-live="polite">
+                    <strong>Bob Go · {bobGoConnection.environment === "production" ? "LIVE courier account" : "SANDBOX courier account"}</strong>
+                    <p>{bobGoConnection.enabled && bobGoConnection.configured ? "Review a paid delivery order, mark it Ready, then get a quote and confirm its waybill. Booking is never automatic." : "Courier booking is disabled or setup is incomplete. Contact your website administrator."}</p>
+                    {paymentEnvironment === "sandbox" && bobGoConnection.environment === "production" ? <p>PayFast is still in test mode. Bob Go bookings are LIVE and can incur real courier charges, even for a test-paid order.</p> : null}
+                    <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={checkCourierConnection}>Check courier connection (no booking)</button>
+                </section>
+            ) : bobGoSetup ? (
                 <section className="mm-admin__setup-card" aria-live="polite">
                     <strong>Delivery setup in progress</strong>
                     <p>Bob Go booking is not available yet. Your website administrator will complete the courier setup.</p>
@@ -668,30 +735,7 @@ function OrdersView({
                             <p>{selected.deliveryMethod}</p><p>{selected.deliveryMethod === "Collection" ? selected.status === "Collected" ? "The parcel has been handed to the customer." : "Message the customer privately with the collection address and a suitable time." : selected.address || "Delivery address missing. Contact the customer before booking."}</p>
                         </Detail>
                         {selected.shipping ? (
-                            <Detail title="Bob Go delivery">
-                                <p>Status: {selected.shipping.status}</p>
-                                <p>Drop-off: {selected.shipping.senderLocationName}</p>
-                                {selected.shipping.weightGrams && selected.shipping.lengthCm && selected.shipping.widthCm && selected.shipping.heightCm ? (
-                                    <p>Parcel: {selected.shipping.lengthCm} × {selected.shipping.widthCm} × {selected.shipping.heightCm} cm · {selected.shipping.weightGrams} g</p>
-                                ) : null}
-                                {selected.shipping.trackingNumber ? <p>Tracking: {selected.shipping.trackingNumber}</p> : null}
-                                {selected.shipping.status === "Booked" ? <p>The waybill is booked. Hand over the parcel before marking dispatched.</p> : <p>Automatic booking is awaiting final setup. No courier fee is charged by the disabled button.</p>}
-                                {selected.shipping.blockers.length ? (
-                                    <details className="mm-admin__technical"><summary>Delivery setup details</summary>
-                                    <ul className="mm-admin__blockers">
-                                        {selected.shipping.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-                                    </ul>
-                                    </details>
-                                ) : null}
-                                <button
-                                    className="mm-admin__button"
-                                    type="button"
-                                    disabled={loading || selected.status !== "Ready" || !selected.shipping.bookingEnabled || ["Booked", "Booking"].includes(selected.shipping.status)}
-                                    onClick={() => setConfirmation({ title: "Book Bob Go shipment", description: "This is a live courier booking and may incur a courier fee. Check the address and parcel details before continuing.", run: () => bookShipment(selected) })}
-                                >
-                                    {selected.shipping.status === "Booked" ? "Shipment booked" : selected.shipping.bookingEnabled ? "Book Bob Go shipment" : "Courier booking unavailable"}
-                                </button>
-                            </Detail>
+                            <ShippingPanel key={selected.id} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} />
                         ) : null}
                         <details key={selected.id} className="mm-admin__technical"><summary>Other actions</summary><div className="mm-admin__actions">
                             {selected.paymentStatus === "Paid" ? (
@@ -713,6 +757,75 @@ function OrdersView({
             </dialog>
         </>
     )
+}
+
+function ShippingPanel({ order, loading, connection, requestShipping, confirm }: {
+    order: AdminOrder; loading: boolean; connection?: Snapshot["bobGoConnection"]; requestShipping: ShippingRequest; confirm: (value: Confirmation) => void
+}) {
+    const shipping = order.shipping!
+    const [parcel, setParcel] = useState({ weightGrams: String(shipping.weightGrams || ""), lengthCm: String(shipping.lengthCm || ""), widthCm: String(shipping.widthCm || ""), heightCm: String(shipping.heightCm || "") })
+    const [measured, setMeasured] = useState(false)
+    const [cover, setCover] = useState(true)
+    const [quote, setQuote] = useState<ShippingResult | null>(null)
+    const [quoteIndex, setQuoteIndex] = useState(0)
+    const [waybill, setWaybill] = useState("")
+    const [error, setError] = useState("")
+    const pending = shipping.status === "Booking"
+    const booked = shipping.status === "Booked"
+    const canQuote = order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && connection.configured)
+    const rate = quote?.rates?.[quoteIndex]
+    const fields = [["weightGrams", "Packed weight (g)"], ["lengthCm", "Length (cm)"], ["widthCm", "Width (cm)"], ["heightCm", "Height (cm)"]] as const
+
+    async function run(action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}) {
+        startTransition(() => setError(""))
+        try {
+            const result = await requestShipping(order, action, payload)
+            startTransition(() => {
+                if (action === "quote") { setQuote(result); setQuoteIndex(0) }
+                if (action === "book") setQuote(null)
+                if (action === "waybill" && result.url) setWaybill(result.url)
+            })
+        } catch (caught) {
+            startTransition(() => { setError(caught instanceof Error ? caught.message : "Courier request failed."); if (action === "book") setQuote(null) })
+        }
+    }
+    function book() {
+        if (!rate || !quote?.expires || quote.expires <= Date.now()) { setError("This quote expired. Get a new quote."); setQuote(null); return }
+        confirm({ title: quote.environment === "production" ? "Confirm LIVE courier booking" : "Confirm sandbox booking",
+            description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. Drop-off at ${shipping.senderLocationName}, delivery to ${order.address}. ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} The customer's delivery fee is unchanged.`,
+            run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
+    }
+    return <Detail title="Bob Go delivery">
+        <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
+        <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p>
+        {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}
+        {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
+        {pending ? <p>Booking is awaiting confirmation. Check its status; do not book another shipment or create a duplicate in Bob Go.</p> : null}
+        {booked ? <p>Download the waybill, attach it to the parcel and drop it off. Only then mark the order Dispatched.</p> : null}
+        {(pending || booked) ? <div className="mm-admin__actions mm-admin__courier-actions">
+            <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button>
+            {booked ? <button type="button" className="mm-admin__button" disabled={loading} onClick={() => { void run("waybill") }}>Get waybill</button> : null}
+            {waybill ? <a className="mm-admin__secondary-button" href={waybill} target="_blank" rel="noopener noreferrer">Open / print waybill</a> : null}
+            {shipping.trackingUrl ? <a href={shipping.trackingUrl} target="_blank" rel="noopener noreferrer">Open tracker (enter waybill number)</a> : null}
+        </div> : null}
+        {canQuote ? <>
+            <p className="mm-admin__helper">Check the packed box, including packaging. The 412 g / 25 × 20.5 × 3.5 cm measurement applies only to one Hawa + one Amina; measure other combinations.</p>
+            <div className="mm-admin__parcel-grid">{fields.map(([field, label]) => <label className="mm-admin__field" key={field}>{label}<input type="number" min={field === "weightGrams" ? 1 : 0.01} max={field === "weightGrams" ? 30000 : 150} step={field === "weightGrams" ? 1 : 0.01} inputMode="decimal" value={parcel[field]} disabled={loading} onChange={event => { setParcel(current => ({ ...current, [field]: event.target.value })); setMeasured(false); setQuote(null) }} /></label>)}</div>
+            <label className="mm-admin__courier-check"><input type="checkbox" checked={measured} disabled={loading} onChange={event => { setMeasured(event.target.checked); setQuote(null) }} />I have checked these packed measurements and the customer's address.</label>
+            <label className="mm-admin__courier-check"><input type="checkbox" checked={cover} disabled={loading} onChange={event => { setCover(event.target.checked); setQuote(null) }} />Request additional declared-value cover for {courierMoney.format(order.subtotal || 0)}.</label>
+            <p className="mm-admin__helper">Availability and cover depend on the courier's terms. If no quote supports it, review those terms before choosing standard cover only.</p>
+            <button type="button" className="mm-admin__secondary-button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: cover }) }}>{loading ? "Checking Bob Go…" : "Get courier quote (no booking)"}</button>
+            {rate ? <div className="mm-admin__quote">
+                <label className="mm-admin__field">Choose courier service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
+                <p><strong>Courier quote: {courierMoney.format(rate.amount)}</strong></p>
+                <p className="mm-admin__helper">This is Zarina's courier cost, not the customer's fixed R99 delivery fee. Quotes expire after 10 minutes; final courier charges can vary.</p>
+                <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Review & confirm {quote?.environment === "production" ? "LIVE " : ""}booking</button>
+            </div> : null}
+        </> : null}
+        {!canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
+        {!booked && !pending && shipping.blockers.length ? <details className="mm-admin__technical"><summary>What is still needed?</summary><ul className="mm-admin__blockers">{shipping.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></details> : null}
+        {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
+    </Detail>
 }
 
 function Detail({ title, children }: { title: string; children: ReactNode }) {
@@ -752,6 +865,15 @@ const styles = `
 .mm-admin__next-step p { margin: 0; }
 .mm-admin__next-step button { justify-self: start; }
 .mm-admin__technical summary { min-height: 44px; cursor: pointer; padding: 12px 0; font-weight: 600; }
+.mm-admin__parcel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.mm-admin__parcel-grid .mm-admin__field, .mm-admin__quote .mm-admin__field { min-width: 0; }
+.mm-admin__parcel-grid input, .mm-admin__quote select { width: 100% !important; min-width: 0; }
+.mm-admin__courier-check { display: flex; align-items: flex-start; gap: 10px; margin: 16px 0; cursor: pointer; }
+.mm-admin__courier-check input { flex: 0 0 20px; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--mm-sage); }
+.mm-admin__quote { display: grid; gap: 12px; margin-top: 18px; padding: 16px; border: 1px solid var(--mm-sage); }
+.mm-admin__quote p { margin: 0; }
+.mm-admin__courier-actions { flex-wrap: wrap; justify-content: flex-start; }
+.mm-admin__courier-actions a { color: var(--mm-ink); }
 .mm-admin__dialog { width: min(480px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; border: 1px solid var(--mm-border); background: var(--mm-surface); color: var(--mm-ink); padding: 24px; }
 .mm-admin__dialog::backdrop { background: rgba(0,0,0,.4); }
 .mm-admin__dialog h2 { margin: 0 0 16px; font: 500 24px/1.2 Montserrat, Inter, sans-serif; }

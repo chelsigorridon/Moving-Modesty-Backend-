@@ -35,7 +35,9 @@ export function getOrderWorkflow(order: WorkflowOrder): OrderWorkflow {
   if (order.status === "Ready" && order.deliveryMethod === "Collection") return result("Arrange collection privately. Only mark collected after handing the parcel to the customer.", "Collected", "Mark collected");
   if (order.status === "Ready" && order.deliveryMethod === "Courier") return shipmentCommitted && order.shipmentStatus === "Booked"
     ? result("Use the booked waybill. Mark dispatched only after handing the parcel to the courier or locker.", "Dispatched", "Mark dispatched")
-    : result("The parcel is ready. A confirmed courier booking is needed before dispatch. Bob Go booking remains unavailable until setup is verified.");
+    : result(order.shipmentStatus === "Booking"
+      ? "Bob Go is checking this shipment. Use Check shipment status; do not book another waybill."
+      : "Confirm the packed weight and dimensions below, get a courier quote, then approve the booking. Mark dispatched only after dropping off the parcel.");
   if (order.status === "Dispatched" && order.deliveryMethod === "Courier") return result("Check the courier tracking. Only mark delivered after delivery is confirmed.", "Delivered", "Mark delivered");
   return result("This order needs review. Contact your website administrator before changing its status.");
 }

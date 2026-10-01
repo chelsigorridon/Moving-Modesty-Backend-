@@ -45,7 +45,10 @@ export async function GET(request: Request) {
       getAdminSnapshot(),
       getBobGoSetupStatus(),
     ]);
-    return apiJson({ ...snapshot, bobGoSetup, paymentEnvironment: getPayFastConfiguration().environment });
+    const bobGo = getBobGoConfiguration();
+    return apiJson({ ...snapshot, bobGoSetup, paymentEnvironment: getPayFastConfiguration().environment,
+      bobGoConnection: { environment: bobGo.environment, enabled: bobGo.enabled,
+        configured: Boolean(bobGo.apiTokenConfigured && bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug && bobGo.senderEmail && bobGo.senderPhone) } });
   } catch (error) {
     return apiJson(
       { error: error instanceof Error ? error.message : "Admin data could not be loaded." },

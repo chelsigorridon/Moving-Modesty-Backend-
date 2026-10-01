@@ -1,7 +1,8 @@
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
-import { findNearbyBobGoLocation } from "@/lib/integrations/bobgo/client";
+import { findNearbyBobGoLocation, getConfiguredBobGoLocation } from "@/lib/integrations/bobgo/client";
 import { getBobGoConfiguration } from "@/lib/integrations/bobgo/configuration";
+import { parseLocation } from "@/lib/integrations/bobgo/protocol";
 
 export const dynamic = "force-dynamic";
 
@@ -27,9 +28,17 @@ export async function GET(request: Request) {
   }
 
   try {
+    if (config.pickupPointLocationId && config.pickupPointProviderSlug) {
+      const location = parseLocation(await getConfiguredBobGoLocation(), config.pickupPointLocationId, config.pickupPointProviderSlug, false);
+      return apiJson({ connected: true, environment: config.environment, bookingEnabled: config.enabled,
+        target: location.name || config.senderLocationName, locationId: config.pickupPointLocationId,
+        provider: config.pickupPointProviderSlug, senderContactConfigured: Boolean(config.senderEmail && config.senderPhone) });
+    }
     const lookup = await findNearbyBobGoLocation(CONSTANTIA_EMPORIUM);
     return apiJson({
       bookingEnabled: config.enabled,
+      connected: false,
+      environment: config.environment,
       target: "Constantia Emporium",
       match: lookup.matches[0] ?? null,
       matchCount: lookup.matches.length,

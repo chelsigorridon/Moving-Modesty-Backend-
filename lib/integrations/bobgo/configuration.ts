@@ -10,6 +10,7 @@ export type BobGoConfiguration = {
   senderPhone: string;
   senderLocationName: string;
   pickupPointLocationId?: string;
+  pickupPointProviderSlug?: string;
 };
 
 export function getBobGoConfiguration(): BobGoConfiguration {
@@ -32,6 +33,7 @@ export function getBobGoConfiguration(): BobGoConfiguration {
     pickupPointLocationId: configuredPickupPoint && !configuredPickupPoint.startsWith("PASTE_")
       ? configuredPickupPoint
       : undefined,
+    pickupPointProviderSlug: process.env.BOBGO_PICKUP_POINT_PROVIDER_SLUG?.trim() || undefined,
   };
 }
 
