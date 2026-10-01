@@ -190,7 +190,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                 startTransition(() => {
                     setSnapshot(data)
                     const requested = new URLSearchParams(window.location.search).get("order")
-                    setSelectedOrderId((current) => requested || current || data.orders[0]?.id || "")
+                    setSelectedOrderId((current) => current || requested || data.orders[0]?.id || "")
                     setLoadState("ready")
                     setNotice("")
                 })
@@ -564,7 +564,7 @@ function OrdersView({
     const listRef = useRef<HTMLDivElement>(null)
     const dialogRef = useRef<HTMLDialogElement>(null)
     const [confirmation, setConfirmation] = useState<{ title: string; description: string; run: () => void } | null>(null)
-    const [focusDetail, setFocusDetail] = useState(false)
+    const [focusDetail, setFocusDetail] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1199px)").matches && Boolean(new URLSearchParams(window.location.search).get("order")))
 
     useEffect(() => {
         if (!focusDetail) return
@@ -665,7 +665,7 @@ function OrdersView({
                             {selected.payment?.failureReason ? <p className="mm-admin__payment-error">Reason: {selected.payment.failureReason}</p> : null}
                         </Detail>
                         <Detail title="Fulfilment">
-                            <p>{selected.deliveryMethod}</p><p>{selected.deliveryMethod === "Collection" ? "Message the customer privately with the collection address and a suitable time." : selected.address || "Delivery address missing. Contact the customer before booking."}</p>
+                            <p>{selected.deliveryMethod}</p><p>{selected.deliveryMethod === "Collection" ? selected.status === "Collected" ? "The parcel has been handed to the customer." : "Message the customer privately with the collection address and a suitable time." : selected.address || "Delivery address missing. Contact the customer before booking."}</p>
                         </Detail>
                         {selected.shipping ? (
                             <Detail title="Bob Go delivery">
