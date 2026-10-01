@@ -3,6 +3,7 @@ import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
 import { findNearbyBobGoLocation } from "@/lib/integrations/bobgo/client";
 import { getBobGoConfiguration } from "@/lib/integrations/bobgo/configuration";
+import { getPayFastConfiguration } from "@/lib/integrations/payfast/configuration";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
       getAdminSnapshot(),
       getBobGoSetupStatus(),
     ]);
-    return apiJson({ ...snapshot, bobGoSetup });
+    return apiJson({ ...snapshot, bobGoSetup, paymentEnvironment: getPayFastConfiguration().environment });
   } catch (error) {
     return apiJson(
       { error: error instanceof Error ? error.message : "Admin data could not be loaded." },

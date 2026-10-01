@@ -17,6 +17,7 @@ import { getBobGoConfiguration } from "./integrations/bobgo/configuration";
 import { shipmentBookingBlockers } from "./shipping/readiness";
 import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
+import { assertOrderTransition, getOrderWorkflow } from "./order-workflow";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -270,6 +271,12 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       },
       status: statusLabels[order.status] ?? "New",
       deliveryMethod: deliveryLabels[order.deliveryMethod],
+      workflow: getOrderWorkflow({
+        status: statusLabels[order.status] ?? "New",
+        paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
+        deliveryMethod: deliveryLabels[order.deliveryMethod],
+        shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+      }),
       address: formatAddress([
         order.line1,
         order.line2,
@@ -440,14 +447,19 @@ export async function updateOrderStatus(orderNumber: string, nextStatus: OrderSt
     Cancelled: "cancelled",
   } as const;
   const databaseStatus = statusValues[nextStatus];
-  const [existing] = await db
-    .select({ id: ordersTable.id, status: ordersTable.status })
-    .from(ordersTable)
-    .where(eq(ordersTable.orderNumber, orderNumber))
-    .limit(1);
-  if (!existing) return null;
-
-  await db.transaction(async (transaction) => {
+  const found = await db.transaction(async (transaction) => {
+    // Serialize status changes, including double clicks from separate sessions.
+    const [existing] = await transaction.select().from(ordersTable)
+      .where(eq(ordersTable.orderNumber, orderNumber)).limit(1).for("update");
+    if (!existing) return false;
+    const [shipment] = await transaction.select({ status: shipments.status }).from(shipments)
+      .where(eq(shipments.orderId, existing.id)).limit(1).for("update");
+    assertOrderTransition({
+      status: statusLabels[existing.status],
+      paymentStatus: paymentLabels[existing.paymentStatus],
+      deliveryMethod: deliveryLabels[existing.deliveryMethod],
+      shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+    }, nextStatus);
     await transaction
       .update(ordersTable)
       .set({ status: databaseStatus, updatedAt: new Date() })
@@ -458,7 +470,9 @@ export async function updateOrderStatus(orderNumber: string, nextStatus: OrderSt
       toStatus: databaseStatus,
       note: "Updated from the Framer admin portal.",
     });
+    return true;
   });
+  if (!found) return null;
 
   const snapshot = await getAdminSnapshot();
   return snapshot.orders.find((order) => order.id === orderNumber) ?? null;

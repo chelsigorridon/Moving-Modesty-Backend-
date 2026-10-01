@@ -3,6 +3,7 @@ import { updateOrderStatus } from "@/lib/admin-data";
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
 import { sendOrderStatusEmail } from "@/lib/email";
+import { OrderWorkflowConflict } from "@/lib/order-workflow";
 
 const updateSchema = z.object({
   status: z.enum(["New", "Confirmed", "Preparing", "Ready", "Dispatched", "Collected", "Delivered", "Cancelled"]),
@@ -20,12 +21,17 @@ export async function PATCH(request: Request, context: RouteContext<"/api/admin/
   try {
     const order = await updateOrderStatus(orderNumber, parsed.data.status);
     if (!order) return apiJson({ error: "Order not found." }, { status: 404 });
-    const email = await sendOrderStatusEmail(order, parsed.data.status);
-    return apiJson({ order, email });
+    // A notification failure must not suggest that the saved status was lost.
+    try {
+      const email = await sendOrderStatusEmail(order, parsed.data.status);
+      return apiJson({ order, email });
+    } catch {
+      return apiJson({ order, email: { failed: true }, warning: "Order saved, but the customer notification could not be sent. Contact the customer directly." });
+    }
   } catch (error) {
     return apiJson(
       { error: error instanceof Error ? error.message : "The order could not be updated." },
-      { status: 503 }
+      { status: error instanceof OrderWorkflowConflict ? 409 : 503 }
     );
   }
 }

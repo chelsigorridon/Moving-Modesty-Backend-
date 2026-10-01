@@ -57,4 +57,10 @@ export type AdminOrder = {
   address?: string;
   items: AdminOrderItem[];
   shipping?: AdminShipment;
+  workflow?: {
+    nextStatus: OrderStatus | null;
+    actionLabel: string;
+    guidance: string;
+    canCancel: boolean;
+  };
 };
