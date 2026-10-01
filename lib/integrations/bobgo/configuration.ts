@@ -21,13 +21,26 @@ export function getBobGoConfiguration(): BobGoConfiguration {
     enabled: process.env.BOBGO_INTEGRATION_ENABLED === "true",
     environment,
     apiBaseUrl: environment === "production"
-      ? "https://api.bobgo.co.za"
-      : "https://sandbox.bobgo.co.za",
-    apiTokenConfigured: Boolean(process.env.BOBGO_API_TOKEN?.trim()),
+      ? "https://api.bobgo.co.za/v2"
+      : "https://api.sandbox.bobgo.co.za/v2",
+    apiTokenConfigured: hasConfiguredBobGoToken(),
     senderName: process.env.BOBGO_SENDER_NAME?.trim() || "Moving Modesty",
     senderEmail: process.env.BOBGO_SENDER_EMAIL?.trim() || "",
     senderPhone: process.env.BOBGO_SENDER_PHONE?.trim() || "",
     senderLocationName: process.env.BOBGO_SENDER_LOCATION_NAME?.trim() || "Constantia Emporium",
     pickupPointLocationId: process.env.BOBGO_PICKUP_POINT_LOCATION_ID?.trim() || undefined,
   };
+}
+
+export function getBobGoApiToken() {
+  const token = process.env.BOBGO_API_TOKEN?.trim();
+  if (!token || token.startsWith("PASTE_")) {
+    throw new Error("The Bob Go API token is not configured.");
+  }
+  return token;
+}
+
+function hasConfiguredBobGoToken() {
+  const token = process.env.BOBGO_API_TOKEN?.trim();
+  return Boolean(token && !token.startsWith("PASTE_"));
 }
