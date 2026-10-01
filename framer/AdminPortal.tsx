@@ -68,6 +68,11 @@ interface AdminOrder {
 
 interface Snapshot {
     orders: AdminOrder[]
+    bobGoSetup?: {
+        target: string
+        match: Record<string, unknown> | null
+        matchCount: number
+    } | null
 }
 
 interface AdminPortalProps {
@@ -308,6 +313,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             updateOrderStatus={updateOrderStatus}
                             bookShipment={bookShipment}
                             resendPaidEmail={resendPaidEmail}
+                            bobGoSetup={snapshot.bobGoSetup}
                             loading={loading}
                         />
                     ) : (
@@ -488,6 +494,7 @@ function OrdersView({
     updateOrderStatus,
     bookShipment,
     resendPaidEmail,
+    bobGoSetup,
     loading,
 }: {
     orders: AdminOrder[]
@@ -499,12 +506,24 @@ function OrdersView({
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
     bookShipment: (order: AdminOrder) => void
     resendPaidEmail: (order: AdminOrder) => void
+    bobGoSetup?: Snapshot["bobGoSetup"]
     loading: boolean
 }) {
     return (
         <>
             <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" />
             <AdminNav current="orders" />
+            {bobGoSetup ? (
+                <section className="mm-admin__setup-card" aria-live="polite">
+                    <strong>Bob Go setup lookup</strong>
+                    <p>
+                        {bobGoSetup.match
+                            ? `${bobGoSetup.target} was found. These are the identifiers returned by Bob Go.`
+                            : `Bob Go connected, but ${bobGoSetup.target} was not found in the nearby-location response.`}
+                    </p>
+                    {bobGoSetup.match ? <pre>{JSON.stringify(bobGoSetup.match, null, 2)}</pre> : null}
+                </section>
+            ) : null}
             <div className="mm-admin__filters" role="group" aria-label="Order filters">
                 {["All orders", "Pending payment", "Paid", "Failed", "Refunded", "Cancelled"].map((label) => (
                     <button
@@ -631,6 +650,9 @@ const styles = `
 .mm-admin, .mm-admin * { box-sizing: border-box; }
 .mm-admin__blockers { margin: 12px 0 18px; padding-left: 19px; color: var(--mm-muted); }
 .mm-admin__blockers li + li { margin-top: 6px; }
+.mm-admin__setup-card { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 18px; display: grid; gap: 8px; }
+.mm-admin__setup-card p { margin: 0; color: var(--mm-muted); }
+.mm-admin__setup-card pre { margin: 4px 0 0; padding: 12px; max-height: 260px; overflow: auto; background: var(--mm-soft); color: var(--mm-ink); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mm-admin__payment-error { color: #8A342C; font-weight: 700; }
 .mm-admin { font-family: Inter, Arial, sans-serif; font-size: 15px; line-height: 1.45; }
 .mm-admin button, .mm-admin input, .mm-admin select, .mm-admin textarea { font: inherit; }
