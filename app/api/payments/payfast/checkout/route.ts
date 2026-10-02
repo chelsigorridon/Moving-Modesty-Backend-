@@ -1,4 +1,5 @@
 import { apiJson, apiOptions } from "@/lib/api-response";
+import { getPayFastCheckoutReadiness } from "@/lib/integrations/payfast/configuration";
 import {
   createPayFastCheckout,
   PayFastCheckoutError,
@@ -7,6 +8,12 @@ import {
 } from "@/lib/integrations/payfast/checkout";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Read-only preflight: no order, payment attempt, email or PayFast call is made.
+export function GET() {
+  return apiJson(getPayFastCheckoutReadiness());
+}
 
 export function OPTIONS() {
   return apiOptions();

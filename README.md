@@ -79,6 +79,8 @@ Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_K
 
 The PayFast flow is guarded by `PAYFAST_INTEGRATION_ENABLED`. The checkout endpoint loads the order by its private checkout token, recalculates the current server-side catalogue total, signs the hosted-payment form, and never accepts a browser-supplied amount. The notification endpoint verifies the signature, merchant ID, source IP, stored order total, and PayFast validation response before marking an order paid. A browser return does not confirm payment.
 
+For live checkout, set Production `PAYFAST_ENVIRONMENT=production`, `PAYFAST_INTEGRATION_ENABLED=true` and `PAYFAST_SOURCE_IP_VALIDATION=true`, with the verified merchant's live ID, key and matching passphrase stored only in Vercel. Keep Preview and Development isolated from live payments. Redeploy the exact committed build and verify `GET /api/payments/payfast/checkout` reports `available: true` and `environment: production`; this read-only preflight exposes no credentials and creates no orders. It checks configuration, not PayFast account ownership or payment acceptance. Zarina must complete a real delivery checkout herself, verify the paid order in Neon/admin and both confirmation emails, then manually quote and approve the Bob Go waybill. Live test payments and waybills can incur real fees. Historical sandbox orders are not real sales and must not be fulfilled.
+
 Apply migration `0003_slippery_pet_avengers.sql` before enabling PayFast. Test with sandbox-only credentials in a non-production Vercel environment first. Keep the Production switch `false` until a complete sandbox payment, cancellation, duplicate notification, and failed-payment run have all passed.
 
 ## Vercel environment values

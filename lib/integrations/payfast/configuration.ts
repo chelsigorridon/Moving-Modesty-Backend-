@@ -1,4 +1,5 @@
 import "server-only";
+import { evaluatePayFastReadiness } from "./readiness";
 
 export type PayFastConfiguration = {
   enabled: boolean;
@@ -46,12 +47,8 @@ export function requirePayFastConfiguration(): PayFastRuntimeConfiguration {
   const passphrase = process.env.PAYFAST_PASSPHRASE?.trim() ?? "";
   const storeUrl = process.env.STORE_URL?.trim().replace(/\/$/, "") ?? "";
 
-  if (!configuration.enabled) throw new Error("PayFast checkout is not enabled yet.");
-  if (!merchantId || !merchantKey) throw new Error("PayFast merchant credentials are incomplete.");
-  if (!passphrase) throw new Error("The PayFast passphrase is not configured.");
-  if (!storeUrl || !/^https:\/\//i.test(storeUrl)) {
-    throw new Error("STORE_URL must be a public HTTPS address before PayFast can be enabled.");
-  }
+  const readiness = getPayFastCheckoutReadiness();
+  if (!readiness.available) throw new Error(readiness.issues[0]);
 
   return {
     ...configuration,
@@ -69,4 +66,17 @@ export function requirePayFastConfiguration(): PayFastRuntimeConfiguration {
       configuration.environment === "production" &&
       process.env.PAYFAST_SOURCE_IP_VALIDATION !== "false",
   };
+}
+
+export function getPayFastCheckoutReadiness() {
+  const configuration = getPayFastConfiguration();
+  return evaluatePayFastReadiness({
+    enabled: configuration.enabled,
+    environment: configuration.environment,
+    merchantId: process.env.PAYFAST_MERCHANT_ID?.trim() ?? "",
+    merchantKey: process.env.PAYFAST_MERCHANT_KEY?.trim() ?? "",
+    passphrase: process.env.PAYFAST_PASSPHRASE?.trim() ?? "",
+    storeUrl: process.env.STORE_URL?.trim() ?? "",
+    sourceIpValidation: process.env.PAYFAST_SOURCE_IP_VALIDATION !== "false",
+  });
 }
