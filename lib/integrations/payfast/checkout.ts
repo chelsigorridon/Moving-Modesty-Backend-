@@ -157,6 +157,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       .values({
         orderId: order.id,
         merchantPaymentId: order.orderNumber,
+        provider: `payfast-${configuration.environment}`,
         status: "pending",
         amount,
         providerStatus: "CHECKOUT_STARTED",
@@ -165,6 +166,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
         target: payments.orderId,
         set: {
           merchantPaymentId: order.orderNumber,
+          provider: `payfast-${configuration.environment}`,
           status: "pending",
           amount,
           providerStatus: "CHECKOUT_STARTED",

@@ -18,6 +18,7 @@ import { shipmentBookingBlockers } from "./shipping/readiness";
 import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
 import { assertOrderTransition, getOrderWorkflow } from "./order-workflow";
+import { paymentEnvironmentFromProvider } from "./payment-environment";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -129,6 +130,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         total: ordersTable.total,
         createdAt: ordersTable.createdAt,
         providerPaymentId: payments.providerPaymentId,
+        paymentProvider: payments.provider,
         providerStatus: payments.providerStatus,
         paymentFailureReason: payments.failureReason,
         paymentUpdatedAt: payments.updatedAt,
@@ -252,6 +254,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         pickupPointLocationId: shipment?.pickupPointLocationId || bobGo.pickupPointLocationId,
       });
       if (!bobGo.pickupPointProviderSlug) blockers.push("The pickup-point courier provider still needs to be configured.");
+      if (bobGo.environment === "production" && paymentEnvironmentFromProvider(order.paymentProvider) === "sandbox") blockers.push("Test payments cannot create live courier bookings.");
       if (!order.customerPhone || !order.customerEmail) blockers.push("Customer phone and email are required.");
       if (order.status !== "ready") blockers.push("Mark the packed order ready for courier first.");
       if (shipment && (["booking", "booked", "cancelled"].includes(shipment.status) || shipment.providerShipmentId)) blockers.push("A shipment already exists or may still be processing. Do not book a duplicate.");
@@ -272,6 +275,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
       payment: {
         provider: "PayFast" as const,
+        environment: paymentEnvironmentFromProvider(order.paymentProvider),
         providerStatus: order.providerStatus ?? undefined,
         providerPaymentId: order.providerPaymentId ?? undefined,
         failureReason: order.paymentFailureReason ?? undefined,

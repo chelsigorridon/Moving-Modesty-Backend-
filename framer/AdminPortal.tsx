@@ -41,6 +41,7 @@ interface AdminOrder {
     paymentStatus: PaymentStatus
     payment?: {
         provider: "PayFast"
+        environment?: "sandbox" | "production" | "unknown"
         providerStatus?: string
         providerPaymentId?: string
         failureReason?: string
@@ -233,6 +234,9 @@ export default function AdminPortal(props: AdminPortalProps) {
         const query = search.trim().toLowerCase()
         return snapshot.orders.filter((order) => {
             const matchesStatus = orderFilter === "All orders" ||
+                (orderFilter === "Live orders" && order.payment?.environment === "production") ||
+                (orderFilter === "Test orders" && order.payment?.environment === "sandbox") ||
+                (orderFilter === "Unclassified" && !["production", "sandbox"].includes(order.payment?.environment || "unknown")) ||
                 (orderFilter === "To do" && order.paymentStatus === "Paid" && !["Collected", "Delivered", "Cancelled"].includes(order.status)) ||
                 (orderFilter === "Completed" && ["Collected", "Delivered"].includes(order.status)) ||
                 orderFilter === order.paymentStatus || orderFilter === order.status
@@ -524,21 +528,25 @@ function AdminNav({ current }: { current: "dashboard" | "orders" | "products" })
 }
 
 function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void }) {
-    const paidRevenue = snapshot.orders
+    const liveOrders = snapshot.orders.filter((order) => order.payment?.environment === "production")
+    const testCount = snapshot.orders.filter((order) => order.payment?.environment === "sandbox").length
+    const unclassifiedCount = snapshot.orders.length - liveOrders.length - testCount
+    const paidRevenue = liveOrders
         .filter((order) => order.paymentStatus === "Paid")
         .reduce((sum, order) => sum + order.total, 0)
     const stats = [
-        ["Paid · to confirm", snapshot.orders.filter((order) => order.status === "New" && order.paymentStatus === "Paid").length],
-        ["Preparing", snapshot.orders.filter((order) => order.status === "Preparing" && order.paymentStatus === "Paid").length],
-        ["Ready", snapshot.orders.filter((order) => order.status === "Ready" && order.paymentStatus === "Paid").length],
-        ["Paid order value", money.format(paidRevenue)],
+        ["Live · to confirm", liveOrders.filter((order) => order.status === "New" && order.paymentStatus === "Paid").length],
+        ["Live · preparing", liveOrders.filter((order) => order.status === "Preparing" && order.paymentStatus === "Paid").length],
+        ["Live · ready", liveOrders.filter((order) => order.status === "Ready" && order.paymentStatus === "Paid").length],
+        ["Live paid order value", money.format(paidRevenue)],
     ]
     return (
         <>
             <PageHeader eyebrow="ADMIN PORTAL" title="Dashboard" />
             <AdminNav current="dashboard" />
             <p className="mm-admin__helper">Start with Orders → To do. Check payment, confirm the order, then prepare and hand it over.</p>
-            {snapshot.paymentEnvironment === "sandbox" ? <div className="mm-admin__notice">PayFast is in test mode. Paid order values can include sandbox payments and are not a sales report.</div> : <p className="mm-admin__helper">Paid order value shows all recorded paid orders; historical test payments may be included.</p>}
+            {snapshot.paymentEnvironment === "sandbox" ? <div className="mm-admin__notice">PayFast is currently in test mode. Test payments are excluded from live totals.</div> : null}
+            <p className="mm-admin__helper">Live totals exclude {testCount} test and {unclassifiedCount} unclassified orders. Older orders without a recorded payment environment remain unclassified; check them in PayFast before treating them as sales.</p>
             <div className="mm-admin__stats">
                 {stats.map(([label, value]) => (
                     <article className="mm-admin__stat" key={String(label)}>
@@ -561,7 +569,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void })
                         <span>{order.customer}</span>
                         <span>{order.placedAt}</span>
                         <span>{money.format(order.total)}</span>
-                        <span className="mm-admin__badges"><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em></span>
+                        <span className="mm-admin__badges"><em>{order.payment?.environment === "production" ? "LIVE" : order.payment?.environment === "sandbox" ? "TEST" : "UNCLASSIFIED"}</em><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em></span>
                     </button>
                 ))}
             </div>
@@ -573,7 +581,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void })
                 </article>
                 <article className="mm-admin__quick-card">
                     <h3>Delivery</h3>
-                    <p>Collection is arranged privately with the customer. Bob Go booking is awaiting final verification.</p>
+                    <p>{snapshot.bobGoConnection?.enabled && snapshot.bobGoConnection.configured ? "Bob Go is configured for manual courier booking from Orders. Check the order, prepare the parcel, then approve the quote to create a waybill. Collection is arranged privately." : "Bob Go booking setup is incomplete. Check the courier connection in Orders. Collection is arranged privately with the customer."}</p>
                     <a className="mm-admin__website-link" href="/admin/orders">Manage order handovers →</a>
                 </article>
             </div>
@@ -666,7 +674,7 @@ function OrdersView({
                 </section>
             ) : null}
             <div className="mm-admin__filters" role="group" aria-label="Order filters">
-                {["All orders", "To do", "Pending payment", "Paid", "Failed", "Refunded", "Completed", "Cancelled"].map((label) => (
+                {["All orders", "Live orders", "Test orders", "Unclassified", "To do", "Pending payment", "Paid", "Failed", "Refunded", "Completed", "Cancelled"].map((label) => (
                     <button
                         className={`mm-admin__filter ${filter === label ? "is-active" : ""}`}
                         type="button"
@@ -700,7 +708,7 @@ function OrdersView({
                             </span>
                             <span>{order.customer}</span>
                             <span>{order.placedAt}</span>
-                            <span className="mm-admin__badges"><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><span>{order.deliveryMethod}</span></span>
+                            <span className="mm-admin__badges"><em>{order.payment?.environment === "production" ? "LIVE" : order.payment?.environment === "sandbox" ? "TEST" : "UNCLASSIFIED"}</em><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><span>{order.deliveryMethod}</span></span>
                             <strong>{money.format(order.total)}</strong>
                         </button>
                     ))}
@@ -710,6 +718,7 @@ function OrdersView({
                         <button type="button" className="mm-admin__text-button mm-admin__back" onClick={() => { listRef.current?.scrollIntoView({ behavior: "auto", block: "start" }); listRef.current?.focus({ preventScroll: true }) }}>← Back to orders</button>
                         <p className="mm-admin__eyebrow">SELECTED ORDER</p>
                         <h2>{selected.id}</h2>
+                        <p className="mm-admin__helper">Payment environment: {selected.payment?.environment === "production" ? "Live" : selected.payment?.environment === "sandbox" ? "Test payment—no real customer payment" : "Unclassified—verify this older payment in PayFast"}</p>
                         <div className="mm-admin__badges"><em className={badgeClass(selected.paymentStatus)}>{selected.paymentStatus}</em><em className={badgeClass(selected.status)}>{selected.status}</em><span>{selected.deliveryMethod}</span></div>
                         <section className="mm-admin__next-step" aria-label="Next step">
                             <p className="mm-admin__eyebrow">{["Collected", "Delivered", "Cancelled"].includes(selected.status) ? "ORDER CLOSED" : "YOUR NEXT STEP"}</p>
@@ -772,7 +781,8 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const [error, setError] = useState("")
     const pending = shipping.status === "Booking"
     const booked = shipping.status === "Booked"
-    const canQuote = order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && connection.configured)
+    const liveBookingForTest = connection?.environment === "production" && order.payment?.environment === "sandbox"
+    const canQuote = !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && connection.configured)
     const rate = quote?.rates?.[quoteIndex]
     const fields = [["weightGrams", "Packed weight (g)"], ["lengthCm", "Length (cm)"], ["widthCm", "Width (cm)"], ["heightCm", "Height (cm)"]] as const
 
@@ -796,6 +806,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
     }
     return <Detail title="Bob Go delivery">
+        {liveBookingForTest ? <p role="alert">This is a test payment. Live courier booking is blocked so it cannot create a real charge.</p> : null}
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
         <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p>
         {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}

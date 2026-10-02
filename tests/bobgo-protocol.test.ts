@@ -78,3 +78,15 @@ test("booking stays server-side, commits a durable lock before the chargeable re
   assert.doesNotMatch(component, /BOBGO_API_TOKEN|Bearer\s+[a-f0-9]{32}/);
   assert.match(component, /Confirm LIVE courier booking/);
 });
+
+test("sandbox payments cannot be quoted or booked with the production courier account", () => {
+  const source = readFileSync(new URL("../lib/integrations/bobgo/shipping.ts", import.meta.url), "utf8");
+  const guard = source.slice(source.indexOf("function assertCanBook"), source.indexOf("function orderFingerprint"));
+  assert.match(guard, /config\.environment === "production" && data\.paymentProvider === "payfast-sandbox"/);
+  assert.match(guard, /throw new ShippingConflict\("Test payments cannot create live courier bookings/);
+  const quotes = source.slice(source.indexOf("export async function getCourierQuotes"), source.indexOf("export async function bookCourierShipment"));
+  const booking = source.slice(source.indexOf("export async function bookCourierShipment"), source.indexOf("async function saveShipmentResponse"));
+  assert.ok(quotes.indexOf("assertCanBook(data)") < quotes.indexOf('bobGoRequest("/rates"'));
+  assert.ok(booking.indexOf("assertCanBook(data)") < booking.indexOf('bobGoRequest("/shipments"'));
+  assert.ok(booking.indexOf("assertCanBook(current)") < booking.indexOf('status: "booking"'));
+});

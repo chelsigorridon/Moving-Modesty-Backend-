@@ -50,6 +50,7 @@ export type AdminOrder = {
   paymentStatus: PaymentStatus;
   payment?: {
     provider: "PayFast";
+    environment?: "sandbox" | "production" | "unknown";
     providerStatus?: string;
     providerPaymentId?: string;
     failureReason?: string;

@@ -131,6 +131,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
     .select({
       id: payments.id,
       orderId: payments.orderId,
+      provider: payments.provider,
       amount: payments.amount,
       status: payments.status,
       providerPaymentId: payments.providerPaymentId,
@@ -144,6 +145,9 @@ export async function processPayFastNotification(request: Request, rawBody: stri
     .limit(1);
   if (!payment) {
     throw new PayFastNotificationError("Unknown payment reference.", 404, "reference", merchantPaymentId);
+  }
+  if (["payfast-production", "payfast-sandbox"].includes(payment.provider) && payment.provider !== `payfast-${configuration.environment}`) {
+    throw new PayFastNotificationError("The payment environment does not match this checkout.", 400, "environment", merchantPaymentId);
   }
   if (
     cents(params.get("amount_gross"), merchantPaymentId) !== cents(payment.amount, merchantPaymentId) ||
@@ -186,6 +190,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       .update(payments)
       .set({
         providerPaymentId,
+        provider: `payfast-${configuration.environment}`,
         providerStatus,
         status: nextStatus,
         verifiedAt,

@@ -1,7 +1,9 @@
 import "server-only";
 
 import { Resend, type CreateEmailOptions } from "resend";
-import { eq } from "drizzle-orm";
+import { and, count, eq, gte, sql } from "drizzle-orm";
+import { createHmac } from "node:crypto";
+import type { ContactInput } from "./contact-input";
 import { requireDatabase } from "./db";
 import { customers, emailEvents, orderItems, orders } from "./db/schema";
 import type { Order, OrderStatus } from "./store-data";
@@ -48,10 +50,11 @@ function emailShell(content: string) {
 }
 
 type RecordedEmailInput = {
-  orderId: string;
+  orderId: string | null;
   recipient: string;
   template: string;
   idempotencyKey: string;
+  replyTo?: string;
 } & (
   | { subject: string; html: string; hostedTemplate?: never }
   | { hostedTemplate: { id: string; variables: Record<string, string | number> }; subject?: never; html?: never }
@@ -94,7 +97,7 @@ async function sendRecordedEmail(input: RecordedEmailInput) {
     const from = configuredSender();
     const email: CreateEmailOptions = input.hostedTemplate
       ? { from, to: input.recipient, template: input.hostedTemplate }
-      : { from, to: input.recipient, subject: input.subject, html: input.html };
+      : { from, to: input.recipient, subject: input.subject, html: input.html, replyTo: input.replyTo };
     const result = await resend.emails.send(email, { idempotencyKey: input.idempotencyKey });
     if (result.error) throw new Error(result.error.message);
     await database
@@ -110,6 +113,37 @@ async function sendRecordedEmail(input: RecordedEmailInput) {
       .where(eq(emailEvents.id, eventId));
     throw error;
   }
+}
+
+export class ContactRateLimitError extends Error {}
+
+export async function sendContactMessage(input: ContactInput, sourceIp: string) {
+  if (!resend || !process.env.AUTH_SECRET) throw new Error("Contact email is not configured.");
+  const database = requireDatabase();
+  const sourceHash = createHmac("sha256", process.env.AUTH_SECRET).update(`contact:${sourceIp}`).digest("hex");
+  const template = `contact-${sourceHash}`;
+  const idempotencyKey = `contact-message:${input.submissionId}`;
+  const recipient = process.env.ORDER_NOTIFICATION_EMAIL?.trim() || "movingmodesty@gmail.com";
+
+  // A database lock and durable reservations enforce the limit across Vercel
+  // instances. Retrying the same submission does not consume another slot.
+  await database.transaction(async (transaction) => {
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${template}, 0))`);
+    const [existing] = await transaction.select({ id: emailEvents.id }).from(emailEvents)
+      .where(eq(emailEvents.idempotencyKey, idempotencyKey)).limit(1);
+    if (existing) return;
+    const [recent] = await transaction.select({ value: count() }).from(emailEvents)
+      .where(and(eq(emailEvents.template, template), gte(emailEvents.createdAt, new Date(Date.now() - 60 * 60 * 1000))));
+    if (recent.value >= 5) throw new ContactRateLimitError("Please wait before sending another message, or contact us on WhatsApp.");
+    await transaction.insert(emailEvents).values({ recipient, template, idempotencyKey, status: "queued" })
+      .onConflictDoNothing({ target: emailEvents.idempotencyKey });
+  });
+
+  return sendRecordedEmail({
+    orderId: null, recipient, template, idempotencyKey, replyTo: input.email,
+    subject: "New Moving Modesty website enquiry",
+    html: emailShell(`<h1 style="font-size:24px;font-weight:400">Website enquiry</h1><p><strong>Name:</strong> ${escapeHtml(input.name)}<br><strong>Email:</strong> ${escapeHtml(input.email)}</p><p style="white-space:pre-wrap;line-height:1.6">${escapeHtml(input.message)}</p>`),
+  });
 }
 
 export async function sendPaidOrderEmails(orderId: string) {

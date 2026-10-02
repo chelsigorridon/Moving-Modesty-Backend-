@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { requireDatabase } from "../../db";
-import { addresses, customers, orders, shipments, orderStatusHistory } from "../../db/schema";
+import { addresses, customers, orders, payments, shipments, orderStatusHistory } from "../../db/schema";
 import { getBobGoConfiguration } from "./configuration";
 import { bobGoRequest, getConfiguredBobGoLocation } from "./client";
 import { fingerprint, parcelInput, parcelPayload, parseLocation, parseRates, record, records, signQuote, submissionIsBooked, textValue, verifyQuote, type ApprovedQuote, type PackedParcel } from "./protocol";
@@ -14,9 +14,10 @@ function secret() {
   return process.env.AUTH_SECRET;
 }
 async function loadOrder(orderNumber: string) {
-  const [data] = await database().select({ order: orders, customer: customers, address: addresses, shipment: shipments })
+  const [data] = await database().select({ order: orders, customer: customers, address: addresses, shipment: shipments, paymentProvider: payments.provider })
     .from(orders).leftJoin(customers, eq(orders.customerId, customers.id))
     .leftJoin(addresses, eq(orders.deliveryAddressId, addresses.id)).leftJoin(shipments, eq(shipments.orderId, orders.id))
+    .leftJoin(payments, eq(payments.orderId, orders.id))
     .where(eq(orders.orderNumber, orderNumber)).limit(1);
   if (!data) throw new ShippingConflict("Order not found.");
   return data;
@@ -25,6 +26,7 @@ type ShippingOrder = Awaited<ReturnType<typeof loadOrder>>;
 function assertCanBook(data: ShippingOrder) {
   const config = getBobGoConfiguration();
   if (!config.enabled || !config.apiTokenConfigured || !config.pickupPointLocationId || !config.pickupPointProviderSlug || !config.senderEmail || !config.senderPhone) throw new ShippingConflict("Bob Go setup is incomplete or booking is disabled.");
+  if (config.environment === "production" && data.paymentProvider === "payfast-sandbox") throw new ShippingConflict("Test payments cannot create live courier bookings. Use a sandbox courier account for test orders.");
   if (data.order.deliveryMethod !== "courier" || data.order.paymentStatus !== "paid" || data.order.status !== "ready") throw new ShippingConflict("Only paid delivery orders marked ready for courier can be booked.");
   const address = data.address;
   if (!address?.line1 || !address.city || !address.province || !address.postalCode || address.countryCode !== "ZA" || !data.customer?.phone || !data.customer.email) throw new ShippingConflict("A complete South African address, customer email and phone number are required.");

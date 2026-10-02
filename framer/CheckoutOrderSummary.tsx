@@ -225,12 +225,12 @@ export default function CheckoutOrderSummary(props: Props) {
                     style={{ display: "flex" }}
                 >
                     <span>{open ? "Hide" : "Show"} order summary</span>
-                    <strong style={{ fontSize: 17, fontWeight: 500 }}>{formatMoney(subtotal)}</strong>
+                    <strong style={{ fontSize: 17, fontWeight: 500 }}>{formatMoney(total)}</strong>
                 </button>
             ) : null}
 
             <div className="mm-checkout-summary-content" data-hidden={compact && !open ? "true" : "false"}>
-                <h2 style={{ margin: compact ? "22px 0 0" : 0, fontSize: 25, lineHeight: 1.15, fontWeight: 400, letterSpacing: ".055em", textTransform: "uppercase" }}>
+                <h2 style={{ margin: compact ? "22px 0 0" : 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: 25, lineHeight: 1.15, fontWeight: 400, letterSpacing: ".055em", textTransform: "uppercase" }}>
                     Your order
                 </h2>
 
@@ -253,7 +253,7 @@ export default function CheckoutOrderSummary(props: Props) {
                                 )}
                             </div>
                             <div style={{ minWidth: 0 }}>
-                                <h3 style={{ margin: 0, fontSize: 17, lineHeight: 1.25, fontWeight: 500, letterSpacing: ".025em", textTransform: "uppercase" }}>
+                                <h3 style={{ margin: 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: 17, lineHeight: 1.25, fontWeight: 500, letterSpacing: ".025em", textTransform: "uppercase" }}>
                                     {baseName(item.name)}
                                 </h3>
                                 <p style={{ margin: "7px 0 0", fontSize: 14, lineHeight: 1.4 }}>

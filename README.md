@@ -75,6 +75,14 @@ The seven current CMS product colours are included in the built-in catalogue. `C
 
 Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_KEY` and `RESEND_FROM_EMAIL`. The email service uses a stable idempotency key for each order/status combination to prevent duplicate customer updates.
 
+The custom Framer `ContactForm` submits to `POST /api/contact`; it does not use Framer's native form notifications. Set `STORE_URL` to the exact published storefront origin. The endpoint validates messages, escapes email content, applies a durable five-new-submissions-per-IP-per-hour limit, and records delivery attempts in `emailEvents` without creating an order. It sends enquiries to `ORDER_NOTIFICATION_EMAIL` (default `movingmodesty@gmail.com`) with the customer's email as Reply-To. A successful submission means Resend accepted the email, not that it reached the inbox. Deploy the API before publishing the new form, then verify an enquiry in the recipient inbox.
+
+## Live and test orders
+
+New PayFast checkouts persist `payfast-production` or `payfast-sandbox` on the payment record. The admin dashboard excludes known sandbox payments and older unclassified payments from live paid sales. Legacy `payfast` records are deliberately unclassified; verify them in PayFast before fulfilment instead of treating the current environment setting as proof that an old payment was live.
+
+Sandbox payments cannot request production Bob Go quotes or create live courier bookings. Courier booking remains a manual, confirmed action for paid, packed delivery orders. Do not treat configuration checks or automated tests as proof of a successful live payment, email delivery, or courier shipment.
+
 ## PayFast
 
 The PayFast flow is guarded by `PAYFAST_INTEGRATION_ENABLED`. The checkout endpoint loads the order by its private checkout token, recalculates the current server-side catalogue total, signs the hosted-payment form, and never accepts a browser-supplied amount. The notification endpoint verifies the signature, merchant ID, source IP, stored order total, and PayFast validation response before marking an order paid. A browser return does not confirm payment.

@@ -31,6 +31,7 @@ interface CMSProductCarouselProps {
     autoPlay?: boolean
     interval?: number
     imageFit?: "cover" | "contain"
+    imagePosition?: "center" | "top" | "bottom"
     arrowBackground?: string
     arrowColour?: string
     dotColour?: string
@@ -96,6 +97,7 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         autoPlay = false,
         interval = 4,
         imageFit = "cover",
+        imagePosition = "center",
         arrowBackground = "rgba(250, 248, 244, 0.94)",
         arrowColour = "#738063",
         dotColour = "#738063",
@@ -104,7 +106,6 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
 
     const isStatic = useIsStaticRenderer()
     const [current, setCurrent] = useState(0)
-    const [direction, setDirection] = useState(1)
     const pointerStart = useRef<number | null>(null)
 
     const images = useMemo(() => {
@@ -126,7 +127,6 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
     useEffect(() => {
         startTransition(() => {
             setCurrent(0)
-            setDirection(1)
         })
     }, [imageSignature])
 
@@ -134,7 +134,6 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         if (isStatic || !autoPlay || images.length < 2) return
         const timer = window.setInterval(() => {
             startTransition(() => {
-                setDirection(1)
                 setCurrent((value) => (value + 1) % images.length)
             })
         }, Math.max(2, interval) * 1000)
@@ -145,7 +144,6 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         if (images.length < 2) return
         const next = Math.max(0, Math.min(images.length - 1, index))
         if (next === current) return
-        setDirection(next > current ? 1 : -1)
         startTransition(() => setCurrent(next))
     }
 
@@ -187,6 +185,13 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         .mm-product-carousel .mm-carousel-arrow:focus-visible .mm-carousel-arrow-visual {
             outline: 2px solid ${arrowColour};
             outline-offset: 2px;
+        }
+        .mm-product-carousel .mm-carousel-dot { position: relative; }
+        .mm-product-carousel .mm-carousel-dot::before {
+            content: ""; position: absolute; inset: -10px 0;
+        }
+        .mm-product-carousel .mm-carousel-dot:focus-visible {
+            outline: 2px solid ${dotColour}; outline-offset: 2px;
         }
         @media (hover: hover) and (pointer: fine) {
             .mm-product-carousel:not(.mm-carousel-static) .mm-carousel-arrow {
@@ -231,26 +236,18 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         >
             <style>{css}</style>
             {active?.src ? (
-                <AnimatePresence mode="wait" initial={false}>
+                <AnimatePresence initial={false}>
                     <motion.img
                         key={(active.src || "product-image") + current}
                         src={active.src}
                         srcSet={active.srcSet}
                         alt={active.alt || "Product image " + (current + 1)}
-                        initial={
-                            isStatic
-                                ? false
-                                : { opacity: 0.72, x: direction * 18 }
-                        }
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={
-                            isStatic
-                                ? undefined
-                                : { opacity: 0.72, x: direction * -18 }
-                        }
+                        initial={isStatic ? false : { opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={isStatic ? undefined : { opacity: 0 }}
                         transition={{
-                            duration: 0.25,
-                            ease: [0.22, 1, 0.36, 1],
+                            duration: 0.2,
+                            ease: "easeOut",
                         }}
                         draggable={false}
                         style={{
@@ -259,7 +256,7 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
                             width: "100%",
                             height: "100%",
                             objectFit: imageFit,
-                            objectPosition: "center",
+                            objectPosition: imagePosition,
                             userSelect: "none",
                         }}
                     />
@@ -320,16 +317,16 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
                     style={{
                         position: "absolute",
                         left: "50%",
-                        bottom: 12,
+                        bottom: 8,
                         transform: "translateX(-50%)",
                         display: "flex",
-                        gap: 6,
-                        padding: "6px 8px",
+                        gap: 0,
+                        padding: "2px 4px",
                         borderRadius: 999,
-                        border: "1px solid rgba(115, 128, 99, 0.18)",
-                        background: "rgba(250, 248, 244, 0.86)",
-                        backdropFilter: "blur(6px)",
-                        boxShadow: "0 3px 12px rgba(51, 43, 37, 0.08)",
+                        border: "1px solid rgba(115, 128, 99, 0.13)",
+                        background: "rgba(234, 230, 227, 0.72)",
+                        backdropFilter: "blur(8px)",
+                        boxShadow: "0 1px 6px rgba(51, 43, 37, 0.06)",
                     }}
                 >
                     {images.map((image, index) => (
@@ -345,8 +342,8 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
                             aria-label={"Show product image " + (index + 1)}
                             aria-current={index === current ? "true" : undefined}
                             style={{
-                                width: 44,
-                                height: 44,
+                                width: 24,
+                                height: 24,
                                 padding: 0,
                                 border: 0,
                                 borderRadius: 999,
@@ -359,8 +356,8 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
                             <span
                                 className="mm-carousel-dot-visual"
                                 style={{
-                                    width: index === current ? 16 : 7,
-                                    height: 7,
+                                    width: index === current ? 12 : 4,
+                                    height: 4,
                                     borderRadius: 999,
                                     background: dotColour,
                                     opacity: index === current ? 1 : 0.45,
@@ -454,6 +451,12 @@ addPropertyControls<CMSProductCarouselProps>(CMSProductCarousel, {
         optionTitles: ["Cover", "Contain"],
         defaultValue: "cover",
         displaySegmentedControl: true,
+    },
+    imagePosition: {
+        type: ControlType.Enum,
+        title: "Image Position",
+        options: ["center", "top", "bottom"],
+        defaultValue: "center",
     },
     arrowBackground: {
         type: ControlType.Color,
