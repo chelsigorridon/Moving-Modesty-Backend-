@@ -66,7 +66,9 @@ test("only a confirmed locker-to-door shipment unlocks handover", () => {
 test("booking stays server-side, commits a durable lock before the chargeable request and never auto-dispatches", () => {
   const source = readFileSync(new URL("../lib/integrations/bobgo/shipping.ts", import.meta.url), "utf8");
   const booking = source.slice(source.indexOf("export async function bookCourierShipment"), source.indexOf("async function saveShipmentResponse"));
-  assert.ok(booking.indexOf('status: "booking"') < booking.indexOf('bobGoRequest("/shipments", body)'));
+  const submissionIndex = booking.indexOf('bobGoRequest("/shipments", body,');
+  assert.ok(submissionIndex > 0);
+  assert.ok(booking.indexOf('status: "booking"') >= 0 && booking.indexOf('status: "booking"') < submissionIndex);
   assert.match(booking, /\.for\("update"\)/);
   assert.match(booking, /verifyQuote\(quoteToken, secret\(\)\)/);
   assert.doesNotMatch(booking, /delivery_pickup_point_location_id|status: "dispatched"/);

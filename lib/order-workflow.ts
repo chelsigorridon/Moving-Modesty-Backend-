@@ -1,4 +1,5 @@
 import type { AdminOrder, OrderStatus } from "./admin-types.ts";
+import { hasShipmentTracking } from "./order-notifications.ts";
 
 export type OrderWorkflow = {
   nextStatus: OrderStatus | null;
@@ -9,6 +10,7 @@ export type OrderWorkflow = {
 
 type WorkflowOrder = Pick<AdminOrder, "status" | "paymentStatus" | "deliveryMethod"> & {
   shipmentStatus?: string;
+  shipmentTrackingNumber?: string | null;
 };
 
 export class OrderWorkflowConflict extends Error {}
@@ -34,7 +36,9 @@ export function getOrderWorkflow(order: WorkflowOrder): OrderWorkflow {
     : "Once packed, mark ready for courier handover.", "Ready", order.deliveryMethod === "Collection" ? "Ready for collection" : "Ready for courier");
   if (order.status === "Ready" && order.deliveryMethod === "Collection") return result("Arrange collection privately. Only mark collected after handing the parcel to the customer.", "Collected", "Mark collected");
   if (order.status === "Ready" && order.deliveryMethod === "Courier") return shipmentCommitted && order.shipmentStatus === "Booked"
-    ? result("Use the booked waybill. Mark dispatched only after handing the parcel to the courier or locker.", "Dispatched", "Mark dispatched")
+    ? hasShipmentTracking(order.shipmentTrackingNumber)
+      ? result("Print the booked waybill and attach it to the parcel. Mark dispatched only after courier or locker drop-off; this submits the customer's tracking email.", "Dispatched", "Mark dispatched")
+      : result("The booking has no confirmed tracking number yet. Check shipment status before dispatching or notifying the customer.")
     : result(order.shipmentStatus === "Booking"
       ? "Bob Go is checking this shipment. Use Check shipment status; do not book another waybill."
       : "Confirm the packed weight and dimensions below, get a courier quote, then approve the booking. Mark dispatched only after dropping off the parcel.");

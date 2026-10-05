@@ -51,6 +51,8 @@ interface AdminOrder {
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
     items: OrderItem[]
+    actionNeeded?: Array<{ message: string; reference?: string }>
+    notifications?: Array<{ id: string; title: string; recipient: string; status: "queued" | "sent" | "delivered" | "failed"; createdAt: string; retryable: boolean; deliveryMessage?: string; deliveryEvent?: string }>
     shipping?: {
         provider: "Bob Go"
         status: "Not ready" | "Ready to book" | "Booking" | "Booked" | "Failed" | "Cancelled"
@@ -79,6 +81,7 @@ interface AdminOrder {
 
 interface Snapshot {
     orders: AdminOrder[]
+    operationalNotice?: string
     paymentEnvironment?: "sandbox" | "production"
     bobGoConnection?: { environment: "sandbox" | "production"; enabled: boolean; configured: boolean }
     bobGoSetup?: {
@@ -86,6 +89,12 @@ interface Snapshot {
         match: Record<string, unknown> | null
         matchCount: number
     } | null
+}
+interface CourierConnectionCheck {
+    status: "unchecked" | "checking" | "connected" | "error"
+    message?: string
+    location?: string
+    checkedAt?: string
 }
 interface CourierQuote {
     providerName: string
@@ -121,6 +130,21 @@ interface AdminPortalProps {
 }
 
 const emptySnapshot: Snapshot = { orders: [] }
+
+async function adminFetch(url: string, init?: RequestInit) {
+    try { return await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(45000) }) }
+    catch (error) {
+        if (error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
+            // Do not include tokens, URLs, form fields or customer data in telemetry.
+            void fetch(`${new URL(url).origin}/api/diagnostics/browser`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "admin", code: error.name === "TypeError" ? "browser_network" : "browser_timeout" }), signal: AbortSignal.timeout(5000) }).catch(() => undefined)
+        }
+        throw error
+    }
+}
+
+function apiErrorMessage(data: { error?: string; errorRef?: string } | null, fallback: string) {
+    return `${data?.error || fallback}${data?.errorRef ? ` Reference: ${data.errorRef}` : ""}`
+}
 
 const money = new Intl.NumberFormat("en-ZA", {
     style: "currency",
@@ -177,11 +201,15 @@ export default function AdminPortal(props: AdminPortalProps) {
     const [loading, setLoading] = useState(false)
     const [notice, setNotice] = useState("")
     const [selectedOrderId, setSelectedOrderId] = useState("")
-    const [orderFilter, setOrderFilter] = useState("All orders")
+    const [orderFilter, setOrderFilter] = useState("Needs attention")
     const [search, setSearch] = useState("")
     const [method, setMethod] = useState("All methods")
     const [refresh, setRefresh] = useState(0)
     const [loadState, setLoadState] = useState("loading")
+    const [deliverySettingsOpen, setDeliverySettingsOpen] = useState(false)
+    const [courierCheck, setCourierCheck] = useState<CourierConnectionCheck>({ status: "unchecked" })
+    const accountRef = useRef<HTMLDetailsElement>(null)
+    const accountSummaryRef = useRef<HTMLElement>(null)
     const mutationPending = useRef(false)
 
     const backendConfigured = Boolean(normalizeBaseUrl(apiBaseUrl))
@@ -197,7 +225,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
         let active = true
         startTransition(() => { setLoading(true); setLoadState("loading") })
-        fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data`, {
+        adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data`, {
             headers: { Authorization: `Bearer ${adminToken}` },
         })
             .then(async (response) => {
@@ -206,7 +234,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                     throw new Error("Please sign in again.")
                 }
                 const data = await response.json().catch(() => null)
-                if (!response.ok) throw new Error(data?.error || "The admin data could not be loaded.")
+                if (!response.ok) throw new Error(apiErrorMessage(data, "The admin data could not be loaded."))
                 return data
             })
             .then((data: Snapshot) => {
@@ -215,6 +243,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                     setSnapshot(data)
                     const requested = new URLSearchParams(window.location.search).get("order")
                     setSelectedOrderId((current) => current || requested || data.orders[0]?.id || "")
+                    if (requested) setOrderFilter("All orders")
                     setLoadState("ready")
                 })
             })
@@ -234,12 +263,14 @@ export default function AdminPortal(props: AdminPortalProps) {
         const query = search.trim().toLowerCase()
         return snapshot.orders.filter((order) => {
             const matchesStatus = orderFilter === "All orders" ||
-                (orderFilter === "Live orders" && order.payment?.environment === "production") ||
-                (orderFilter === "Test orders" && order.payment?.environment === "sandbox") ||
-                (orderFilter === "Unclassified" && !["production", "sandbox"].includes(order.payment?.environment || "unknown")) ||
-                (orderFilter === "To do" && order.paymentStatus === "Paid" && !["Collected", "Delivered", "Cancelled"].includes(order.status)) ||
-                (orderFilter === "Completed" && ["Collected", "Delivered"].includes(order.status)) ||
-                orderFilter === order.paymentStatus || orderFilter === order.status
+                (orderFilter === "Needs attention" && Boolean(order.actionNeeded?.length)) ||
+                (orderFilter === "Needs attention" && order.paymentStatus === "Paid" &&
+                    (order.status === "New" || order.status === "Confirmed" ||
+                     (order.status === "Ready" && order.shipping?.status !== "Booking" && order.shipping?.status !== "Booked") ||
+                     (!['Collected', 'Delivered', 'Cancelled'].includes(order.status) && order.shipping?.status === "Failed"))) ||
+                (orderFilter === "In progress" && order.paymentStatus === "Paid" &&
+                    (order.status === "Preparing" || order.status === "Dispatched" ||
+                     (order.status === "Ready" && ['Booking', 'Booked'].includes(order.shipping?.status || ""))))
             return matchesStatus && (method === "All methods" || method === order.deliveryMethod) &&
                 (!query || [order.id, order.customer, order.email].some((value) => value.toLowerCase().includes(query)))
         })
@@ -257,7 +288,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         mutationPending.current = true
         startTransition(() => { setLoading(true); setNotice("") })
         try {
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}`, {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}`, {
                 method: "PATCH",
                 headers: {
                     "Content-Type": "application/json",
@@ -268,7 +299,7 @@ export default function AdminPortal(props: AdminPortalProps) {
             const data = await response.json()
             if (!response.ok) {
                 if (response.status === 409) setRefresh((current) => current + 1)
-                throw new Error(data?.error || "The order status could not be updated.")
+                throw new Error(apiErrorMessage(data, "The order status could not be updated."))
             }
             startTransition(() => {
                 setSnapshot((current) => ({
@@ -291,7 +322,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         startTransition(() => { setLoading(true); setNotice("") })
         try {
             const endpoint = action === "book" ? "book-shipment" : "shipment"
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`, {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
                 body: JSON.stringify(action === "book" ? { ...payload, confirm: true } : { ...payload, action }),
@@ -299,7 +330,7 @@ export default function AdminPortal(props: AdminPortalProps) {
             const data = await response.json().catch(() => null)
             if (!response.ok) {
                 if (response.status === 401) route("/admin/login")
-                throw new Error(data?.error || "Bob Go could not complete this request.")
+                throw new Error(apiErrorMessage(data, "Bob Go could not complete this request."))
             }
             startTransition(() => {
                 if (data.order) setSnapshot((current) => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) }))
@@ -320,32 +351,47 @@ export default function AdminPortal(props: AdminPortalProps) {
     async function checkCourierConnection() {
         if (mutationPending.current || !liveEnabled) return
         mutationPending.current = true
-        startTransition(() => setLoading(true))
+        startTransition(() => { setLoading(true); setCourierCheck({ status: "checking" }) })
         try {
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { Authorization: `Bearer ${token()}` } })
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { Authorization: `Bearer ${token()}` } })
             const data = await response.json().catch(() => null)
             if (!response.ok || !data?.connected) throw new Error(data?.error || "The drop-off point is not configured.")
-            startTransition(() => setNotice(`Bob Go ${data.environment === "production" ? "LIVE" : "SANDBOX"} API connected. Drop-off verified: ${data.target}. ${data.bookingEnabled && data.senderContactConfigured ? "Manual booking enabled." : "Booking setup is incomplete."} No shipment was booked.`))
+            startTransition(() => setCourierCheck({ status: "connected", location: data.target,
+                message: data.bookingEnabled && data.senderContactConfigured ? "Manual booking is enabled." : "The connection works, but booking setup is incomplete.",
+                checkedAt: new Date().toLocaleString("en-ZA") }))
         } catch (error) {
-            startTransition(() => setNotice(error instanceof Error ? error.message : "Connection check failed."))
+            startTransition(() => setCourierCheck({ status: "error", message: error instanceof Error ? error.message : "Connection check failed." }))
         } finally {
             mutationPending.current = false
             startTransition(() => setLoading(false))
         }
     }
 
-    async function resendPaidEmail(order: AdminOrder) {
-        if (mutationPending.current || !liveEnabled || order.paymentStatus !== "Paid") return
+    function openDeliverySettings() {
+        if (accountRef.current) accountRef.current.open = false
+        setDeliverySettingsOpen(true)
+        if (courierCheck.status === "unchecked") void checkCourierConnection()
+    }
+
+    function closeDeliverySettings() {
+        setDeliverySettingsOpen(false)
+        accountSummaryRef.current?.focus()
+    }
+
+    async function retryNotification(order: AdminOrder, notificationId: string) {
+        if (mutationPending.current || !liveEnabled) return
         mutationPending.current = true
         startTransition(() => setLoading(true))
         try {
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/resend-paid-email`, {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/notifications`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${token()}` },
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                body: JSON.stringify({ notificationId }),
             })
             const data = await response.json().catch(() => null)
-            if (!response.ok) throw new Error(data?.error || "The payment email could not be sent.")
-            startTransition(() => setNotice(`Payment confirmation email sent for ${order.id}.`))
+            if (data?.order) startTransition(() => setSnapshot(current => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) })))
+            if (!response.ok) throw new Error(apiErrorMessage(data, "The notification could not be submitted."))
+            startTransition(() => setNotice(`Notification submitted for ${order.id}. Submitted does not yet confirm delivery to the inbox.`))
         } catch (error) {
             startTransition(() => setNotice(error instanceof Error ? error.message : "Email resend failed."))
         } finally {
@@ -383,11 +429,21 @@ export default function AdminPortal(props: AdminPortalProps) {
             ) : (
                 <div className="mm-admin__page">
                     <div className="mm-admin__utilities">
-                        <a href="/">View website ↗</a>
-                        <button type="button" className="mm-admin__text-button" disabled={loading} onClick={() => setRefresh((current) => current + 1)}>{loading ? "Updating…" : "Refresh orders"}</button>
-                        <button type="button" className="mm-admin__text-button" onClick={logout}>Log out</button>
+                        <AdminNav current={view} />
+                        <div className="mm-admin__utility-actions">
+                            <button type="button" className="mm-admin__text-button" disabled={loading} onClick={() => setRefresh((current) => current + 1)}>{loading ? "Updating…" : "Refresh orders"}</button>
+                            <details className="mm-admin__account" ref={accountRef}>
+                                <summary ref={accountSummaryRef}>Account</summary>
+                                <div className="mm-admin__account-menu">
+                                    <button type="button" className="mm-admin__text-button" aria-haspopup="dialog" onClick={openDeliverySettings}>Delivery settings</button>
+                                    <a href="/" target="_blank" rel="noopener noreferrer">View website</a>
+                                    <button type="button" className="mm-admin__text-button" onClick={logout}>Log out</button>
+                                </div>
+                            </details>
+                        </div>
                     </div>
                     {notice ? <div className="mm-admin__notice" role="status">{notice}</div> : null}
+                    {snapshot.operationalNotice ? <div className="mm-admin__notice" role="status">{snapshot.operationalNotice}</div> : null}
                     {liveEnabled && loadState !== "ready" ? (
                         <div className="mm-admin__empty" role="status"><strong>{loadState === "error" ? "Orders could not be loaded" : "Loading your orders…"}</strong><span>{loadState === "error" ? "Use Refresh orders to try again. No order data has been changed." : "Connecting securely to your store."}</span></div>
                     ) : view === "dashboard" ? (
@@ -406,20 +462,68 @@ export default function AdminPortal(props: AdminPortalProps) {
                             setMethod={setMethod}
                             updateOrderStatus={updateOrderStatus}
                             requestShipping={requestShipping}
-                            checkCourierConnection={checkCourierConnection}
                             bobGoConnection={snapshot.bobGoConnection}
-                            paymentEnvironment={snapshot.paymentEnvironment}
-                            resendPaidEmail={resendPaidEmail}
-                            bobGoSetup={snapshot.bobGoSetup}
+                            retryNotification={retryNotification}
                             loading={loading}
                         />
                     ) : (
                         <ProductsView />
                     )}
+                    <DeliverySettings open={deliverySettingsOpen} close={closeDeliverySettings} connection={snapshot.bobGoConnection}
+                        check={courierCheck} checking={courierCheck.status === "checking"} disabled={loading || !liveEnabled || loadState !== "ready"}
+                        checkConnection={checkCourierConnection} paymentEnvironment={snapshot.paymentEnvironment} />
                 </div>
             )}
         </section>
     )
+}
+
+function DeliverySettings({ open, close, connection, check, checking, disabled, checkConnection, paymentEnvironment }: {
+    open: boolean
+    close: () => void
+    connection?: Snapshot["bobGoConnection"]
+    check: CourierConnectionCheck
+    checking: boolean
+    disabled: boolean
+    checkConnection: () => void
+    paymentEnvironment?: Snapshot["paymentEnvironment"]
+}) {
+    const dialogRef = useRef<HTMLDialogElement>(null)
+    useEffect(() => {
+        const dialog = dialogRef.current
+        if (open && dialog && !dialog.open) dialog.showModal()
+        if (!open && dialog?.open) dialog.close()
+        return () => { if (dialog?.open) dialog.close() }
+    }, [open])
+    const ready = connection?.enabled && connection.configured
+    return <dialog className="mm-admin__dialog mm-admin__delivery-settings" ref={dialogRef}
+        aria-labelledby="mm-delivery-settings-title" aria-describedby="mm-delivery-settings-description"
+        onCancel={close} onClose={close} onClick={event => {
+            if (event.target !== event.currentTarget) return
+            const bounds = event.currentTarget.getBoundingClientRect()
+            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) close()
+        }}>
+        <div className="mm-admin__settings-heading">
+            <h2 id="mm-delivery-settings-title">Delivery settings</h2>
+            <button type="button" className="mm-admin__text-button" autoFocus onClick={close}>Close</button>
+        </div>
+        <p id="mm-delivery-settings-description" className="mm-admin__helper">Your courier connection. Delivery bookings are managed inside each paid delivery order.</p>
+        <section className="mm-admin__connection-status" aria-label="Courier connection status" aria-live="polite" aria-busy={checking}>
+            <div className="mm-admin__settings-heading"><strong>Bob Go</strong>{connection ? <span className="mm-admin__helper">{connection.environment === "production" ? "Live account" : "Test account"}</span> : null}</div>
+            <strong>{checking ? "Checking connection…" : check.status === "connected" ? "Connected" : check.status === "error" ? "Connection needs attention" : ready ? "Configured · not checked yet" : connection ? "Setup needs attention" : "Connection details unavailable"}</strong>
+            {check.location ? <p>Drop-off point: {check.location}</p> : null}
+            {check.message ? <p className={check.status === "error" ? "mm-admin__error" : undefined} role={check.status === "error" ? "alert" : undefined}>{check.message}</p> : null}
+            {connection && !ready ? <p>Courier booking is paused or setup is incomplete. Contact your website administrator.</p> : null}
+            {check.checkedAt ? <p className="mm-admin__helper">Last checked: {check.checkedAt}</p> : null}
+        </section>
+        <p className="mm-admin__helper">For delivery: prepare the parcel, mark the paid order Ready, then review its quote and confirm the booking. Collection orders do not use Bob Go.</p>
+        {paymentEnvironment === "sandbox" && connection?.environment === "production" ? <p className="mm-admin__error">Payments are in test mode. Live courier booking is blocked for test-paid orders.</p> : null}
+        <details className="mm-admin__technical"><summary>Troubleshooting</summary>
+            <p className="mm-admin__helper">This only checks the connection and drop-off point. It does not book a shipment or create a courier charge.</p>
+            <button type="button" className="mm-admin__secondary-button" disabled={disabled} onClick={checkConnection}>{checking ? "Checking connection…" : "Check courier connection (no booking)"}</button>
+            <p className="mm-admin__helper">If the check fails, contact your website administrator. No API keys need to be entered here.</p>
+        </details>
+    </dialog>
 }
 
 function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl: string; liveEnabled: boolean; backendConfigured: boolean }) {
@@ -442,7 +546,7 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
             setError("")
         })
         try {
-            const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/login`, {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
@@ -518,35 +622,48 @@ function PageHeader({ eyebrow, title, action, onAction }: { eyebrow: string; tit
 }
 
 function AdminNav({ current }: { current: "dashboard" | "orders" | "products" }) {
+    const [open, setOpen] = useState(false)
+    const triggerRef = useRef<HTMLButtonElement>(null)
+    function close() {
+        setOpen(false)
+        triggerRef.current?.focus()
+    }
     return (
-        <nav className="mm-admin__nav" aria-label="Admin navigation">
-            <a aria-current={current === "dashboard" ? "page" : undefined} className={current === "dashboard" ? "is-active" : ""} href="/admin">Dashboard</a>
-            <a aria-current={current === "orders" ? "page" : undefined} className={current === "orders" ? "is-active" : ""} href="/admin/orders">Orders</a>
-            <a aria-current={current === "products" ? "page" : undefined} className={current === "products" ? "is-active" : ""} href="/admin/products">Products (CMS)</a>
-        </nav>
+        <div className="mm-admin__responsive-nav" data-state={open ? "open" : "closed"} onKeyDown={event => {
+            if (event.key === "Escape" && open) { event.preventDefault(); close() }
+        }}>
+            <button type="button" className="mm-admin__menu-toggle" ref={triggerRef}
+                aria-expanded={open} aria-controls="mm-admin-navigation" onClick={() => setOpen(current => !current)}>
+                <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    {open ? <path d="M4 4l12 12M16 4L4 16" /> : <path d="M3 5h14M3 10h14M3 15h14" />}
+                </svg>
+                {open ? "Close" : "Menu"}
+            </button>
+            <nav id="mm-admin-navigation" className="mm-admin__nav" aria-label="Admin navigation" hidden={!open}>
+                <a onClick={close} aria-current={current === "dashboard" ? "page" : undefined} className={current === "dashboard" ? "is-active" : ""} href="/admin">Dashboard</a>
+                <a onClick={close} aria-current={current === "orders" ? "page" : undefined} className={current === "orders" ? "is-active" : ""} href="/admin/orders">Orders</a>
+                <a onClick={close} aria-current={current === "products" ? "page" : undefined} className={current === "products" ? "is-active" : ""} href="/admin/products">Products (CMS)</a>
+            </nav>
+        </div>
     )
 }
 
 function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void }) {
     const liveOrders = snapshot.orders.filter((order) => order.payment?.environment === "production")
-    const testCount = snapshot.orders.filter((order) => order.payment?.environment === "sandbox").length
-    const unclassifiedCount = snapshot.orders.length - liveOrders.length - testCount
     const paidRevenue = liveOrders
         .filter((order) => order.paymentStatus === "Paid")
         .reduce((sum, order) => sum + order.total, 0)
     const stats = [
-        ["Live · to confirm", liveOrders.filter((order) => order.status === "New" && order.paymentStatus === "Paid").length],
-        ["Live · preparing", liveOrders.filter((order) => order.status === "Preparing" && order.paymentStatus === "Paid").length],
-        ["Live · ready", liveOrders.filter((order) => order.status === "Ready" && order.paymentStatus === "Paid").length],
-        ["Live paid order value", money.format(paidRevenue)],
+        ["To prepare", liveOrders.filter((order) => ["New", "Confirmed"].includes(order.status) && order.paymentStatus === "Paid").length],
+        ["Preparing", liveOrders.filter((order) => order.status === "Preparing" && order.paymentStatus === "Paid").length],
+        ["Ready to hand over", liveOrders.filter((order) => order.status === "Ready" && order.paymentStatus === "Paid").length],
+        ["Paid order value", money.format(paidRevenue)],
     ]
     return (
         <>
             <PageHeader eyebrow="ADMIN PORTAL" title="Dashboard" />
-            <AdminNav current="dashboard" />
-            <p className="mm-admin__helper">Start with Orders → To do. Check payment, confirm the order, then prepare and hand it over.</p>
+            <p className="mm-admin__helper">Your store at a glance. Open Orders to see what needs doing next.</p>
             {snapshot.paymentEnvironment === "sandbox" ? <div className="mm-admin__notice">PayFast is currently in test mode. Test payments are excluded from live totals.</div> : null}
-            <p className="mm-admin__helper">Live totals exclude {testCount} test and {unclassifiedCount} unclassified orders. Older orders without a recorded payment environment remain unclassified; check them in PayFast before treating them as sales.</p>
             <div className="mm-admin__stats">
                 {stats.map(([label, value]) => (
                     <article className="mm-admin__stat" key={String(label)}>
@@ -557,7 +674,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void })
             </div>
             <div className="mm-admin__section-heading">
                 <h2>Recent orders</h2>
-                <button className="mm-admin__button" type="button" onClick={() => route("/admin/orders")}>Manage orders</button>
+                <a className="mm-admin__button mm-admin__button-link" href="/admin/orders">Open orders</a>
             </div>
             <div className="mm-admin__order-table">
                 {snapshot.orders.length === 0 ? (
@@ -569,22 +686,11 @@ function DashboardView({ snapshot }: { snapshot: Snapshot; logout: () => void })
                         <span>{order.customer}</span>
                         <span>{order.placedAt}</span>
                         <span>{money.format(order.total)}</span>
-                        <span className="mm-admin__badges"><em>{order.payment?.environment === "production" ? "LIVE" : order.payment?.environment === "sandbox" ? "TEST" : "UNCLASSIFIED"}</em><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em></span>
+                        <span className="mm-admin__badges"><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em></span>
                     </button>
                 ))}
             </div>
-            <div className="mm-admin__quick-grid">
-                <article className="mm-admin__quick-card">
-                    <h3>Products</h3>
-                    <p>Add new products, update photos and edit prices in Framer CMS.</p>
-                    <a className="mm-admin__website-link" href="/admin/products">Open product guidance →</a>
-                </article>
-                <article className="mm-admin__quick-card">
-                    <h3>Delivery</h3>
-                    <p>{snapshot.bobGoConnection?.enabled && snapshot.bobGoConnection.configured ? "Bob Go is configured for manual courier booking from Orders. Check the order, prepare the parcel, then approve the quote to create a waybill. Collection is arranged privately." : "Bob Go booking setup is incomplete. Check the courier connection in Orders. Collection is arranged privately with the customer."}</p>
-                    <a className="mm-admin__website-link" href="/admin/orders">Manage order handovers →</a>
-                </article>
-            </div>
+            <details className="mm-admin__technical"><summary>About these totals</summary><p className="mm-admin__helper">These figures include payments recorded in live PayFast only. Sandbox payments and payments without a recorded environment are excluded. This is order value, not an accounting or settlement report.</p></details>
         </>
     )
 }
@@ -602,11 +708,8 @@ function OrdersView({
     setMethod,
     updateOrderStatus,
     requestShipping,
-    checkCourierConnection,
     bobGoConnection,
-    paymentEnvironment,
-    resendPaidEmail,
-    bobGoSetup,
+    retryNotification,
     loading,
 }: {
     orders: AdminOrder[]
@@ -621,18 +724,22 @@ function OrdersView({
     setMethod: (value: string) => void
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
     requestShipping: ShippingRequest
-    checkCourierConnection: () => void
     bobGoConnection?: Snapshot["bobGoConnection"]
-    paymentEnvironment?: Snapshot["paymentEnvironment"]
-    resendPaidEmail: (order: AdminOrder) => void
-    bobGoSetup?: Snapshot["bobGoSetup"]
+    retryNotification: (order: AdminOrder, notificationId: string) => void
     loading: boolean
 }) {
     const detailRef = useRef<HTMLElement>(null)
     const listRef = useRef<HTMLDivElement>(null)
     const dialogRef = useRef<HTMLDialogElement>(null)
+    const courierRef = useRef<HTMLDivElement>(null)
     const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
-    const [focusDetail, setFocusDetail] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1199px)").matches && Boolean(new URLSearchParams(window.location.search).get("order")))
+    const [focusDetail, setFocusDetail] = useState(false)
+    const failedEmail = Boolean(selected?.notifications?.some(event => event.status === "failed"))
+    const [notificationsOpen, setNotificationsOpen] = useState(failedEmail)
+    useEffect(() => { if (failedEmail) setNotificationsOpen(true) }, [failedEmail, selected?.id])
+    useEffect(() => {
+        if (window.matchMedia("(max-width: 1199px)").matches && new URLSearchParams(window.location.search).get("order")) setFocusDetail(true)
+    }, [])
 
     useEffect(() => {
         if (!focusDetail) return
@@ -647,6 +754,7 @@ function OrdersView({
     }, [confirmation])
 
     function requestStatus(order: AdminOrder, status: OrderStatus, label: string) {
+        if (["Confirmed", "Preparing", "Ready"].includes(status)) { updateOrderStatus(order, status); return }
         const description = status === "Cancelled"
             ? `Cancel ${order.id}? This cannot be undone here. ${order.paymentStatus === "Paid" ? "This does not refund the payment. Handle any refund separately in PayFast. " : ""}The customer will be notified if email is configured.`
             : status === "Collected" ? `Confirm that ${order.customer} has actually received the parcel. This completes the order.`
@@ -659,22 +767,10 @@ function OrdersView({
     return (
         <>
             <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" />
-            <AdminNav current="orders" />
-            {bobGoConnection ? (
-                <section className="mm-admin__setup-card" aria-live="polite">
-                    <strong>Bob Go · {bobGoConnection.environment === "production" ? "LIVE courier account" : "SANDBOX courier account"}</strong>
-                    <p>{bobGoConnection.enabled && bobGoConnection.configured ? "Review a paid delivery order, mark it Ready, then get a quote and confirm its waybill. Booking is never automatic." : "Courier booking is disabled or setup is incomplete. Contact your website administrator."}</p>
-                    {paymentEnvironment === "sandbox" && bobGoConnection.environment === "production" ? <p>PayFast is still in test mode. Bob Go bookings are LIVE and can incur real courier charges, even for a test-paid order.</p> : null}
-                    <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={checkCourierConnection}>Check courier connection (no booking)</button>
-                </section>
-            ) : bobGoSetup ? (
-                <section className="mm-admin__setup-card" aria-live="polite">
-                    <strong>Delivery setup in progress</strong>
-                    <p>Bob Go booking is not available yet. Your website administrator will complete the courier setup.</p>
-                </section>
-            ) : null}
+            <p className="mm-admin__helper">Start with Needs attention. Select an order, then follow its next step.</p>
+            <section className="mm-admin__order-controls" aria-label="Find and filter orders">
             <div className="mm-admin__filters" role="group" aria-label="Order filters">
-                {["All orders", "Live orders", "Test orders", "Unclassified", "To do", "Pending payment", "Paid", "Failed", "Refunded", "Completed", "Cancelled"].map((label) => (
+                {["Needs attention", "In progress", "All orders"].map((label) => (
                     <button
                         className={`mm-admin__filter ${filter === label ? "is-active" : ""}`}
                         type="button"
@@ -688,9 +784,13 @@ function OrdersView({
             </div>
             <div className="mm-admin__search-row">
                 <label className="mm-admin__field">Find an order<input type="search" placeholder="Order number, name or email" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-                <label className="mm-admin__field">Receive by<select value={method} onChange={(event) => setMethod(event.target.value)}><option>All methods</option><option>Collection</option><option>Courier</option><option>To be confirmed</option></select></label>
+                <details className="mm-admin__extra-filter" open={method !== "All methods" ? true : undefined}>
+                    <summary>{method === "All methods" ? "Filter by delivery or collection" : `Showing: ${method}`}</summary>
+                    <label className="mm-admin__field">Receive by<select value={method} onChange={(event) => setMethod(event.target.value)}><option>All methods</option><option>Collection</option><option>Courier</option><option>To be confirmed</option></select></label>
+                </details>
             </div>
-            <p className="mm-admin__helper" role="status">{orders.length} {orders.length === 1 ? "order" : "orders"} shown · Choose an order to see its next step.</p>
+            <p className="mm-admin__helper" role="status">{orders.length} {orders.length === 1 ? "order" : "orders"} shown</p>
+            </section>
             <div className="mm-admin__orders-layout">
                 <div className="mm-admin__order-list" ref={listRef} tabIndex={-1}>
                     {!orders.length ? <div className="mm-admin__empty"><strong>No matching orders</strong><span>Try All orders or clear your search and delivery filter.</span></div> : null}
@@ -703,27 +803,34 @@ function OrdersView({
                             onClick={() => { setSelectedOrderId(order.id); if (window.matchMedia("(max-width: 1199px)").matches) setFocusDetail(true) }}
                         >
                             <span className="mm-admin__order-card-top">
-                                <strong>{order.id}</strong>
-                                <em className={badgeClass(order.status)}>{order.status}</em>
+                                <strong>{order.customer}</strong>
+                                <strong className="mm-admin__order-amount">{money.format(order.total)}</strong>
                             </span>
-                            <span>{order.customer}</span>
-                            <span>{order.placedAt}</span>
-                            <span className="mm-admin__badges"><em>{order.payment?.environment === "production" ? "LIVE" : order.payment?.environment === "sandbox" ? "TEST" : "UNCLASSIFIED"}</em><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><span>{order.deliveryMethod}</span></span>
-                            <strong>{money.format(order.total)}</strong>
+                            <span className="mm-admin__badges"><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em><span>{order.deliveryMethod}</span></span>
+                            <span className="mm-admin__order-meta">{order.id} · {order.placedAt}</span>
+                            {order.actionNeeded?.length ? <span className="mm-admin__order-meta">Action needed</span> : null}
                         </button>
                     ))}
                 </div>
                 {selected ? (
                     <article className="mm-admin__detail" ref={detailRef} tabIndex={-1} aria-label={`Details for ${selected.id}`}>
                         <button type="button" className="mm-admin__text-button mm-admin__back" onClick={() => { listRef.current?.scrollIntoView({ behavior: "auto", block: "start" }); listRef.current?.focus({ preventScroll: true }) }}>← Back to orders</button>
-                        <p className="mm-admin__eyebrow">SELECTED ORDER</p>
-                        <h2>{selected.id}</h2>
-                        <p className="mm-admin__helper">Payment environment: {selected.payment?.environment === "production" ? "Live" : selected.payment?.environment === "sandbox" ? "Test payment—no real customer payment" : "Unclassified—verify this older payment in PayFast"}</p>
+                        <div className="mm-admin__detail-heading">
+                            <p className="mm-admin__eyebrow">ORDER DETAILS</p>
+                            <h2>{selected.customer}</h2>
+                            <p className="mm-admin__order-meta">{selected.id} · {selected.placedAt}</p>
+                        </div>
+                        {selected.payment?.environment === "sandbox" ? <p className="mm-admin__notice">Sandbox payment—no real payment was collected. Do not fulfil this as a customer purchase.</p> : null}
+                        {selected.actionNeeded?.length ? <section className="mm-admin__notice" aria-label="Action needed"><strong>Action needed</strong>{selected.actionNeeded.map((issue, index) => <p key={issue.reference || index}>{issue.message}{issue.reference ? <small className="mm-admin__error-ref">Reference: {issue.reference}</small> : null}</p>)}</section> : null}
                         <div className="mm-admin__badges"><em className={badgeClass(selected.paymentStatus)}>{selected.paymentStatus}</em><em className={badgeClass(selected.status)}>{selected.status}</em><span>{selected.deliveryMethod}</span></div>
                         <section className="mm-admin__next-step" aria-label="Next step">
                             <p className="mm-admin__eyebrow">{["Collected", "Delivered", "Cancelled"].includes(selected.status) ? "ORDER CLOSED" : "YOUR NEXT STEP"}</p>
                             <p>{selected.workflow?.guidance || "Refresh orders to load the current workflow before making changes."}</p>
                             {selected.workflow?.nextStatus ? <button className="mm-admin__button" type="button" disabled={loading} onClick={() => requestStatus(selected, selected.workflow!.nextStatus!, selected.workflow!.actionLabel)}>{loading ? "Saving…" : selected.workflow.actionLabel}</button> : null}
+                            {selected.paymentStatus === "Paid" && selected.status === "Ready" && selected.deliveryMethod === "Courier" && selected.shipping && !["Booking", "Booked", "Cancelled"].includes(selected.shipping.status) ? <button className="mm-admin__button" type="button" disabled={loading} onClick={() => {
+                                courierRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" })
+                                courierRef.current?.focus({ preventScroll: true })
+                            }}>Book waybill</button> : null}
                         </section>
                         <Detail title="Customer">
                             <p>{selected.customer}</p><p>{selected.email}</p><p>{selected.phone}</p>
@@ -735,24 +842,32 @@ function OrdersView({
                         </Detail>
                         <Detail title="Payment">
                             <p>{selected.paymentStatus} · {money.format(selected.total)}</p>
-                            {selected.deliveryFee !== undefined ? <p>Delivery fee: {selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}</p> : null}
+                            {selected.deliveryFee !== undefined ? <p>{selected.deliveryMethod === "Collection" ? "Collection: no delivery fee" : `Customer delivery fee: ${selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}`}</p> : null}
+                            <details className="mm-admin__technical"><summary>Payment details</summary>
+                            <p>PayFast environment: {selected.payment?.environment === "production" ? "Live" : selected.payment?.environment === "sandbox" ? "Sandbox" : "Not recorded—check in PayFast if needed"}</p>
                             {selected.payment?.providerStatus ? <p>PayFast check: {selected.payment.providerStatus.replaceAll("_", " ")}</p> : null}
                             {selected.payment?.providerPaymentId ? <p>PayFast reference: {selected.payment.providerPaymentId}</p> : null}
                             {selected.payment?.failureReason ? <p className="mm-admin__payment-error">Reason: {selected.payment.failureReason}</p> : null}
+                            </details>
                         </Detail>
                         <Detail title="Fulfilment">
                             <p>{selected.deliveryMethod}</p><p>{selected.deliveryMethod === "Collection" ? selected.status === "Collected" ? "The parcel has been handed to the customer." : "Message the customer privately with the collection address and a suitable time." : selected.address || "Delivery address missing. Contact the customer before booking."}</p>
                         </Detail>
-                        {selected.shipping ? (
-                            <ShippingPanel key={selected.id} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} />
+                        {selected.deliveryMethod === "Courier" && selected.shipping &&
+                            ((selected.paymentStatus === "Paid" && selected.status === "Ready") || ["Booking", "Booked", "Failed"].includes(selected.shipping.status)) ? (
+                            <div ref={courierRef} tabIndex={-1} aria-label="Book this order's waybill"><ShippingPanel key={selected.id} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} /></div>
                         ) : null}
-                        <details key={selected.id} className="mm-admin__technical"><summary>Other actions</summary><div className="mm-admin__actions">
-                            {selected.paymentStatus === "Paid" ? (
-                                <button className="mm-admin__secondary-button" type="button" disabled={loading} onClick={() => setConfirmation({ title: "Resend payment confirmation", description: `Send the paid-order confirmation again to ${selected.email}?`, run: () => resendPaidEmail(selected) })}>Resend payment email</button>
-                            ) : null}
+                        <details key={`notifications-${selected.id}`} className="mm-admin__technical" open={notificationsOpen} onToggle={event => setNotificationsOpen(event.currentTarget.open)}>
+                            <summary>Email notifications{selected.notifications?.some(event => event.status === "failed") ? " · Action needed" : ""}</summary>
+                            <p className="mm-admin__helper">Submitted means the email provider accepted it, not that it reached the inbox. Preparation steps do not send customer emails.</p>
+                            {!selected.notifications?.length ? <p>No recorded notifications yet. Older emails may not be listed.</p> : <ul className="mm-admin__notifications">{selected.notifications.map(event => <li key={event.id}>
+                                <div><strong>{event.title}</strong><p>{event.recipient}</p><p role={event.status === "failed" ? "status" : undefined}>{event.deliveryEvent === "email.delivery_delayed" ? "Delivery delayed" : event.deliveryEvent === "email.bounced" ? "Bounced" : event.status === "sent" ? "Submitted" : event.status === "delivered" ? "Delivered to mail server" : event.status === "queued" ? "Awaiting submission" : "Failed"}{event.status === "failed" && !event.retryable && !event.deliveryMessage ? " — no longer appropriate for this order's current stage" : ""}</p>{event.deliveryMessage ? <p>{event.deliveryMessage}</p> : null}</div>
+                                {event.status === "failed" && event.retryable ? <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => retryNotification(selected, event.id)}>Retry email<span className="mm-admin__sr-only">: {event.title} to {event.recipient}</span></button> : null}
+                            </li>)}</ul>}
+                        </details>
+                        {selected.workflow?.canCancel ? <details key={selected.id} className="mm-admin__technical"><summary>More order options</summary><div className="mm-admin__actions">
                             {selected.workflow?.canCancel ? <button className="mm-admin__secondary-button" type="button" disabled={loading} onClick={() => requestStatus(selected, "Cancelled", "Cancel order")}>Cancel order</button> : null}
-                            {selected.paymentStatus !== "Paid" && !selected.workflow?.canCancel ? <p className="mm-admin__helper">No actions are available for this order.</p> : null}
-                        </div></details>
+                        </div></details> : null}
                     </article>
                 ) : null}
             </div>
@@ -809,14 +924,15 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
         {liveBookingForTest ? <p role="alert">This is a test payment. Live courier booking is blocked so it cannot create a real charge.</p> : null}
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
         <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p>
+        <p>Customer delivery fee: <strong>{order.deliveryFee === undefined ? "Not recorded" : order.deliveryFee === 0 ? "Free" : money.format(order.deliveryFee)}</strong>. This is separate from Zarina's courier cost.</p>
         {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}
         {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
         {pending ? <p>Booking is awaiting confirmation. Check its status; do not book another shipment or create a duplicate in Bob Go.</p> : null}
-        {booked ? <p>Download the waybill, attach it to the parcel and drop it off. Only then mark the order Dispatched.</p> : null}
+        {booked ? <p>{order.status === "Dispatched" || order.status === "Delivered" ? "This order has been handed over. Use the tracking number to check its progress; email results are shown below." : "Download the waybill, attach it to the parcel and drop it off. Only then mark the order Dispatched to submit the customer's tracking email."}</p> : null}
         {(pending || booked) ? <div className="mm-admin__actions mm-admin__courier-actions">
             <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button>
-            {booked ? <button type="button" className="mm-admin__button" disabled={loading} onClick={() => { void run("waybill") }}>Get waybill</button> : null}
-            {waybill ? <a className="mm-admin__secondary-button" href={waybill} target="_blank" rel="noopener noreferrer">Open / print waybill</a> : null}
+            {booked && !waybill ? <button type="button" className="mm-admin__button" disabled={loading} onClick={() => { void run("waybill") }}>Prepare printable waybill</button> : null}
+            {waybill ? <a className="mm-admin__button" href={waybill} target="_blank" rel="noopener noreferrer">Print waybill</a> : null}
             {shipping.trackingUrl ? <a href={shipping.trackingUrl} target="_blank" rel="noopener noreferrer">Open tracker (enter waybill number)</a> : null}
         </div> : null}
         {canQuote ? <>
@@ -825,12 +941,12 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             <label className="mm-admin__courier-check"><input type="checkbox" checked={measured} disabled={loading} onChange={event => { setMeasured(event.target.checked); setQuote(null) }} />I have checked these packed measurements and the customer's address.</label>
             <label className="mm-admin__courier-check"><input type="checkbox" checked={cover} disabled={loading} onChange={event => { setCover(event.target.checked); setQuote(null) }} />Request additional declared-value cover for {courierMoney.format(order.subtotal || 0)}.</label>
             <p className="mm-admin__helper">Availability and cover depend on the courier's terms. If no quote supports it, review those terms before choosing standard cover only.</p>
-            <button type="button" className="mm-admin__secondary-button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: cover }) }}>{loading ? "Checking Bob Go…" : "Get courier quote (no booking)"}</button>
+            {!rate ? <button type="button" className="mm-admin__button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: cover }) }}>{loading ? "Checking Bob Go…" : "Get delivery quote"}</button> : null}
             {rate ? <div className="mm-admin__quote">
                 <label className="mm-admin__field">Choose courier service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
-                <p><strong>Courier quote: {courierMoney.format(rate.amount)}</strong></p>
+                <p><strong>Zarina's courier quote: {courierMoney.format(rate.amount)}</strong></p>
                 <p className="mm-admin__helper">This is Zarina's courier cost, not the customer's fixed R99 delivery fee. Quotes expire after 10 minutes; final courier charges can vary.</p>
-                <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Review & confirm {quote?.environment === "production" ? "LIVE " : ""}booking</button>
+                <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Book waybill</button>
             </div> : null}
         </> : null}
         {!canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
@@ -847,7 +963,6 @@ function ProductsView() {
     return (
         <>
             <PageHeader eyebrow="ADMIN / PRODUCTS" title="Products" />
-            <AdminNav current="products" />
             <div className="mm-admin__cms-note">
                 <p className="mm-admin__eyebrow">FRAMER CMS</p>
                 <h2>Products are managed in the CMS</h2>
@@ -866,15 +981,37 @@ const styles = `
 .mm-admin, .mm-admin * { box-sizing: border-box; }
 .mm-admin { min-width: 0; overflow-wrap: anywhere; }
 .mm-admin :is(button, a, input, select, summary):focus-visible { outline: 2px solid var(--mm-ink); outline-offset: 3px; }
-.mm-admin__utilities { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 16px; }
+.mm-admin__utilities { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; font-size: 13px; }
+.mm-admin__utility-actions { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 24px; }
+.mm-admin__responsive-nav { display: none; }
+.mm-admin__menu-toggle { grid-column: 1; grid-row: 1; justify-self: start; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; border: 1px solid var(--mm-border); background: transparent; padding: 8px 12px; cursor: pointer; font-weight: 600 !important; }
+.mm-admin__menu-toggle:hover, .mm-admin__menu-toggle[aria-expanded="true"] { background: var(--mm-soft); }
+.mm-admin__menu-toggle:focus-visible, .mm-admin__nav a:focus-visible { outline: 2px solid var(--mm-sage); outline-offset: 3px; }
 .mm-admin__utilities a { color: var(--mm-ink); min-height: 44px; display: inline-flex; align-items: center; }
+.mm-admin__account { position: relative; }
+.mm-admin__account > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; list-style: none; }
+.mm-admin__account > summary::-webkit-details-marker { display: none; }
+.mm-admin__account > summary::after { content: ''; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); margin: -3px 0 0 8px; }
+.mm-admin__account-menu { position: absolute; right: 0; top: 100%; z-index: 2; min-width: 168px; padding: 8px 16px; background: var(--mm-surface); border: 1px solid var(--mm-border); display: grid; gap: 4px; }
+.mm-admin__account-menu a, .mm-admin__account-menu button { text-align: left; }
 .mm-admin__badges { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
-.mm-admin__filter { min-height: 44px; padding: 10px 14px; border: 1px solid var(--mm-border); background: transparent; color: var(--mm-ink); cursor: pointer; }
-.mm-admin__filter.is-active { background: var(--mm-sage); color: white; border-color: var(--mm-sage); }
-.mm-admin__search-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
-.mm-admin__next-step { display: grid; gap: 12px; border: 1px solid var(--mm-sage); padding: 18px; }
+.mm-admin__filter { min-height: 44px; padding: 10px 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--mm-muted); cursor: pointer; font-weight: 600; }
+.mm-admin__filter:hover { background: var(--mm-soft); color: var(--mm-ink); }
+.mm-admin__filter.is-active { background: var(--mm-soft); color: var(--mm-ink); border-bottom-color: var(--mm-sage); }
+.mm-admin__order-controls { display: grid; gap: 16px; }
+.mm-admin__search-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.mm-admin__extra-filter summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--mm-muted); font-size: 13px; }
+.mm-admin__extra-filter summary::after { content: ''; width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); margin: -3px 0 0 10px; }
+.mm-admin__extra-filter summary::-webkit-details-marker { display: none; }
+.mm-admin__extra-filter .mm-admin__field { max-width: 320px; padding-bottom: 8px; }
+.mm-admin__next-step { display: grid; gap: 12px; border-left: 3px solid var(--mm-sage); background: var(--mm-soft); padding: 18px; }
 .mm-admin__next-step p { margin: 0; }
 .mm-admin__next-step button { justify-self: start; }
+.mm-admin__notifications { list-style: none; padding: 0; margin: 0; }
+.mm-admin__notifications li { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 16px 0; border-top: 1px solid var(--mm-border); }
+.mm-admin__notifications li > div { min-width: 0; flex: 1 1 180px; }
+.mm-admin__notifications p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.mm-admin__sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .mm-admin__technical summary { min-height: 44px; cursor: pointer; padding: 12px 0; font-weight: 600; }
 .mm-admin__parcel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
 .mm-admin__parcel-grid .mm-admin__field, .mm-admin__quote .mm-admin__field { min-width: 0; }
@@ -889,10 +1026,18 @@ const styles = `
 .mm-admin__dialog::backdrop { background: rgba(0,0,0,.4); }
 .mm-admin__dialog h2 { margin: 0 0 16px; font: 500 24px/1.2 Montserrat, Inter, sans-serif; }
 .mm-admin__dialog p { margin: 0 0 24px; }
+.mm-admin__delivery-settings { width: min(520px, calc(100% - 32px)); }
+.mm-admin__settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.mm-admin__settings-heading h2 { margin: 0; }
+.mm-admin__delivery-settings > .mm-admin__helper { margin: 12px 0 20px; }
+.mm-admin__connection-status { display: grid; gap: 10px; background: var(--mm-soft); border-left: 3px solid var(--mm-sage); padding: 18px; margin: 20px 0; }
+.mm-admin__connection-status p, .mm-admin__delivery-settings .mm-admin__technical p { margin: 0; }
+.mm-admin__delivery-settings .mm-admin__technical { border-top: 1px solid var(--mm-border); }
+.mm-admin__delivery-settings .mm-admin__technical > button { margin: 16px 0; }
 .mm-admin__back { display: none; align-self: flex-start; }
 .mm-admin__cms-steps { padding-left: 20px; line-height: 1.65; }
 .mm-admin__cms-steps li + li { margin-top: 12px; }
-@media (min-width: 1200px) { .mm-admin__nav { display: none !important; } }
+@media (width < 768px) { .mm-admin__responsive-nav { display: contents; } }
 .mm-admin__blockers { margin: 12px 0 18px; padding-left: 19px; color: var(--mm-muted); }
 .mm-admin__blockers li + li { margin-top: 6px; }
 .mm-admin__setup-card { border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 18px; display: grid; gap: 8px; }
@@ -902,26 +1047,30 @@ const styles = `
 .mm-admin { font-family: Inter, Arial, sans-serif; font-size: 15px; line-height: 1.45; }
 .mm-admin button, .mm-admin input, .mm-admin select, .mm-admin textarea { font: inherit; }
 .mm-admin button { color: inherit; }
-.mm-admin__page { display: flex; flex-direction: column; gap: 30px; padding: 40px; width: 100%; }
+.mm-admin__page { display: flex; flex-direction: column; gap: 24px; padding: 28px 32px; width: 100%; }
 .mm-admin__notice { border: 1px solid var(--mm-border); background: var(--mm-soft); padding: 12px 16px; }
+.mm-admin__error-ref { display: block; overflow-wrap: anywhere; color: var(--mm-muted); margin-top: 6px; }
 .mm-admin__header, .mm-admin__section-heading, .mm-admin__product-toolbar, .mm-admin__order-card-top, .mm-admin__actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .mm-admin__eyebrow { margin: 0 0 8px; color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
-.mm-admin__title { margin: 0; color: var(--mm-ink); font-family: Montserrat, Inter, sans-serif; font-size: clamp(46px, 6vw, 72px); font-weight: 400; letter-spacing: -.035em; line-height: .95; text-transform: uppercase; }
+.mm-admin__title { margin: 0; color: var(--mm-ink); font-family: Montserrat, Inter, sans-serif; font-size: clamp(32px, 3vw, 42px); font-weight: 500; letter-spacing: -.035em; line-height: 1.15; text-transform: uppercase; }
 .mm-admin__title--dashboard { color: var(--mm-ink); }
 .mm-admin__button { appearance: none; min-height: 44px; border: 0; border-radius: 0; background: var(--mm-sage); color: #fff !important; cursor: pointer; font-weight: 700; padding: 13px 20px; transition: opacity .18s ease; }
 .mm-admin__button:hover { opacity: .82; }
+.mm-admin__button-link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .mm-admin__button:disabled { cursor: not-allowed; opacity: .45; }
 .mm-admin__button.is-active { box-shadow: inset 0 0 0 2px var(--mm-ink); }
-.mm-admin__nav { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--mm-border); padding-bottom: 16px; }
-.mm-admin__nav a { min-height: 44px; display: inline-flex; align-items: center; padding: 10px 14px; color: var(--mm-ink); text-decoration: none; }
+.mm-admin__nav { grid-column: 1 / -1; grid-row: 2; display: grid; gap: 4px; margin-top: 12px; padding: 8px; background: var(--mm-surface); border: 1px solid var(--mm-border); }
+.mm-admin__nav[hidden] { display: none; }
+.mm-admin__nav a { min-height: 48px; display: flex; align-items: center; padding: 12px 14px; color: var(--mm-ink); text-decoration: none; }
 .mm-admin__nav a:hover, .mm-admin__nav a.is-active { background: var(--mm-soft); }
+.mm-admin__nav a.is-active { box-shadow: inset 3px 0 var(--mm-sage); font-weight: 600; }
 .mm-admin__secondary-button, .mm-admin__text-button { appearance: none; border: 1px solid var(--mm-border); background: transparent; color: var(--mm-ink); cursor: pointer; font-weight: 700; padding: 12px 18px; }
 .mm-admin__text-button { border: 0; min-height: 44px; padding: 8px 0; text-decoration: underline; }
 .mm-admin__stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-.mm-admin__stat { min-height: 132px; margin: 0; border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 24px; }
-.mm-admin__stat p { margin: 0 0 12px; text-transform: uppercase; }
-.mm-admin__stat strong { display: block; font-family: Montserrat, Inter, sans-serif; font-size: 38px; font-weight: 500; }
-.mm-admin__section-heading h2 { margin: 0; font-family: Montserrat, Inter, sans-serif; font-size: 42px; font-weight: 500; letter-spacing: -.04em; text-transform: uppercase; }
+.mm-admin__stat { min-height: 108px; margin: 0; border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 18px; }
+.mm-admin__stat p { margin: 0 0 12px; color: var(--mm-muted); font-size: 13px; }
+.mm-admin__stat strong { display: block; font-family: Montserrat, Inter, sans-serif; font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.mm-admin__section-heading h2 { margin: 0; font-family: Montserrat, Inter, sans-serif; font-size: 26px; font-weight: 500; letter-spacing: -.025em; }
 .mm-admin__order-table, .mm-admin__order-list, .mm-admin__product-list { display: flex; flex-direction: column; background: var(--mm-border); gap: 1px; }
 .mm-admin__order-row { display: grid; grid-template-columns: .8fr 1.2fr 1fr .8fr .7fr; align-items: center; gap: 16px; width: 100%; border: 0; background: var(--mm-surface); padding: 18px; text-align: left; cursor: pointer; }
 .mm-admin__order-row:hover, .mm-admin__order-card:hover, .mm-admin__order-card.is-selected { background: var(--mm-soft); }
@@ -939,16 +1088,23 @@ const styles = `
 .mm-admin__cms-note > p { max-width: 680px; color: var(--mm-muted); font-size: 17px; line-height: 1.65; }
 .mm-admin__cms-link { display: inline-flex; min-height: 48px; align-items: center; margin-top: 12px; padding: 13px 18px; background: var(--mm-sage); color: #fff; font-weight: 700; text-decoration: none; }
 .mm-admin__muted-label { color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.mm-admin__filters { display: flex; flex-wrap: wrap; gap: 12px; }
+.mm-admin__filters { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--mm-border); }
 .mm-admin__orders-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: start; gap: 24px; }
 .mm-admin__orders-layout > * { min-width: 0; scroll-margin-top: 24px; }
-.mm-admin__order-card-top { flex-wrap: wrap; gap: 8px; }
-.mm-admin__order-card { display: flex; flex-direction: column; gap: 8px; width: 100%; border: 0; background: var(--mm-surface); cursor: pointer; padding: 18px; text-align: left; }
+.mm-admin__order-card-top { align-items: flex-start; gap: 12px; }
+.mm-admin__order-card-top > strong:first-child { min-width: 0; }
+.mm-admin__order-amount { white-space: nowrap; font-size: 14px; font-variant-numeric: tabular-nums; }
+.mm-admin__order-meta { margin: 0; color: var(--mm-muted); font-size: 12px; line-height: 1.6; }
+.mm-admin__order-card { display: flex; flex-direction: column; gap: 12px; width: 100%; border: 0; border-left: 3px solid transparent; background: var(--mm-surface); cursor: pointer; padding: 18px; text-align: left; }
+.mm-admin__order-card.is-selected { border-left-color: var(--mm-sage); }
+.mm-admin__detail-heading { display: grid; gap: 8px; }
+.mm-admin__detail-heading .mm-admin__eyebrow { margin: 0; }
+.mm-admin__detail-heading h2 { margin: 0; font: 500 24px/1.3 Montserrat, Inter, sans-serif; letter-spacing: -.025em; }
 .mm-admin__detail { display: flex; flex-direction: column; gap: 20px; border: 1px solid var(--mm-border); background: var(--mm-surface); padding: 28px; }
 .mm-admin__detail > h2 { margin: -4px 0 4px; font-family: Montserrat, Inter, sans-serif; font-size: clamp(24px, 3vw, 36px); line-height: 1.2; font-weight: 500; }
-.mm-admin__detail-block { border: 1px solid var(--mm-border); background: var(--mm-soft); padding: 17px; }
+.mm-admin__detail-block { border-bottom: 1px solid var(--mm-border); padding: 0 0 18px; }
 .mm-admin__detail-block h3, .mm-admin__detail-block p { margin: 0; }
-.mm-admin__detail-block h3 { margin-bottom: 8px; font-size: 20px; }
+.mm-admin__detail-block h3 { margin-bottom: 8px; font-size: 15px; }
 .mm-admin__detail-block p + p { margin-top: 5px; }
 .mm-admin__actions { justify-content: flex-start; flex-wrap: wrap; }
 .mm-admin__product-toolbar input, .mm-admin__field input, .mm-admin__field select, .mm-admin__field textarea { width: min(320px, 100%); border: 1px solid var(--mm-border); border-radius: 10px; background: var(--mm-surface); color: var(--mm-ink); padding: 13px 15px; outline: none; }
@@ -996,24 +1152,28 @@ const styles = `
 @container (max-width: 900px) {
   .mm-admin__page { padding: 28px 24px; }
   .mm-admin__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mm-admin__orders-layout { grid-template-columns: 1fr; }
-  .mm-admin__back { display: block; }
   .mm-admin__editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mm-admin__variant-editor { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mm-admin__product-row { grid-template-columns: 56px 1.4fr repeat(2, .7fr) auto; }
   .mm-admin__product-row > :nth-child(4), .mm-admin__product-row > :nth-child(6) { display: none; }
   .mm-admin__variant-row { padding-left: 16px; }
 }
+@container (max-width: 700px) {
+  .mm-admin__orders-layout { grid-template-columns: 1fr; }
+  .mm-admin__back { display: block; }
+}
 @container (max-width: 620px) {
-  .mm-admin__page { gap: 22px; padding: 24px 18px; }
+  .mm-admin__page { gap: 20px; padding: 18px; }
+  .mm-admin__filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+  .mm-admin__filters button { padding: 10px 8px; font-size: 13px; white-space: normal; }
   .mm-admin__header, .mm-admin__section-heading, .mm-admin__product-toolbar { align-items: flex-start; flex-direction: column; }
-  .mm-admin__title { font-size: 44px; }
+  .mm-admin__title { font-size: 32px; }
   .mm-admin__search-row { grid-template-columns: 1fr; }
   .mm-admin__detail { padding: 18px; }
-  .mm-admin__utilities { justify-content: flex-start; gap: 12px; }
+  .mm-admin__utility-actions { gap: 18px; }
   .mm-admin__stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mm-admin__quick-grid { grid-template-columns: 1fr; }
-  .mm-admin__section-heading h2 { font-size: 34px; }
+  .mm-admin__section-heading h2 { font-size: 24px; }
   .mm-admin__order-row { grid-template-columns: 1fr auto; }
   .mm-admin__order-row > :nth-child(3) { display: none; }
   .mm-admin__order-row > :nth-child(5) { grid-column: 1 / -1; }

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "@/lib/db";
 import { orders, payments } from "@/lib/db/schema";
 import { requirePayFastConfiguration } from "@/lib/integrations/payfast/configuration";
+import { isPaymentFinal } from "@/lib/checkout-safety";
 
 export const runtime = "nodejs";
 
@@ -26,22 +27,22 @@ export async function GET(request: Request) {
   }
 
   const database = requireDatabase();
-  const [order] = await database
+  const order = await database.transaction(async (transaction) => {
+  const [order] = await transaction
     .select({ id: orders.id, paymentStatus: orders.paymentStatus })
     .from(orders)
     .where(and(
       eq(orders.orderNumber, orderNumber),
       eq(orders.checkoutToken, checkoutToken),
     ))
-    .limit(1);
+    .for("update").limit(1);
 
   if (!order) {
-    return Response.redirect(storefrontUrl(configuration.storeUrl, state), 302);
+    return null;
   }
 
   const now = new Date();
-  if (state === "cancelled" && order.paymentStatus !== "paid") {
-    await database.transaction(async (transaction) => {
+  if (state === "cancelled" && !isPaymentFinal(order.paymentStatus)) {
       await transaction
         .update(payments)
         .set({
@@ -55,13 +56,14 @@ export async function GET(request: Request) {
         .update(orders)
         .set({ paymentStatus: "failed", updatedAt: now })
         .where(eq(orders.id, order.id));
-    });
   } else if (state === "processing" && order.paymentStatus === "pending") {
-    await database
+    await transaction
       .update(payments)
       .set({ providerStatus: "CUSTOMER_RETURNED", updatedAt: now })
       .where(and(eq(payments.orderId, order.id), eq(payments.status, "pending")));
   }
+  return order;
+  });
 
-  return Response.redirect(storefrontUrl(configuration.storeUrl, state, orderNumber), 302);
+  return Response.redirect(storefrontUrl(configuration.storeUrl, state, order ? orderNumber : undefined), 302);
 }

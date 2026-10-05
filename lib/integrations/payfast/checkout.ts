@@ -4,7 +4,9 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { resolveCheckoutItem } from "@/lib/checkout-catalogue";
 import { requireDatabase } from "@/lib/db";
-import { customers, orderItems, orders, payments } from "@/lib/db/schema";
+import { addresses, customers, orderItems, orders, payments } from "@/lib/db/schema";
+import { checkoutOrderSchema } from "@/lib/checkout-input";
+import { isPaymentFinal, readOrderCustomer } from "@/lib/checkout-safety";
 import { calculateShippingQuote } from "@/lib/shipping/policy";
 import { requirePayFastConfiguration } from "./configuration";
 import { createPayFastSignature, type PayFastField } from "./signature";
@@ -47,20 +49,20 @@ function diagnosticReason(stage: string, message: string) {
 
 export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, message: string) {
   const database = requireDatabase();
-  const [order] = await database
-    .select({ id: orders.id, total: orders.total, paymentStatus: orders.paymentStatus })
+  await database.transaction(async (transaction) => {
+  const [order] = await transaction
+    .select({ id: orders.id, total: orders.total, paymentStatus: orders.paymentStatus, status: orders.status })
     .from(orders)
     .where(and(
       eq(orders.orderNumber, input.orderNumber),
       eq(orders.checkoutToken, input.checkoutToken),
     ))
-    .limit(1);
+    .for("update").limit(1);
 
-  if (!order || order.paymentStatus === "paid") return;
+  if (!order || isPaymentFinal(order.paymentStatus) || order.status !== "new") return;
   const now = new Date();
   const failureReason = diagnosticReason("PayFast checkout setup failed", message);
 
-  await database.transaction(async (transaction) => {
     await transaction
       .insert(payments)
       .values({
@@ -93,13 +95,17 @@ export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, 
 export async function createPayFastCheckout(input: PayFastCheckoutInput, requestUrl: string) {
   const configuration = requirePayFastConfiguration();
   const database = requireDatabase();
-  const [order] = await database
+  return database.transaction(async (transaction) => {
+  // One lock order across checkout edits, payment creation, returns and ITNs.
+  // No PayFast network request is made while this transaction is open.
+  const [order] = await transaction
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
       status: orders.status,
       paymentStatus: orders.paymentStatus,
       deliveryMethod: orders.deliveryMethod,
+      deliveryAddressId: orders.deliveryAddressId,
       subtotal: orders.subtotal,
       deliveryFee: orders.deliveryFee,
       total: orders.total,
@@ -107,6 +113,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       lastName: customers.lastName,
       email: customers.email,
       phone: customers.phone,
+      customerSnapshot: orders.customerSnapshot,
     })
     .from(orders)
     .innerJoin(customers, eq(orders.customerId, customers.id))
@@ -114,16 +121,16 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       eq(orders.orderNumber, input.orderNumber),
       eq(orders.checkoutToken, input.checkoutToken),
     ))
-    .limit(1);
+    .for("update", { of: orders }).limit(1);
 
   if (!order) throw new PayFastCheckoutError("This checkout session could not be found.", 404);
-  if (order.paymentStatus === "paid") throw new PayFastCheckoutError("This order has already been paid.", 409);
-  if (order.status === "cancelled") throw new PayFastCheckoutError("This order has been cancelled.", 409);
+  Object.assign(order, readOrderCustomer(order.customerSnapshot, order));
+  if (isPaymentFinal(order.paymentStatus) || order.status !== "new") throw new PayFastCheckoutError("This order is paid or closed. Please start a new checkout.", 409);
   if (order.deliveryMethod === "to_be_confirmed") {
     throw new PayFastCheckoutError("Choose delivery or collection before paying.", 409);
   }
 
-  const lines = await database
+  const lines = await transaction
     .select({ sku: orderItems.sku, quantity: orderItems.quantity })
     .from(orderItems)
     .where(eq(orderItems.orderId, order.id));
@@ -135,6 +142,12 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     return sum + product.price * line.quantity;
   }, 0);
   const fulfilmentMethod = order.deliveryMethod === "courier" ? "delivery" : "collection";
+  const [address] = order.deliveryAddressId && fulfilmentMethod === "delivery"
+    ? await transaction.select().from(addresses).where(eq(addresses.id, order.deliveryAddressId)).limit(1) : [];
+  const validation = checkoutOrderSchema.safeParse({ checkoutToken: input.checkoutToken, stage: "complete",
+    customer: { firstName: order.firstName, lastName: order.lastName, email: order.email, phone: order.phone },
+    fulfilmentMethod, address: address ? { ...address, line2: address.line2 ?? "" } : undefined, items: lines });
+  if (!validation.success) throw new PayFastCheckoutError(validation.error.issues[0]?.message ?? "Please check your checkout details.", 409);
   const quote = calculateShippingQuote(currentSubtotal, fulfilmentMethod);
   if (
     cents(order.subtotal) !== cents(quote.subtotal) ||
@@ -151,7 +164,6 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
   }
 
   const checkoutStartedAt = new Date();
-  await database.transaction(async (transaction) => {
     await transaction
       .insert(payments)
       .values({
@@ -179,7 +191,6 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       .update(orders)
       .set({ paymentStatus: "pending", updatedAt: checkoutStartedAt })
       .where(eq(orders.id, order.id));
-  });
 
   const fields: PayFastField[] = [
     ["merchant_id", configuration.merchantId],
@@ -203,4 +214,5 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     environment: configuration.environment,
     fields: Object.fromEntries([...fields, ["signature", signature]].map(([name, value]) => [name, String(value)])),
   };
+  });
 }

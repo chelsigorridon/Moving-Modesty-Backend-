@@ -1,6 +1,8 @@
 import "server-only";
 
 import { getBobGoApiToken, getBobGoConfiguration } from "./configuration";
+import { reportFailure, resolveFailures } from "../../monitoring";
+import type { Operation } from "../../monitoring-policy";
 
 type NearbyLocationInput = {
   lat: number;
@@ -25,7 +27,9 @@ export class BobGoApiError extends Error {
   }
 }
 
-export async function bobGoRequest(path: string, input?: Record<string, unknown>) {
+export async function bobGoRequest(path: string, input?: Record<string, unknown>, context?: { operation: Operation; orderId?: string }) {
+  const operation = context?.operation || "courier_connection";
+  try {
   const config = getBobGoConfiguration();
   const response = await fetch(`${config.apiBaseUrl}${path}`, {
     method: input ? "POST" : "GET",
@@ -46,10 +50,16 @@ export async function bobGoRequest(path: string, input?: Record<string, unknown>
       response.status,
     );
   }
+  await resolveFailures(operation, context?.orderId);
   return body;
+  } catch (error) {
+    const incident = await reportFailure(error, { operation, orderId: context?.orderId });
+    if (error instanceof Error) Object.assign(error, { errorRef: incident.reference });
+    throw error;
+  }
 }
 
-export async function getConfiguredBobGoLocation(parcel?: { lengthCm: number; widthCm: number; heightCm: number; weightGrams: number }) {
+export async function getConfiguredBobGoLocation(parcel?: { lengthCm: number; widthCm: number; heightCm: number; weightGrams: number }, context?: { operation: Operation; orderId?: string }) {
   const config = getBobGoConfiguration();
   if (!config.pickupPointLocationId || !config.pickupPointProviderSlug) throw new Error("The Bob Go drop-off location and provider must be configured.");
   const query = new URLSearchParams({ location_id: config.pickupPointLocationId, provider_slug: config.pickupPointProviderSlug });
@@ -57,7 +67,7 @@ export async function getConfiguredBobGoLocation(parcel?: { lengthCm: number; wi
     query.set("stacked_length", String(parcel.lengthCm)); query.set("stacked_width", String(parcel.widthCm));
     query.set("stacked_height", String(parcel.heightCm)); query.set("total_weight", String(parcel.weightGrams / 1000));
   }
-  return bobGoRequest(`/locations?${query}`);
+  return bobGoRequest(`/locations?${query}`, undefined, context);
 }
 
 function locationMatches(value: unknown, targetName: string, matches: BobGoLocationMatch[]) {

@@ -3,6 +3,7 @@ import { getRequestAdmin } from "@/lib/auth";
 import { findNearbyBobGoLocation, getConfiguredBobGoLocation } from "@/lib/integrations/bobgo/client";
 import { getBobGoConfiguration } from "@/lib/integrations/bobgo/configuration";
 import { parseLocation } from "@/lib/integrations/bobgo/protocol";
+import { reportFailure } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 
@@ -44,8 +45,10 @@ export async function GET(request: Request) {
       matchCount: lookup.matches.length,
     });
   } catch (error) {
+    const recorded = error && typeof error === "object" && "errorRef" in error ? error.errorRef : null;
+    const incident = recorded ? null : await reportFailure(error, { operation: "courier_connection" });
     return apiJson(
-      { error: error instanceof Error ? error.message : "The Bob Go location lookup could not be completed." },
+      { error: "The Bob Go connection check could not be completed. Ask website support to check the account configuration.", errorRef: recorded || incident?.reference },
       { status: 502 },
     );
   }

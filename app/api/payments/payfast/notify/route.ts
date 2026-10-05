@@ -4,6 +4,7 @@ import {
   recordPayFastNotificationFailure,
 } from "@/lib/integrations/payfast/notification";
 import { sendPaidOrderEmails } from "@/lib/email";
+import { reportFailure, resolveFailures } from "@/lib/monitoring";
 
 export const runtime = "nodejs";
 
@@ -23,27 +24,21 @@ export async function POST(request: Request) {
       try {
         await recordPayFastNotificationFailure(error);
       } catch (diagnosticError) {
-        console.error(
-          "Could not save the PayFast notification failure:",
-          diagnosticError instanceof Error ? diagnosticError.message : "Unknown diagnostic error",
-        );
+        await reportFailure(diagnosticError, { operation: "payment_notify" });
       }
     }
-    console.error(
-      "PayFast notification rejected:",
-      error instanceof Error ? error.message : "Unknown notification error",
-    );
+    await reportFailure(error, { operation: "payment_notify", orderNumber: error instanceof PayFastNotificationError ? error.merchantPaymentId : undefined, severity: status < 500 ? "warning" : "error" });
     return new Response(status === 503 ? "Temporary validation failure" : "Invalid notification", { status });
   }
+  await resolveFailures("payment_notify", result.orderId);
 
   if (result.paymentStatus === "paid") {
     try {
       await sendPaidOrderEmails(result.orderId);
     } catch (error) {
-      console.error(
-        "Paid-order email notification failed:",
-        error instanceof Error ? error.message : "Unknown email error",
-      );
+      if (!(error && typeof error === "object" && "errorRef" in error)) {
+        await reportFailure(error, { operation: "email_send", orderId: result.orderId, alert: false });
+      }
       // Returning a temporary failure asks PayFast to retry the notification.
       // Both emails use stable idempotency keys, so a successful recipient is
       // never sent the same paid-order message twice.

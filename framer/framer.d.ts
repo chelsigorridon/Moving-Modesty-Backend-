@@ -14,11 +14,13 @@ declare module "framer" {
         Array: unknown
         ResponsiveImage: unknown
         String: unknown
+        Link: unknown
+        Font: unknown
     }
 
     export function addPropertyControls<Props>(
         component: ComponentType<Props>,
-        controls: Record<string, unknown>
+        controls: Record<string, { hidden?: (props: Props) => boolean; [key: string]: unknown }>
     ): void
 
     export function useIsStaticRenderer(): boolean

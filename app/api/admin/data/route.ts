@@ -4,6 +4,7 @@ import { getRequestAdmin } from "@/lib/auth";
 import { findNearbyBobGoLocation } from "@/lib/integrations/bobgo/client";
 import { getBobGoConfiguration } from "@/lib/integrations/bobgo/configuration";
 import { getPayFastConfiguration } from "@/lib/integrations/payfast/configuration";
+import { reportFailure, resolveFailures } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 
@@ -27,13 +28,9 @@ async function getBobGoSetupStatus() {
   try {
     const lookup = await findNearbyBobGoLocation(CONSTANTIA_EMPORIUM);
     const match = lookup.matches[0] ?? null;
-    if (match) console.info("[Bob Go setup] Constantia Emporium match", JSON.stringify(match));
     return { target: "Constantia Emporium", match, matchCount: lookup.matches.length };
   } catch (error) {
-    console.warn(
-      "[Bob Go setup] Location lookup failed",
-      error instanceof Error ? error.message : "Unknown lookup error",
-    );
+    await reportFailure(error, { operation: "courier_connection" });
     return { target: "Constantia Emporium", match: null, matchCount: 0 };
   }
 }
@@ -46,12 +43,14 @@ export async function GET(request: Request) {
       getBobGoSetupStatus(),
     ]);
     const bobGo = getBobGoConfiguration();
+    await resolveFailures("admin_load");
     return apiJson({ ...snapshot, bobGoSetup, paymentEnvironment: getPayFastConfiguration().environment,
       bobGoConnection: { environment: bobGo.environment, enabled: bobGo.enabled,
         configured: Boolean(bobGo.apiTokenConfigured && bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug && bobGo.senderEmail && bobGo.senderPhone) } });
   } catch (error) {
+    const incident = await reportFailure(error, { operation: "admin_load" });
     return apiJson(
-      { error: error instanceof Error ? error.message : "Admin data could not be loaded." },
+      { error: "Admin data could not be loaded. Please try again shortly.", errorRef: incident.reference },
       { status: 503 }
     );
   }

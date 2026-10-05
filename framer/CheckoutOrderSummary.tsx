@@ -21,10 +21,10 @@ interface Props {
     style?: CSSProperties
 }
 
-type FulfilmentMethod = "delivery" | "collection"
+type FulfilmentMethod = "delivery" | "collection" | "to_be_confirmed"
 
 const CART_KEY = "moving-modesty-cart-v1"
-const FULFILMENT_KEY = "moving-modesty-fulfilment-v1"
+const FULFILMENT_KEY = "moving-modesty-fulfilment-v2"
 const FULFILMENT_EVENT = "moving-modesty-fulfilment-updated"
 const STANDARD_DELIVERY_FEE = 99
 const FREE_DELIVERY_THRESHOLD = 1500
@@ -82,13 +82,12 @@ function readCart(): CartItem[] {
 }
 
 function readFulfilmentMethod(): FulfilmentMethod {
-    if (typeof window === "undefined") return "delivery"
+    if (typeof window === "undefined") return "to_be_confirmed"
     try {
-        return window.localStorage.getItem(FULFILMENT_KEY) === "collection"
-            ? "collection"
-            : "delivery"
+        const method = window.localStorage.getItem(FULFILMENT_KEY)
+        return method === "collection" || method === "delivery" ? method : "to_be_confirmed"
     } catch {
-        return "delivery"
+        return "to_be_confirmed"
     }
 }
 
@@ -136,7 +135,7 @@ export default function CheckoutOrderSummary(props: Props) {
     } = props
     const isStatic = useIsStaticRenderer()
     const [items, setItems] = useState<CartItem[]>([])
-    const [fulfilmentMethod, setFulfilmentMethod] = useState<FulfilmentMethod>("delivery")
+    const [fulfilmentMethod, setFulfilmentMethod] = useState<FulfilmentMethod>("to_be_confirmed")
     const [compact, setCompact] = useState(false)
     const [open, setOpen] = useState(true)
 
@@ -146,7 +145,7 @@ export default function CheckoutOrderSummary(props: Props) {
         const refreshFulfilment = () => setFulfilmentMethod(readFulfilmentMethod())
         const handleFulfilmentChange = (event: Event) => {
             const method = (event as CustomEvent<FulfilmentMethod>).detail
-            setFulfilmentMethod(method === "collection" ? "collection" : "delivery")
+            setFulfilmentMethod(method === "collection" || method === "delivery" ? method : "to_be_confirmed")
         }
         const handleStorage = (event: StorageEvent) => {
             if (!event.key || event.key === CART_KEY) refreshCart()
@@ -186,8 +185,9 @@ export default function CheckoutOrderSummary(props: Props) {
     )
 
     const isCollection = fulfilmentMethod === "collection"
+    const isDelivery = fulfilmentMethod === "delivery"
     const qualifiesForFreeDelivery = subtotal >= FREE_DELIVERY_THRESHOLD
-    const deliveryFee = isCollection || subtotal <= 0 || qualifiesForFreeDelivery ? 0 : STANDARD_DELIVERY_FEE
+    const deliveryFee = !isDelivery || subtotal <= 0 || qualifiesForFreeDelivery ? 0 : STANDARD_DELIVERY_FEE
     const total = subtotal + deliveryFee
     const css = [
         ".mm-checkout-order-item{display:grid;grid-template-columns:84px minmax(0,1fr);gap:16px;padding:20px 0;border-bottom:1px solid var(--checkout-border)}",
@@ -277,10 +277,10 @@ export default function CheckoutOrderSummary(props: Props) {
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 20 }}>
                     <span>{isCollection ? "Collection" : "Delivery"}</span>
                     <span style={{ textAlign: "right" }}>
-                        {isCollection ? "No delivery fee" : subtotal <= 0 ? "—" : qualifiesForFreeDelivery ? "Free" : formatMoney(deliveryFee)}
+                        {fulfilmentMethod === "to_be_confirmed" ? "Choose delivery or collection" : isCollection ? "No delivery fee" : subtotal <= 0 ? "—" : qualifiesForFreeDelivery ? "Free" : formatMoney(deliveryFee)}
                     </span>
                 </div>
-                {!isCollection && !qualifiesForFreeDelivery && subtotal > 0 ? (
+                {isDelivery && !qualifiesForFreeDelivery && subtotal > 0 ? (
                     <p style={{ margin: 0, color: "rgba(51,43,37,.7)", fontSize: 13, lineHeight: 1.45 }}>
                         Add {formatMoney(FREE_DELIVERY_THRESHOLD - subtotal)} more for free delivery.
                     </p>

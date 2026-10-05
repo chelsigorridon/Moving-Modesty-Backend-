@@ -67,6 +67,7 @@ export const productVariants = pgTable("product_variants", {
   stockOnHand: integer("stock_on_hand").default(0).notNull(),
   lowStockThreshold: integer("low_stock_threshold").default(3).notNull(),
   active: boolean("active").default(true).notNull(),
+  stockVerified: boolean("stock_verified").default(false).notNull(),
   ...timestamps,
 }, (table) => [uniqueIndex("product_variants_sku_idx").on(table.sku)]);
 
@@ -85,6 +86,7 @@ export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderNumber: text("order_number").notNull(),
   customerId: uuid("customer_id").references(() => customers.id),
+  customerSnapshot: jsonb("customer_snapshot").$type<{ firstName: string; lastName: string; email: string; phone: string }>(),
   deliveryAddressId: uuid("delivery_address_id").references(() => addresses.id),
   status: orderStatus("status").default("new").notNull(),
   paymentStatus: paymentStatus("payment_status").default("pending").notNull(),
@@ -98,6 +100,8 @@ export const orders = pgTable("orders", {
   deliveryNotes: text("delivery_notes"),
   paymentReference: text("payment_reference"),
   checkoutToken: text("checkout_token"),
+  checkoutFingerprint: text("checkout_fingerprint"),
+  inventoryIssue: text("inventory_issue"),
   ...timestamps,
 }, (table) => [
   uniqueIndex("orders_order_number_idx").on(table.orderNumber),
@@ -117,6 +121,17 @@ export const orderItems = pgTable("order_items", {
   productSnapshot: jsonb("product_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const stockReservations = pgTable("stock_reservations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  variantId: uuid("variant_id").notNull().references(() => productVariants.id),
+  quantity: integer("quantity").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("stock_reservations_order_variant_idx").on(table.orderId, table.variantId)]);
 
 export const shipments = pgTable("shipments", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -176,8 +191,45 @@ export const emailEvents = pgTable("email_events", {
   status: emailStatus("status").default("queued").notNull(),
   idempotencyKey: text("idempotency_key").notNull(),
   errorMessage: text("error_message"),
+  deliveryEvent: text("delivery_event"),
+  deliveryEventAt: timestamp("delivery_event_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [uniqueIndex("email_events_idempotency_idx").on(table.idempotencyKey)]);
+
+// Grouped, privacy-safe incidents. Never store request bodies, secrets or raw errors.
+export const systemErrors = pgTable("system_errors", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  fingerprint: text("fingerprint").notNull(),
+  reference: uuid("reference").notNull(),
+  orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
+  source: text("source").notNull(),
+  operation: text("operation").notNull(),
+  code: text("code").notNull(),
+  summary: text("summary").notNull(),
+  severity: text("severity").notNull(),
+  environment: text("environment").notNull(),
+  httpStatus: integer("http_status"),
+  occurrences: integer("occurrences").default(1).notNull(),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (table) => [uniqueIndex("system_errors_fingerprint_idx").on(table.fingerprint)]);
+
+// An atomic hourly reservation stops duplicate alerts across server instances.
+export const errorAlerts = pgTable("error_alerts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  dedupeKey: text("dedupe_key").notNull(),
+  incidentId: uuid("incident_id").references(() => systemErrors.id, { onDelete: "set null" }),
+  status: text("status").default("queued").notNull(),
+  resendEmailId: text("resend_email_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("error_alerts_dedupe_idx").on(table.dedupeKey)]);
+
+export const diagnosticRateLimits = pgTable("diagnostic_rate_limits", {
+  key: text("key").primaryKey(),
+  count: integer("count").default(1).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
 
 export const adminSessions = pgTable("admin_sessions", {
   id: uuid("id").defaultRandom().primaryKey(),

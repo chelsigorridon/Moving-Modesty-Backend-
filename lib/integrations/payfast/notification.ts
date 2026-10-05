@@ -3,6 +3,7 @@ import "server-only";
 import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "@/lib/db";
 import { orderStatusHistory, orders, payments } from "@/lib/db/schema";
+import { isPaymentFinal } from "@/lib/checkout-safety";
 import { requirePayFastConfiguration } from "./configuration";
 import {
   createPayFastNotificationSignature,
@@ -19,6 +20,7 @@ export class PayFastNotificationError extends Error {
     readonly merchantPaymentId = "",
   ) {
     super(message);
+    this.name = "PayFastNotificationError";
   }
 }
 
@@ -80,7 +82,7 @@ export async function recordPayFastNotificationFailure(error: PayFastNotificatio
       failureReason: `PayFast ${error.stage} check failed: ${error.message}`.slice(0, 500),
       updatedAt: new Date(),
     })
-    .where(eq(payments.id, payment.id));
+    .where(and(eq(payments.id, payment.id), eq(payments.status, payment.status)));
 }
 
 export async function processPayFastNotification(request: Request, rawBody: string) {
@@ -168,9 +170,6 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       merchantPaymentId,
     );
   }
-  if (payment.status === "paid" && payment.orderPaymentStatus === "paid") {
-    return { duplicate: true, paymentStatus: "paid" as const, orderId: payment.orderId };
-  }
 
   await validateWithPayFast(
     configuration.validationUrl,
@@ -185,7 +184,22 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       : "failed";
   const verifiedAt = new Date();
 
-  await database.transaction(async (transaction) => {
+  return database.transaction(async (transaction) => {
+    const [lockedOrder] = await transaction.select({ status: orders.status, paymentStatus: orders.paymentStatus, total: orders.total })
+      .from(orders).where(eq(orders.id, payment.orderId)).for("update").limit(1);
+    const [lockedPayment] = await transaction.select({ status: payments.status, amount: payments.amount, providerPaymentId: payments.providerPaymentId })
+      .from(payments).where(eq(payments.id, payment.id)).limit(1);
+    if (!lockedOrder || !lockedPayment || cents(lockedOrder.total, merchantPaymentId) !== cents(lockedPayment.amount, merchantPaymentId)
+      || cents(params.get("amount_gross"), merchantPaymentId) !== cents(lockedPayment.amount, merchantPaymentId)) {
+      throw new PayFastNotificationError("The payment amount does not match the order.", 400, "amount", merchantPaymentId);
+    }
+    if (isPaymentFinal(lockedOrder.paymentStatus) || isPaymentFinal(lockedPayment.status)) {
+      if (lockedPayment.providerPaymentId && lockedPayment.providerPaymentId !== providerPaymentId) {
+        throw new PayFastNotificationError("The PayFast transaction reference does not match.", 400, "transaction reference", merchantPaymentId);
+      }
+      // Delayed FAILED/PENDING callbacks can never undo a verified payment.
+      return { duplicate: true, paymentStatus: lockedOrder.paymentStatus, orderId: payment.orderId };
+    }
     await transaction
       .update(payments)
       .set({
@@ -208,7 +222,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       })
       .where(eq(orders.id, payment.orderId));
 
-    if (nextStatus === "paid" && payment.orderStatus === "new") {
+    if (nextStatus === "paid" && lockedOrder.status === "new") {
       const [confirmed] = await transaction
         .update(orders)
         .set({ status: "confirmed", updatedAt: verifiedAt })
@@ -223,7 +237,6 @@ export async function processPayFastNotification(request: Request, rawBody: stri
         });
       }
     }
+    return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId };
   });
-
-  return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId };
 }

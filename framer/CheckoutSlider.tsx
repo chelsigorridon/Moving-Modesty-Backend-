@@ -8,10 +8,24 @@ import {
 const STYLE_ID = "moving-modesty-checkout-slider-styles"
 const ROOT_SELECTOR = '[data-mm-checkout-slider="true"]'
 const CART_KEY = "moving-modesty-cart-v1"
-const FULFILMENT_KEY = "moving-modesty-fulfilment-v1"
+const FULFILMENT_KEY = "moving-modesty-fulfilment-v2"
 const FULFILMENT_EVENT = "moving-modesty-fulfilment-updated"
 const CHECKOUT_TOKEN_KEY = "moving-modesty-checkout-token-v1"
+const CHECKOUT_DRAFT_KEY = "moving-modesty-checkout-draft-v1"
 const ORDER_API_BASE = "https://movingmodesty.vercel.app"
+async function checkoutFetch(url: string, init?: RequestInit) {
+    try { return await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(20000) }) }
+    catch (error) {
+        if (error instanceof Error && (error.name === "TypeError" || error.name === "TimeoutError")) {
+            // Never report checkout tokens, customer details, addresses or URLs.
+            void fetch(`${ORDER_API_BASE}/api/diagnostics/browser`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "checkout", code: error.name === "TimeoutError" ? "browser_timeout" : "browser_network" }), signal: AbortSignal.timeout(5000) }).catch(() => undefined)
+        }
+        throw error
+    }
+}
+function checkoutErrorMessage(data: { error?: string; errorRef?: string } | null, fallback: string) {
+    return `${data?.error || fallback}${data?.errorRef ? ` Reference: ${data.errorRef}` : ""}`
+}
 const STEP_NAMES = [
     "1. Contact details",
     "2. Fulfilment method",
@@ -20,7 +34,7 @@ const STEP_NAMES = [
 ]
 
 type Cleanup = () => void
-type FulfilmentMethod = "delivery" | "collection"
+type FulfilmentMethod = "delivery" | "collection" | "to_be_confirmed"
 type CheckoutStage = "started" | "fulfilment" | "address" | "complete"
 
 interface StoredCartItem {
@@ -124,6 +138,28 @@ function getCheckoutToken(): string {
         )
     window.localStorage.setItem(CHECKOUT_TOKEN_KEY, created)
     return created
+}
+
+const CHECKOUT_FIELDS: Record<string, string> = {
+    checkoutFullName: "given-name", firstName: "given-name", lastName: "family-name",
+    checkoutEmail: "email", checkoutPhone: "tel", checkoutStreet: "address-line1",
+    checkoutStreet2: "address-line2", addressLine2: "address-line2", suburb: "address-level3",
+    checkoutCity: "address-level2", checkoutProvince: "address-level1", checkoutPostal: "postal-code",
+}
+const PROVINCES = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"]
+function cartFingerprint(items: Array<{ sku: string; quantity: number }>) {
+    const totals = new Map<string, number>()
+    items.forEach(item => totals.set(item.sku.toUpperCase(), (totals.get(item.sku.toUpperCase()) || 0) + item.quantity))
+    return JSON.stringify([...totals].sort(([a], [b]) => a.localeCompare(b)))
+}
+function restoreField(root: HTMLElement, name: string, value: string) {
+    const field = root.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`)
+    if (!field) return
+    const prototype = field instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+        : field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(field, value)
+    field.dispatchEvent(new Event("input", { bubbles: true }))
+    field.dispatchEvent(new Event("change", { bubbles: true }))
 }
 
 function addStyles() {
@@ -326,7 +362,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     const returnState = paymentReturnState()
     if (
         readCartItems().length === 0 &&
-        returnState.payment !== "processing" &&
+        !returnState.payment &&
         window.location.pathname.replace(/\/$/, "") === "/checkout"
     ) {
         window.location.replace("/cart")
@@ -338,9 +374,59 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     const injectedNodes: HTMLElement[] = []
     let activeIndex = returnState.payment ? 3 : 0
     let animating = false
-    let fulfilmentMethod: FulfilmentMethod = "delivery"
+    let fulfilmentMethod: FulfilmentMethod = "to_be_confirmed"
     let orderReference = returnState.orderNumber
     let requestInFlight = false
+    let disposed = false
+    let paymentLocked = Boolean(returnState.payment)
+    let recoveryInFlight = Boolean(returnState.payment)
+    const recoveryController = new AbortController()
+    const checkoutFields = Array.from(root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea"))
+    function validateFields() {
+        checkoutFields.forEach(field => {
+            field.setCustomValidity("")
+            if (field.disabled) return
+            if (field.name === "checkoutProvince" && field.value && !PROVINCES.includes(field.value.trim())) field.setCustomValidity("Please choose a South African province.")
+            if (field.name === "checkoutPhone" && field.value) {
+                const phone = field.value.trim().replace(/[\s().-]/g, "").replace(/^0027/, "+27")
+                if (!/^(?:0\d{9}|\+?27\d{9})$/.test(phone)) field.setCustomValidity("Please enter a valid South African phone number.")
+            }
+        })
+    }
+    checkoutFields.forEach(field => {
+        const autocomplete = CHECKOUT_FIELDS[field.name]
+        if (!autocomplete) return
+        const original = { autocomplete: field.getAttribute("autocomplete"), type: field.getAttribute("type"),
+            inputmode: field.getAttribute("inputmode"), pattern: field.getAttribute("pattern"), required: field.required }
+        field.setAttribute("autocomplete", autocomplete)
+        if (field instanceof HTMLInputElement) {
+            if (autocomplete === "email") field.type = "email"
+            if (autocomplete === "tel") { field.type = "tel"; field.inputMode = "tel" }
+            if (autocomplete === "postal-code") { field.type = "text"; field.inputMode = "numeric"; field.pattern = "[0-9]{4}" }
+        }
+        if (autocomplete !== "address-line2") field.required = true
+        cleanups.push(() => {
+            for (const attr of ["autocomplete", "type", "inputmode", "pattern"] as const) {
+                const value = original[attr]
+                if (value === null) field.removeAttribute(attr)
+                else field.setAttribute(attr, value)
+            }
+            field.required = original.required
+            field.setCustomValidity("")
+        })
+    })
+    function saveDraft() {
+        if (recoveryInFlight || disposed || (paymentLocked && returnState.payment)) return
+        try {
+            const fields = Object.fromEntries(checkoutFields.filter(field => field.name in CHECKOUT_FIELDS).map(field => [field.name, field.value]))
+            window.sessionStorage.setItem(CHECKOUT_DRAFT_KEY, JSON.stringify({ token: getCheckoutToken(), orderReference,
+                fields, fulfilmentMethod, savedAt: Date.now(), cart: JSON.parse(window.localStorage.getItem(CART_KEY) || "[]") }))
+        } catch { /* Server recovery remains available if storage is restricted. */ }
+    }
+    const onFieldChange = () => { validateFields(); saveDraft() }
+    root.addEventListener("input", onFieldChange)
+    root.addEventListener("change", onFieldChange)
+    cleanups.push(() => { disposed = true; recoveryController.abort(); root.removeEventListener("input", onFieldChange); root.removeEventListener("change", onFieldChange) })
 
     root.dataset.mmCheckoutReady = "true"
     root.dataset.mmActiveStep = String(activeIndex + 1)
@@ -395,7 +481,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             const selected = optionMethod === method
             option.dataset.mmSelected = String(selected)
             option.setAttribute("aria-checked", String(selected))
-            option.tabIndex = selected ? 0 : -1
+            option.tabIndex = selected || (method === "to_be_confirmed" && option === deliveryOption) ? 0 : -1
         })
 
         const isCollection = method === "collection"
@@ -418,6 +504,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             const selectedOption = method === "delivery" ? deliveryOption : collectionOption
             selectedOption?.focus({ preventScroll: true })
         }
+        saveDraft()
     }
 
     if (fulfilmentGroup) {
@@ -455,10 +542,14 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     })
 
     const savedFulfilment = (() => {
+        // A new checkout must not inherit a previous customer's choice or the
+        // old implicit Delivery default. Only restore when returning from PayFast.
+        if (!returnState.payment) return "to_be_confirmed"
         try {
-            return window.localStorage.getItem(FULFILMENT_KEY) === "collection" ? "collection" : "delivery"
+            const method = window.localStorage.getItem(FULFILMENT_KEY)
+            return method === "collection" || method === "delivery" ? method : "to_be_confirmed"
         } catch {
-            return "delivery"
+            return "to_be_confirmed"
         }
     })()
     setFulfilmentMethod(savedFulfilment)
@@ -501,17 +592,8 @@ function setupSlider(root: HTMLElement): Cleanup | null {
         feedback.dataset.tone = tone
     }
 
-    if (returnState.payment === "processing") {
-        window.localStorage.removeItem(CART_KEY)
-        window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
-        window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: [] }))
-        showFeedback(
-            `Thank you. PayFast is confirming payment for ${orderReference || "your order"}. We will email you once it is confirmed.`,
-            "success"
-        )
-    } else if (returnState.payment === "cancelled") {
-        showFeedback("The payment was cancelled. Your cart is still available and you can try again.")
-    }
+    // The return URL isn't proof of payment. Only a verified server status
+    // below may show success and clear this checkout's cart.
 
     function checkoutPayload(stage: CheckoutStage) {
         const firstName = fieldValue(root, "checkoutFullName", "firstName")
@@ -529,7 +611,11 @@ function setupSlider(root: HTMLElement): Cleanup | null {
         }
 
         const effectiveMethod = stage === "started" ? "to_be_confirmed" : fulfilmentMethod
-        const address = effectiveMethod === "delivery" ? {
+        if (stage !== "started" && effectiveMethod === "to_be_confirmed") {
+            throw new Error("Please choose delivery or collection before continuing.")
+        }
+        const needsAddress = effectiveMethod === "delivery" && (stage === "address" || stage === "complete")
+        const address = needsAddress ? {
             line1: fieldValue(root, "checkoutStreet"),
             line2: fieldValue(root, "checkoutStreet2", "addressLine2"),
             suburb: fieldValue(root, "suburb"),
@@ -538,7 +624,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             postalCode: fieldValue(root, "checkoutPostal"),
         } : undefined
 
-        if ((stage === "address" || stage === "complete") && effectiveMethod === "delivery") {
+        if (needsAddress) {
             if (!address?.line1 || !address.suburb || !address.city || !address.province || !address.postalCode) {
                 throw new Error("Please complete the delivery address.")
             }
@@ -562,16 +648,30 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             button.disabled = true
         })
         try {
-            const response = await fetch(`${ORDER_API_BASE}/api/checkout/orders`, {
+            let payload = checkoutPayload(stage)
+            let response = await checkoutFetch(`${ORDER_API_BASE}/api/checkout/orders`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(checkoutPayload(stage)),
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(15_000),
             })
-            const data = await response.json().catch(() => null)
+            let data = await response.json().catch(() => null)
+            if (response.status === 409 && data?.code === "CHECKOUT_CHANGED") {
+                // Changed details need a fresh order, not an edited payment.
+                window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
+                payload = { ...payload, checkoutToken: getCheckoutToken() }
+                orderReference = ""
+                response = await checkoutFetch(`${ORDER_API_BASE}/api/checkout/orders`, {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+                    signal: AbortSignal.timeout(15_000),
+                })
+                data = await response.json().catch(() => null)
+            }
             if (!response.ok || !data?.order?.orderNumber) {
-                throw new Error(data?.error || "Your order could not be saved. Please try again.")
+                throw new Error(checkoutErrorMessage(data, "Your order could not be saved. Please try again."))
             }
             orderReference = data.order.orderNumber
+            saveDraft()
             window.dispatchEvent(new CustomEvent("moving-modesty-order-updated", { detail: data.order }))
             return true
         } catch (error) {
@@ -586,6 +686,17 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     }
 
     async function beginPayFastPayment(): Promise<boolean> {
+        validateFields()
+        for (const index of [0, ...(fulfilmentMethod === "delivery" ? [2] : [])]) {
+            const invalid = getInvalidField(steps[index])
+            if (invalid) {
+                await goTo(index)
+                invalid.reportValidity()
+                invalid.focus()
+                showFeedback("Please check the highlighted information before paying.")
+                return false
+            }
+        }
         // Always persist the final checkout state before opening PayFast. This
         // keeps Neon authoritative even when the customer changed an earlier
         // field after the order was first created.
@@ -598,7 +709,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             button.disabled = true
         })
         try {
-            const response = await fetch(`${ORDER_API_BASE}/api/payments/payfast/checkout`, {
+            const response = await checkoutFetch(`${ORDER_API_BASE}/api/payments/payfast/checkout`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -608,8 +719,9 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             })
             const data = await response.json().catch(() => null)
             if (!response.ok || !data?.payment?.action || !data?.payment?.fields) {
-                throw new Error(data?.error || "Secure payment could not be started. Please try again.")
+                throw new Error(checkoutErrorMessage(data, "Secure payment could not be started. Please try again."))
             }
+            saveDraft()
             submitPayFastForm(data.payment as PayFastPayment)
             return true
         } catch (error) {
@@ -634,6 +746,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     }
 
     function getInvalidField(step: HTMLElement) {
+        validateFields()
         const fields = Array.from(
             step.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
                 "input, select, textarea"
@@ -726,6 +839,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             back.textContent = "Back"
             back.setAttribute("aria-label", `Back to step ${index}`)
             const onBack = () => {
+                if (recoveryInFlight || requestInFlight || paymentLocked) return
                 const previousIndex = index === 3 && fulfilmentMethod === "collection" ? 1 : index - 1
                 void goTo(previousIndex)
             }
@@ -741,6 +855,10 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             next.textContent = index === steps.length - 1 ? "Pay securely" : "Continue"
             next.setAttribute("aria-label", index === steps.length - 1 ? "Pay securely with PayFast" : "Continue to the next checkout step")
             const onNext = async () => {
+                if (recoveryInFlight || requestInFlight) return
+                if (paymentLocked) { showStepImmediately(3); void recoverReturn(false); return }
+                const invalid = getInvalidField(step)
+                if (invalid) { invalid.reportValidity(); invalid.focus(); return }
                 const stage: CheckoutStage = index === 0 ? "started" : index === 1 ? "fulfilment" : index === 2 ? "address" : "complete"
                 if (index === steps.length - 1) {
                     next.textContent = "Opening PayFast…"
@@ -768,10 +886,7 @@ function setupSlider(root: HTMLElement): Cleanup | null {
             cleanups.push(() => next.removeEventListener("click", onNext as EventListener))
             nav.appendChild(next)
 
-            if (index === steps.length - 1 && returnState.payment === "processing") {
-                next.disabled = true
-                next.textContent = "Payment submitted"
-            }
+            if (returnState.payment) next.disabled = true
         }
 
         step.appendChild(nav)
@@ -779,6 +894,125 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     })
 
     updateProgress(activeIndex)
+
+    function showStepImmediately(index: number) {
+        activeIndex = index
+        root.dataset.mmActiveStep = String(index + 1)
+        steps.forEach((step, stepIndex) => {
+            step.dataset.mmActive = String(stepIndex === index)
+            step.setAttribute("aria-hidden", String(stepIndex !== index))
+        })
+        updateProgress(index)
+    }
+    function updatePaymentButtons(paid = false) {
+        root.querySelectorAll<HTMLButtonElement>(".mm-checkout-nav button").forEach(button => {
+            const statusButton = button.closest('[data-mm-checkout-step="4"]') && button.classList.contains("mm-checkout-next")
+            button.disabled = recoveryInFlight || paid || (paymentLocked && !statusButton)
+            if (button.closest('[data-mm-checkout-step="4"]') && button.classList.contains("mm-checkout-next")) {
+                button.textContent = paid ? "Payment confirmed" : recoveryInFlight ? "Checking payment…" : paymentLocked ? "Check payment status" : "Pay securely"
+            }
+        })
+    }
+    async function recoverReturn(poll = true) {
+        recoveryInFlight = true
+        updatePaymentButtons()
+        const savedToken = window.localStorage.getItem(CHECKOUT_TOKEN_KEY)
+        let draft: any = null
+        try {
+            const saved = JSON.parse(window.sessionStorage.getItem(CHECKOUT_DRAFT_KEY) || "null")
+            if (saved?.token === savedToken && saved.orderReference === orderReference && Date.now() - saved.savedAt < 24 * 60 * 60 * 1000) draft = saved
+        } catch { /* Do not trust a damaged draft. */ }
+        if (draft) {
+            Object.entries(draft.fields || {}).forEach(([name, value]) => {
+                if (name in CHECKOUT_FIELDS && typeof value === "string") restoreField(root, name, value)
+            })
+            if (["collection", "delivery"].includes(draft.fulfilmentMethod)) setFulfilmentMethod(draft.fulfilmentMethod)
+            if (!readCartItems().length && Array.isArray(draft.cart)) {
+                window.localStorage.setItem(CART_KEY, JSON.stringify(draft.cart))
+                window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: draft.cart }))
+            }
+        }
+        try {
+            if (!savedToken || !orderReference) throw new Error("We couldn't restore this checkout session. Your cart has not been cleared.")
+            for (let attempt = 0; attempt < (poll && returnState.payment === "processing" ? 5 : 1); attempt++) {
+                const response = await checkoutFetch(`${ORDER_API_BASE}/api/checkout/session`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ checkoutToken: savedToken, orderNumber: orderReference }),
+                    signal: AbortSignal.any([recoveryController.signal, AbortSignal.timeout(12_000)]),
+                })
+                const data = await response.json().catch(() => null)
+                if (!response.ok || !data?.session) throw new Error(checkoutErrorMessage(data, "Payment status could not be checked. Your cart is safe; check again shortly."))
+                if (disposed) return
+                if (window.localStorage.getItem(CHECKOUT_TOKEN_KEY) !== savedToken) {
+                    throw new Error("Another checkout was started in this browser. This order has not changed and your current cart is safe. Please contact us if you need help confirming payment.")
+                }
+                const session = data.session
+                if (attempt === 0 && !draft) {
+                    const fields = { checkoutFullName: session.customer.firstName, lastName: session.customer.lastName,
+                        checkoutEmail: session.customer.email, checkoutPhone: session.customer.phone,
+                        checkoutStreet: session.address?.line1 || "", checkoutStreet2: session.address?.line2 || "",
+                        suburb: session.address?.suburb || "", checkoutCity: session.address?.city || "",
+                        checkoutProvince: session.address?.province || "", checkoutPostal: session.address?.postalCode || "" }
+                    Object.entries(fields).forEach(([name, value]) => restoreField(root, name, String(value)))
+                    setFulfilmentMethod(session.fulfilmentMethod)
+                    if (!readCartItems().length && session.paymentStatus !== "paid") {
+                        const cart = session.items.map((item: any) => ({ ...item.productSnapshot, id: item.sku,
+                            sku: item.sku, productSlug: item.productSnapshot?.slug, name: item.name,
+                            quantity: item.quantity, price: Number(item.price), priceLabel: `R ${Number(item.price).toFixed(2)}` }))
+                        window.localStorage.setItem(CART_KEY, JSON.stringify(cart))
+                        window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: cart }))
+                    }
+                }
+                if (session.paymentStatus === "paid") {
+                    paymentLocked = true
+                    if (cartFingerprint(readCartItems()) === cartFingerprint(session.items)) {
+                        window.localStorage.removeItem(CART_KEY)
+                        window.dispatchEvent(new CustomEvent("moving-modesty-cart-updated", { detail: [] }))
+                    }
+                    if (window.localStorage.getItem(CHECKOUT_TOKEN_KEY) === savedToken) {
+                        window.localStorage.removeItem(CHECKOUT_TOKEN_KEY)
+                        window.sessionStorage.removeItem(CHECKOUT_DRAFT_KEY)
+                    }
+                    showStepImmediately(3)
+                    showFeedback(`Payment confirmed for ${orderReference}. Thank you. ${session.fulfilmentMethod === "collection" ? "We will contact you with collection details." : "We will send your delivery details soon."}`, "success")
+                    recoveryInFlight = false
+                    updatePaymentButtons(true)
+                    return
+                }
+                if (session.paymentStatus === "failed" && session.status === "new") {
+                    paymentLocked = false
+                    showFeedback("The payment wasn't completed. Your details and cart have been restored; you can try again.")
+                    break
+                }
+                paymentLocked = true
+                showFeedback(session.paymentStatus === "refunded" || session.status !== "new"
+                    ? "This order is closed. Please contact us if you need help with it."
+                    : `Payment for ${orderReference} is awaiting confirmation. Don't pay again yet. Check the status shortly.`)
+                if (attempt < 4 && poll && returnState.payment === "processing") {
+                    await new Promise<void>(resolve => {
+                        const timer = window.setTimeout(resolve, 2500 * (attempt + 1))
+                        recoveryController.signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve() }, { once: true })
+                    })
+                    if (disposed) return
+                }
+            }
+        } catch (error) {
+            if (disposed) return
+            showFeedback(error instanceof Error ? error.message : "Checkout could not be restored. Your cart has not been cleared.")
+            paymentLocked = true
+        }
+        if (disposed) return
+        recoveryInFlight = false
+        if (!paymentLocked && (getInvalidField(steps[0]) || (fulfilmentMethod === "delivery" && getInvalidField(steps[2])) || fulfilmentMethod === "to_be_confirmed")) {
+            showStepImmediately(getInvalidField(steps[0]) ? 0 : fulfilmentMethod === "to_be_confirmed" ? 1 : 2)
+        }
+        updatePaymentButtons()
+        if (!paymentLocked) saveDraft()
+    }
+    if (returnState.payment) {
+        showFeedback("Restoring your checkout and checking payment status…", "success")
+        void recoverReturn()
+    }
 
     return () => {
         cleanups.forEach((cleanup) => cleanup())

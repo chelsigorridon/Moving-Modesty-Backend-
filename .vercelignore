@@ -4,3 +4,6 @@ email-templates
 *.code-workspace
 Modesty
 tsconfig.tsbuildinfo
+.next.monitoring-cache-backup-*
+.codex-framer-mobile-menu.js
+.env*

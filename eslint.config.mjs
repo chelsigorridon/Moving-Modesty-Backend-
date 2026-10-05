@@ -5,5 +5,5 @@ import nextTypescript from "eslint-config-next/typescript"
 export default defineConfig([
     ...nextVitals,
     ...nextTypescript,
-    globalIgnores([".next/**", "node_modules/**", "framer/**"]),
+    globalIgnores([".next/**", ".next.monitoring-cache-backup-*/**", "node_modules/**", "framer/**", "previews/**"]),
 ])

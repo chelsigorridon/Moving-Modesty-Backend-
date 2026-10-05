@@ -19,19 +19,23 @@
     "@neondatabase/serverless": "latest",
     "drizzle-orm": "latest",
     "lucide-react": "latest",
-    "next": "latest",
+    "next": "16.3.6",
     "react": "latest",
     "react-dom": "latest",
     "resend": "latest",
     "zod": "latest"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "drizzle-kit": "latest",
     "eslint": "latest",
-    "eslint-config-next": "latest",
+    "eslint-config-next": "16.3.6",
+    "framer-motion": "^14.0.0",
+    "jsdom": "^30.1.2",
     "typescript": "latest"
   }
 }

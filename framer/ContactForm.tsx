@@ -44,16 +44,22 @@ export default function ContactForm({
         setMessage("")
         const controller = new AbortController()
         request.current = controller
-        const timeout = window.setTimeout(() => controller.abort(), 20000)
+        let timedOut = false
+        const timeout = window.setTimeout(() => { timedOut = true; controller.abort() }, 20000)
         try {
             const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...data, submissionId: submission.current!.id }), signal: controller.signal })
             const result = await response.json()
-            if (!response.ok || result.accepted !== true) throw new Error(result.error || "We couldn’t send your message. Please try again or contact us on WhatsApp.")
+            if (!response.ok || result.accepted !== true) throw new Error(`${result.error || "We couldn’t send your message. Please try again or contact us on WhatsApp."}${result.errorRef ? ` Reference: ${result.errorRef}` : ""}`)
             setState("sent")
             setMessage("Thank you—your message has been sent to Moving Modesty. We’ll be in touch soon.")
             form.reset()
             submission.current = null
         } catch (error) {
+            if (timedOut || (error instanceof Error && error.name === "TypeError")) {
+                // Only a fixed code is reported: never name, email, message or form data.
+                void fetch(`${new URL(endpoint).origin}/api/diagnostics/browser`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "contact", code: timedOut ? "browser_timeout" : "browser_network" }), signal: AbortSignal.timeout(5000) }).catch(() => undefined)
+            }
+            if (controller.signal.aborted && !timedOut) return
             setState("error")
             setMessage(error instanceof Error && error.name !== "AbortError" ? error.message : "We couldn’t confirm your message was sent. Please retry, or contact us on WhatsApp.")
         } finally {
@@ -66,7 +72,14 @@ export default function ContactForm({
     const fieldStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 8, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.3 }
     const inputStyle: CSSProperties = { width: "100%", minWidth: 0, height: 50, boxSizing: "border-box", padding: "15px 16px", border: "1px solid " + borderColor, borderRadius: 0, background: "transparent", color: textColor, font: "400 16px/1.4 Jost, Arial, sans-serif" }
     return <form className="mm-contact-form" aria-label="Contact Moving Modesty" onSubmit={submit} style={{ ...style, position: "relative", width: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 20, fontFamily: "Jost, Arial, sans-serif", color: textColor }}>
-        <style>{`.mm-contact-form :is(input,textarea,button,a):focus-visible{outline:2px solid ${accentColor};outline-offset:3px}.mm-contact-form input::placeholder,.mm-contact-form textarea::placeholder{color:${borderColor};opacity:1}`}</style>
+        <style>{`
+            .mm-contact-form :is(input,textarea,button,a):focus-visible{outline:2px solid ${accentColor};outline-offset:3px}
+            .mm-contact-form input::placeholder,.mm-contact-form textarea::placeholder{color:${borderColor};opacity:1}
+            .mm-contact-form button[type="submit"]{transition:filter .2s ease,opacity .2s ease}
+            @media(hover:hover) and (pointer:fine){.mm-contact-form button[type="submit"]:not(:disabled):hover{filter:brightness(.92)}}
+            .mm-contact-form button[type="submit"]:not(:disabled):active{filter:brightness(.84)}
+            @media(prefers-reduced-motion:reduce){.mm-contact-form button[type="submit"]{transition:none}}
+        `}</style>
         <label htmlFor={id + "-name"} style={fieldStyle}>Name<input id={id + "-name"} name="name" autoComplete="name" required minLength={2} maxLength={100} placeholder="Your name" style={inputStyle} disabled={state === "sending"} /></label>
         <label htmlFor={id + "-email"} style={fieldStyle}>Email<input id={id + "-email"} name="email" type="email" autoComplete="email" required maxLength={254} placeholder="you@example.com" style={inputStyle} disabled={state === "sending"} /></label>
         <label htmlFor={id + "-message"} style={fieldStyle}>Message<textarea id={id + "-message"} name="message" required minLength={10} maxLength={4000} placeholder="How can we help?" style={{ ...inputStyle, height: 120, resize: "vertical" }} disabled={state === "sending"} /></label>

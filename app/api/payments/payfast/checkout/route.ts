@@ -1,5 +1,6 @@
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getPayFastCheckoutReadiness } from "@/lib/integrations/payfast/configuration";
+import { reportFailure, resolveFailures } from "@/lib/monitoring";
 import {
   createPayFastCheckout,
   PayFastCheckoutError,
@@ -26,19 +27,23 @@ export async function POST(request: Request) {
   }
 
   try {
-    return apiJson({ payment: await createPayFastCheckout(parsed.data, request.url) });
+    const payment = await createPayFastCheckout(parsed.data, request.url);
+    await resolveFailures("payment_start", parsed.data.orderNumber);
+    return apiJson({ payment });
   } catch (error) {
     const message = error instanceof Error ? error.message : "PayFast checkout could not be started.";
     try {
-      await recordPayFastCheckoutFailure(parsed.data, message);
+      // A validation/closed-order conflict isn't a failed payment attempt.
+      if (!(error instanceof PayFastCheckoutError) || error.status >= 500) {
+        await recordPayFastCheckoutFailure(parsed.data, message);
+      }
     } catch (diagnosticError) {
-      console.error(
-        "Could not save the PayFast checkout failure:",
-        diagnosticError instanceof Error ? diagnosticError.message : "Unknown diagnostic error",
-      );
+      await reportFailure(diagnosticError, { operation: "payment_start" });
     }
+    const expected = error instanceof PayFastCheckoutError && error.status < 500;
+    const incident = expected ? null : await reportFailure(error, { operation: "payment_start", orderNumber: parsed.data.orderNumber });
     return apiJson(
-      { error: message },
+      { error: error instanceof PayFastCheckoutError ? message : "Payment could not be started. Please try again shortly.", errorRef: incident?.reference },
       { status: error instanceof PayFastCheckoutError ? error.status : 503 },
     );
   }

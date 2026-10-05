@@ -60,6 +60,17 @@ export type AdminOrder = {
   deliveryMethod: "Courier" | "Collection" | "To be confirmed";
   address?: string;
   items: AdminOrderItem[];
+  actionNeeded?: Array<{ message: string; reference?: string }>;
+  notifications?: Array<{
+    id: string;
+    title: string;
+    recipient: string;
+    status: "queued" | "sent" | "delivered" | "failed";
+    createdAt: string;
+    retryable: boolean;
+    deliveryMessage?: string;
+    deliveryEvent?: string;
+  }>;
   shipping?: AdminShipment;
   workflow?: {
     nextStatus: OrderStatus | null;

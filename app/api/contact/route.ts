@@ -2,6 +2,7 @@ import { apiJson } from "@/lib/api-response";
 import { contactInputSchema, contactOriginAllowed } from "@/lib/contact-input";
 import { db } from "@/lib/db";
 import { ContactRateLimitError, sendContactMessage } from "@/lib/email";
+import { reportFailure, resolveFailures } from "@/lib/monitoring";
 
 const storeUrl = process.env.STORE_URL || "https://holistic-brand-492217.framer.app";
 
@@ -43,10 +44,12 @@ export async function POST(request: Request) {
     const sourceIp = request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim()
       || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     await sendContactMessage(parsed.data, sourceIp);
+    await resolveFailures("contact_send");
     return response({ accepted: true });
   } catch (error) {
     if (error instanceof ContactRateLimitError) return response({ error: error.message }, 429);
-    console.error("[Contact] Message could not be accepted by the email provider.");
-    return response({ error: "We couldn’t send your message. Please try again or contact us on WhatsApp." }, 503);
+    const recorded = error && typeof error === "object" && "errorRef" in error ? error.errorRef : null;
+    const incident = recorded ? null : await reportFailure(error, { operation: "contact_send" });
+    return response({ error: "We couldn’t send your message. Please try again or contact us on WhatsApp.", errorRef: recorded || incident?.reference }, 503);
   }
 }

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { z } from "zod";
+import { eq, sql } from "drizzle-orm";
+import { assertCheckoutEditable, CheckoutConflictError, checkoutContentSnapshot, sameCheckoutContents } from "./checkout-safety";
+import type { CheckoutOrderInput } from "./checkout-input";
 import { db } from "./db";
 import {
   addresses,
@@ -8,44 +9,14 @@ import {
   orderItems,
   orders,
   orderStatusHistory,
+  payments,
   shipments,
 } from "./db/schema";
 import { resolveCheckoutItem, type CheckoutCatalogueItem } from "./checkout-catalogue";
 import { calculateShippingQuote } from "./shipping/policy";
 import { resolveVerifiedPackage } from "./shipping/packages";
 
-const addressSchema = z.object({
-  line1: z.string().trim().min(2).max(180),
-  line2: z.string().trim().max(180).optional().default(""),
-  suburb: z.string().trim().min(2).max(100),
-  city: z.string().trim().min(2).max(100),
-  province: z.string().trim().min(2).max(100),
-  postalCode: z.string().trim().min(3).max(12),
-});
-
-export const checkoutOrderSchema = z.object({
-  checkoutToken: z.string().uuid(),
-  stage: z.enum(["started", "fulfilment", "address", "complete"]),
-  customer: z.object({
-    firstName: z.string().trim().min(1).max(80),
-    lastName: z.string().trim().min(1).max(80),
-    email: z.string().trim().email().max(180),
-    phone: z.string().trim().min(7).max(30),
-  }),
-  fulfilmentMethod: z.enum(["delivery", "collection", "to_be_confirmed"]),
-  address: addressSchema.optional(),
-  items: z.array(z.object({
-    sku: z.string().trim().min(3).max(80),
-    quantity: z.number().int().min(1).max(10),
-  })).min(1).max(20),
-}).superRefine((input, context) => {
-  const needsAddress = input.fulfilmentMethod === "delivery" && ["address", "complete"].includes(input.stage);
-  if (needsAddress && !input.address) {
-    context.addIssue({ code: "custom", path: ["address"], message: "Enter a delivery address." });
-  }
-});
-
-export type CheckoutOrderInput = z.infer<typeof checkoutOrderSchema>;
+export { checkoutOrderSchema, type CheckoutOrderInput } from "./checkout-input";
 
 export class CheckoutValidationError extends Error {}
 
@@ -75,9 +46,9 @@ function makeOrderNumber() {
   return `MM-${date}-${randomBytes(3).toString("hex").toUpperCase()}`;
 }
 
-export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
+export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = db) {
   const lines = resolveLines(input.items);
-  if (!db) throw new Error("DATABASE_URL is not configured.");
+  if (!database) throw new Error("DATABASE_URL is not configured.");
   const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
   const quote = calculateShippingQuote(subtotal, input.fulfilmentMethod);
   const { deliveryFee, total } = quote;
@@ -92,13 +63,36 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
       ? "collection"
       : "to_be_confirmed";
 
-  const [existingOrder] = await db
-    .select({ id: orders.id, orderNumber: orders.orderNumber, deliveryAddressId: orders.deliveryAddressId })
-    .from(orders)
-    .where(eq(orders.checkoutToken, input.checkoutToken))
-    .limit(1);
-
-  const result = await db.transaction(async (transaction) => {
+  const result = await database.transaction(async (transaction) => {
+    // Serialize even the first save for this token. Payment and return handlers
+    // also lock the order row, so a verified payment cannot race an edit.
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${input.checkoutToken}, 0))`);
+    const [existingOrder] = await transaction
+      .select({ id: orders.id, orderNumber: orders.orderNumber, deliveryAddressId: orders.deliveryAddressId,
+        customerId: orders.customerId, customerSnapshot: orders.customerSnapshot, status: orders.status, paymentStatus: orders.paymentStatus,
+        deliveryMethod: orders.deliveryMethod, total: orders.total })
+      .from(orders).where(eq(orders.checkoutToken, input.checkoutToken)).for("update").limit(1);
+    if (existingOrder) {
+      assertCheckoutEditable(existingOrder);
+      const [attempt] = await transaction.select({ id: payments.id }).from(payments).where(eq(payments.orderId, existingOrder.id)).limit(1);
+      if (attempt) {
+        const [savedCustomer] = await transaction.select({ firstName: customers.firstName, lastName: customers.lastName,
+          email: customers.email, phone: customers.phone }).from(customers).where(eq(customers.id, existingOrder.customerId!)).limit(1);
+        const [savedAddress] = existingOrder.deliveryAddressId
+          ? await transaction.select().from(addresses).where(eq(addresses.id, existingOrder.deliveryAddressId)).limit(1) : [];
+        const savedItems = await transaction.select({ sku: orderItems.sku, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, existingOrder.id));
+        const snapshotCustomer = existingOrder.customerSnapshot ?? savedCustomer;
+        const saved = snapshotCustomer && checkoutContentSnapshot({ customer: snapshotCustomer, deliveryMethod: existingOrder.deliveryMethod,
+          address: savedAddress, items: savedItems, total: existingOrder.total });
+        const requested = checkoutContentSnapshot({ customer: input.customer, deliveryMethod, address: input.address,
+          items: lines.map(line => ({ sku: line.product.sku, quantity: line.quantity })), total });
+        if (!saved || !sameCheckoutContents(saved, requested)) {
+          throw new CheckoutConflictError("Payment has already started for this order. Changed details need a new checkout.", "CHECKOUT_CHANGED");
+        }
+        // Idempotent retry: never rewrite a submitted payment's order snapshot.
+        return { orderNumber: existingOrder.orderNumber, created: false, paymentStatus: existingOrder.paymentStatus };
+      }
+    }
     const [customer] = await transaction
       .insert(customers)
       .values({
@@ -154,6 +148,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
         .update(orders)
         .set({
           customerId: customer.id,
+          customerSnapshot: input.customer,
           deliveryAddressId,
           deliveryMethod,
           subtotal: subtotal.toFixed(2),
@@ -170,6 +165,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
         .values({
           orderNumber,
           checkoutToken: input.checkoutToken,
+          customerSnapshot: input.customer,
           customerId: customer.id,
           deliveryAddressId,
           status: "new",
@@ -233,7 +229,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
       await transaction.delete(shipments).where(eq(shipments.orderId, orderId!));
     }
 
-    return { orderNumber: orderNumber!, created };
+    return { orderNumber: orderNumber!, created, paymentStatus: "pending" as const };
   });
 
   return {
@@ -246,6 +242,6 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput) {
     total,
     qualifiesForFreeDelivery: quote.qualifiesForFreeDelivery,
     amountUntilFreeDelivery: quote.amountUntilFreeDelivery,
-    paymentStatus: "pending" as const,
+    paymentStatus: result.paymentStatus,
   };
 }

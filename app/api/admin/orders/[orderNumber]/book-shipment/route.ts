@@ -2,6 +2,7 @@ import { getAdminSnapshot } from "@/lib/admin-data";
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
 import { bookCourierShipment, ShippingConflict } from "@/lib/integrations/bobgo/shipping";
+import { reportFailure } from "@/lib/monitoring";
 
 export const maxDuration = 60;
 
@@ -20,8 +21,10 @@ export async function POST(request: Request, context: RouteContext<"/api/admin/o
     const snapshot = await getAdminSnapshot();
     return apiJson({ ...result, order: snapshot.orders.find(item => item.id === orderNumber) });
   } catch (error) {
+    const previousRef = error && typeof error === "object" && "errorRef" in error ? error.errorRef : undefined;
+    const incident = previousRef || error instanceof ShippingConflict ? null : await reportFailure(error, { operation: "courier_book", orderNumber });
     return apiJson(
-      { error: error instanceof Error ? error.message : "Shipment could not be booked. Check Bob Go before retrying." },
+      { error: error instanceof ShippingConflict ? error.message : "Shipment could not be confirmed. Check Bob Go before retrying.", errorRef: previousRef || incident?.reference },
       { status: error instanceof ShippingConflict ? 409 : 503 },
     );
   }

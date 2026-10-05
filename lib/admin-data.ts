@@ -3,6 +3,7 @@ import { db } from "./db";
 import {
   addresses,
   customers,
+  emailEvents,
   inventoryMovements,
   orderItems,
   orders as ordersTable,
@@ -19,6 +20,10 @@ import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
 import { assertOrderTransition, getOrderWorkflow } from "./order-workflow";
 import { paymentEnvironmentFromProvider } from "./payment-environment";
+import { readOrderCustomer } from "./checkout-safety";
+import { canRetryNotification, notificationTitle } from "./order-notifications";
+import { getOperationalIssues } from "./monitoring";
+import { incidentAction, notificationDeliveryMessage } from "./monitoring-policy";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -43,6 +48,7 @@ export type AdminProduct = {
 export type AdminSnapshot = {
   orders: AdminOrder[];
   products: AdminProduct[];
+  operationalNotice?: string;
 };
 
 const statusLabels: Record<string, OrderStatus> = {
@@ -117,7 +123,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     throw new Error("DATABASE_URL is not configured.");
   }
 
-  const [orderRows, itemRows, productRows, variantRows, shipmentRows] = await Promise.all([
+  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents] = await Promise.all([
     db
       .select({
         id: ordersTable.id,
@@ -138,6 +144,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         customerLastName: customers.lastName,
         customerEmail: customers.email,
         customerPhone: customers.phone,
+        customerSnapshot: ordersTable.customerSnapshot,
         recipientName: addresses.recipientName,
         line1: addresses.line1,
         line2: addresses.line2,
@@ -204,6 +211,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         shipmentProvider: shipments.provider,
       })
       .from(shipments),
+    db.select().from(emailEvents).orderBy(desc(emailEvents.createdAt)),
+    getOperationalIssues().catch(() => null),
   ]);
 
   const bobGo = getBobGoConfiguration();
@@ -238,7 +247,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
   }
 
   return {
+    operationalNotice: incidents === null ? "Error monitoring is temporarily unavailable. Orders are still shown; ask website support to check it."
+      : incidents.some(incident => !incident.orderId && incident.severity === "error") ? "A website service needs attention. Please ask website support to check the technical alerts." : undefined,
     orders: orderRows.map((order) => {
+      const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.customerFirstName ?? "", lastName: order.customerLastName ?? "", email: order.customerEmail ?? "", phone: order.customerPhone });
       const shipment = shipmentByOrder.get(order.id);
       const blockers = shipmentBookingBlockers({
         deliveryMethod: order.deliveryMethod,
@@ -255,18 +267,18 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       });
       if (!bobGo.pickupPointProviderSlug) blockers.push("The pickup-point courier provider still needs to be configured.");
       if (bobGo.environment === "production" && paymentEnvironmentFromProvider(order.paymentProvider) === "sandbox") blockers.push("Test payments cannot create live courier bookings.");
-      if (!order.customerPhone || !order.customerEmail) blockers.push("Customer phone and email are required.");
+      if (!customer.phone || !customer.email) blockers.push("Customer phone and email are required.");
       if (order.status !== "ready") blockers.push("Mark the packed order ready for courier first.");
       if (shipment && (["booking", "booked", "cancelled"].includes(shipment.status) || shipment.providerShipmentId)) blockers.push("A shipment already exists or may still be processing. Do not book a duplicate.");
 
       return {
       id: order.orderNumber,
       customer:
-        `${order.customerFirstName ?? ""} ${order.customerLastName ?? ""}`.trim() ||
+        `${customer.firstName} ${customer.lastName}`.trim() ||
         order.recipientName ||
         "Guest customer",
-      email: order.customerEmail ?? "",
-      phone: order.customerPhone ?? "",
+      email: customer.email,
+      phone: customer.phone ?? "",
       placedAt: dateFormatter.format(order.createdAt),
       placedDate: order.createdAt.toISOString(),
       subtotal: Number(order.subtotal),
@@ -288,6 +300,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
         deliveryMethod: deliveryLabels[order.deliveryMethod],
         shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+        shipmentTrackingNumber: shipment?.trackingNumber,
       }),
       address: formatAddress([
         order.line1,
@@ -298,6 +311,24 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         order.postalCode,
       ]),
       items: itemsByOrder.get(order.id) ?? [],
+      actionNeeded: [
+        ...(notificationRows.some(event => event.orderId === order.id && event.status === "failed") ? [{ message: "An email notification needs attention. Open Email notifications below to see what to do." }] : []),
+        ...(incidents || []).filter(incident => incident.orderId === order.id && incident.severity === "error" && incident.source !== "email"
+          && !(incident.source === "payment" && order.paymentStatus === "paid"))
+          .map(incident => ({ message: incidentAction(incident.source, incident.code), reference: incident.reference })),
+      ],
+      notifications: notificationRows.filter(event => event.orderId === order.id).map(event => ({
+        id: event.id,
+        title: notificationTitle(event.template),
+        recipient: event.recipient,
+        status: event.status,
+        createdAt: event.createdAt.toISOString(),
+        retryable: event.status === "failed" && !event.resendEmailId && canRetryNotification(event.template, {
+          status: statusLabels[order.status], paymentStatus: paymentLabels[order.paymentStatus], deliveryMethod: deliveryLabels[order.deliveryMethod],
+        }),
+        deliveryMessage: notificationDeliveryMessage(event.deliveryEvent, event.template),
+        deliveryEvent: event.deliveryEvent || undefined,
+      })),
       shipping: order.deliveryMethod === "courier" ? {
         provider: "Bob Go" as const,
         status: shipment ? shipmentStatusLabels[shipment.status] : "Not ready" as const,
@@ -464,16 +495,18 @@ export async function updateOrderStatus(orderNumber: string, nextStatus: OrderSt
   const databaseStatus = statusValues[nextStatus];
   const found = await db.transaction(async (transaction) => {
     // Serialize status changes, including double clicks from separate sessions.
-    const [existing] = await transaction.select().from(ordersTable)
+    const [existing] = await transaction.select({ id: ordersTable.id, status: ordersTable.status,
+      paymentStatus: ordersTable.paymentStatus, deliveryMethod: ordersTable.deliveryMethod }).from(ordersTable)
       .where(eq(ordersTable.orderNumber, orderNumber)).limit(1).for("update");
     if (!existing) return false;
-    const [shipment] = await transaction.select({ status: shipments.status }).from(shipments)
+    const [shipment] = await transaction.select({ status: shipments.status, trackingNumber: shipments.trackingNumber }).from(shipments)
       .where(eq(shipments.orderId, existing.id)).limit(1).for("update");
     assertOrderTransition({
       status: statusLabels[existing.status],
       paymentStatus: paymentLabels[existing.paymentStatus],
       deliveryMethod: deliveryLabels[existing.deliveryMethod],
       shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+      shipmentTrackingNumber: shipment?.trackingNumber,
     }, nextStatus);
     await transaction
       .update(ordersTable)

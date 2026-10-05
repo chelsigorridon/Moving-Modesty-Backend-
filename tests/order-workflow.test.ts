@@ -37,7 +37,11 @@ test("courier handover requires a confirmed booking and cannot use collection ac
   for (const shipmentStatus of [undefined, "Not ready", "Booking", "Failed", "Cancelled"]) {
     assert.equal(getOrderWorkflow({ ...order, shipmentStatus }).nextStatus, null);
   }
-  assert.equal(getOrderWorkflow({ ...order, shipmentStatus: "Booked" }).nextStatus, "Dispatched");
+  assert.equal(getOrderWorkflow({ ...order, shipmentStatus: "Booked", shipmentTrackingNumber: "BG-BOOKED-REFERENCE" }).nextStatus, "Dispatched");
+  for (const shipmentTrackingNumber of [undefined, "", "   ", "DEMO-NOT-A-REAL-WAYBILL"]) {
+    assert.equal(getOrderWorkflow({ ...order, shipmentStatus: "Booked", shipmentTrackingNumber }).nextStatus, null);
+    assert.throws(() => assertOrderTransition({ ...order, shipmentStatus: "Booked", shipmentTrackingNumber }, "Dispatched"), OrderWorkflowConflict);
+  }
   assert.throws(() => assertOrderTransition(order, "Collected"), OrderWorkflowConflict);
   assert.equal(getOrderWorkflow({ ...order, status: "Dispatched" }).nextStatus, "Delivered");
 });

@@ -4,6 +4,7 @@ import { getRequestAdmin } from "@/lib/auth";
 import { getAdminSnapshot } from "@/lib/admin-data";
 import { getCourierQuotes, getCourierWaybill, refreshCourierShipment, ShippingConflict } from "@/lib/integrations/bobgo/shipping";
 import { parcelInput } from "@/lib/integrations/bobgo/protocol";
+import { reportFailure } from "@/lib/monitoring";
 
 export const maxDuration = 60;
 export function OPTIONS() { return apiOptions(); }
@@ -24,6 +25,8 @@ export async function POST(request: Request, context: { params: Promise<{ orderN
     const snapshot = await getAdminSnapshot();
     return apiJson({ ...result, order: snapshot.orders.find(order => order.id === orderNumber) });
   } catch (error) {
-    return apiJson({ error: error instanceof Error ? error.message : "Bob Go could not complete this request." }, { status: error instanceof ShippingConflict ? 409 : 502 });
+    const previousRef = error && typeof error === "object" && "errorRef" in error ? error.errorRef : undefined;
+    const incident = previousRef || error instanceof ShippingConflict ? null : await reportFailure(error, { operation: body.data.action === "quote" ? "courier_quote" : body.data.action === "waybill" ? "courier_waybill" : "courier_refresh", orderNumber });
+    return apiJson({ error: error instanceof ShippingConflict ? error.message : "Courier request failed. Please try again shortly; check Bob Go before booking again.", errorRef: previousRef || incident?.reference }, { status: error instanceof ShippingConflict ? 409 : 502 });
   }
 }
