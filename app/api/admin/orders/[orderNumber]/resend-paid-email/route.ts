@@ -7,7 +7,7 @@ export function OPTIONS() {
 }
 
 export async function POST(request: Request, context: RouteContext<"/api/admin/orders/[orderNumber]/resend-paid-email">) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   const { orderNumber } = await context.params;
 
   try {

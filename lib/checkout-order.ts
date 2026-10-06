@@ -70,7 +70,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
     const [existingOrder] = await transaction
       .select({ id: orders.id, orderNumber: orders.orderNumber, deliveryAddressId: orders.deliveryAddressId,
         customerId: orders.customerId, customerSnapshot: orders.customerSnapshot, status: orders.status, paymentStatus: orders.paymentStatus,
-        deliveryMethod: orders.deliveryMethod, total: orders.total })
+        deliveryMethod: orders.deliveryMethod, total: orders.total, archivedAt: orders.archivedAt })
       .from(orders).where(eq(orders.checkoutToken, input.checkoutToken)).for("update").limit(1);
     if (existingOrder) {
       assertCheckoutEditable(existingOrder);

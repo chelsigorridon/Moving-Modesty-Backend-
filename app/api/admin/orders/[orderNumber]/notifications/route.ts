@@ -8,7 +8,7 @@ import { reportFailure } from "@/lib/monitoring";
 export function OPTIONS() { return apiOptions(); }
 
 export async function POST(request: Request, context: RouteContext<"/api/admin/orders/[orderNumber]/notifications">) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   const parsed = z.object({ notificationId: z.uuid() }).safeParse(await request.json().catch(() => null));
   if (!parsed.success) return apiJson({ error: "Choose a valid failed notification." }, { status: 400 });
   const { orderNumber } = await context.params;

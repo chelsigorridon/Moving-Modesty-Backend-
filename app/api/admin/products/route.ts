@@ -9,7 +9,7 @@ export function OPTIONS() {
 }
 
 export async function POST(request: Request) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   const body = await request.json().catch(() => null);
   const parsed = productInputSchema.safeParse(body);
   if (!parsed.success) {

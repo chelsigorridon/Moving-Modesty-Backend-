@@ -9,7 +9,7 @@ import { canRetryNotification, dispatchTracking, notificationStatus, shouldNotif
 import { reportFailure, resolveFailures } from "./monitoring";
 import { classifyError, errorReasons } from "./monitoring-policy";
 import { requireDatabase } from "./db";
-import { customers, emailEvents, orderItems, orders } from "./db/schema";
+import { customers, emailEvents, orderItems, orderRefunds, orders } from "./db/schema";
 import type { Order, OrderStatus } from "./store-data";
 
 const apiKey = process.env.RESEND_API_KEY;
@@ -270,6 +270,14 @@ export async function sendOrderStatusEmail(order: Order, status: OrderStatus) {
   const idempotencyKey = `order-${order.id}-${status.toLowerCase()}`;
   const [record] = await requireDatabase().select({ id: orders.id }).from(orders).where(eq(orders.orderNumber, order.id)).limit(1);
   if (!record) throw new Error("Order not found for its customer notification.");
+  if (status === "Cancelled") return sendRecordedEmail({
+    orderId: record.id, recipient: order.email, template: "order-status-cancelled", idempotencyKey,
+    replyTo: "movingmodesty@gmail.com",
+    hostedTemplate: {
+      id: process.env.RESEND_ORDER_CANCELLED_TEMPLATE?.trim() || "customer-order-cancelled",
+      variables: { CUSTOMER_NAME: order.customer.split(" ")[0], ORDER_NUMBER: order.id, STORE_URL: storeUrl },
+    },
+  });
   return sendRecordedEmail({
     orderId: record.id,
     recipient: order.email,
@@ -278,6 +286,22 @@ export async function sendOrderStatusEmail(order: Order, status: OrderStatus) {
     replyTo: "movingmodesty@gmail.com",
     subject: `${tracking?.sandbox ? "[SANDBOX TEST] " : ""}${message.subject} · ${order.id}`,
     html: emailShell(`<p style="margin:0 0 8px;color:#7d896d;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase">Order update</p><h1 style="margin:0 0 18px;font-family:Georgia,serif;font-size:34px;font-weight:400">${status === "Ready" ? "Your order is ready for collection" : message.heading}</h1><p>Hello ${escapeHtml(order.customer.split(" ")[0])},</p><p style="line-height:1.7;color:#625b55">${status === "Ready" ? "Your order is packed. You will receive a message soon to arrange your collection address and time." : message.body}</p><div style="margin:28px 0;padding:20px;background:#f7f5f1"><strong>${escapeHtml(order.id)}</strong><p style="margin:8px 0 0">Current status: ${escapeHtml(status)}</p></div>${trackingHtml}<a href="${escapeHtml(storeUrl)}" style="display:inline-block;padding:13px 18px;background:#737d65;color:white;text-decoration:none">Visit Moving Modesty</a>`),
+  });
+}
+
+export async function sendRefundRecordedEmail(orderNumber: string, refundId: string) {
+  const [record] = await requireDatabase().select({ orderId: orders.id, orderNumber: orders.orderNumber,
+    amount: orderRefunds.amount, reference: orderRefunds.reference, date: orderRefunds.refundedAt,
+    customerSnapshot: orders.customerSnapshot, firstName: customers.firstName, lastName: customers.lastName,
+    email: customers.email, phone: customers.phone }).from(orderRefunds)
+    .innerJoin(orders, eq(orderRefunds.orderId, orders.id)).leftJoin(customers, eq(orders.customerId, customers.id))
+    .where(and(eq(orderRefunds.id, refundId), eq(orders.orderNumber, orderNumber))).limit(1);
+  if (!record) throw new Error("A recorded refund for this order is required before sending confirmation.");
+  const customer = readOrderCustomer(record.customerSnapshot, { firstName: record.firstName || "", lastName: record.lastName || "", email: record.email || "", phone: record.phone });
+  return sendRecordedEmail({ orderId: record.orderId, recipient: customer.email,
+    template: `order-refund-${refundId}`, idempotencyKey: `refund-${refundId}-customer`, replyTo: "movingmodesty@gmail.com",
+    subject: `Your Moving Modesty refund · ${orderNumber}`,
+    html: emailShell(`<p style="color:#667458;font-size:12px;letter-spacing:1.5px">REFUND CONFIRMATION</p><h1 style="font-family:Georgia,serif;font-size:34px;font-weight:400">Your refund has been recorded</h1><p>Hello ${escapeHtml(customer.firstName)},</p><p style="line-height:1.7">Moving Modesty has recorded a completed PayFast refund of <strong>${money(record.amount)}</strong> for order <strong>${escapeHtml(orderNumber)}</strong>.</p><div style="padding:20px;background:#f7f5f1"><p>Refund reference: ${escapeHtml(record.reference)}</p><p>Refund date: ${record.date.toISOString().slice(0, 10)}</p></div><p style="line-height:1.7">Your bank or payment provider may take additional time to show the credit. Please reply if you need any help.</p>`),
   });
 }
 
@@ -296,5 +320,6 @@ export async function retryOrderNotification(order: Order, notificationId: strin
     if (result.skipped) throw new NotificationRetryConflict("Payment is no longer confirmed. Refresh this order before retrying its payment notification.");
     return result;
   }
+  if (event.template.startsWith("order-refund-")) return sendRefundRecordedEmail(order.id, event.template.slice("order-refund-".length));
   return sendOrderStatusEmail(order, notificationStatus(event.template)!);
 }

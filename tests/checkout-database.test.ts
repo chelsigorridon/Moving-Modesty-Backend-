@@ -38,7 +38,7 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     return compiledModule.exports;
   }
   try {
-    for (const migration of ["0000_amusing_wallop", "0001_ordinary_lord_tyger", "0002_past_lester", "0003_slippery_pet_avengers", "0004_checkout_customer_snapshot", "0005_nostalgic_wallow"]) {
+    for (const migration of ["0000_amusing_wallop", "0001_ordinary_lord_tyger", "0002_past_lester", "0003_slippery_pet_avengers", "0004_checkout_customer_snapshot", "0005_nostalgic_wallow", "0006_clever_titania", "0007_archive_test_orders"]) {
       const sql = readFileSync(resolve(root, `drizzle/${migration}.sql`), "utf8");
       for (const statement of sql.split("--> statement-breakpoint")) if (statement.trim()) await postgres.exec(statement);
     }
@@ -48,7 +48,7 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     const { createPayFastNotificationSignature } = load("lib/integrations/payfast/signature.ts");
     const { GET: paymentReturn } = load("app/api/payments/payfast/return/route.ts");
     const { POST: restoreSession } = load("app/api/checkout/session/route.ts");
-    const { getAdminSnapshot } = load("lib/admin-data.ts");
+    const { getAdminSnapshot, updateOrderStatus } = load("lib/admin-data.ts");
     const customer = { firstName: "Original", lastName: "Customer", email: "test@example.com", phone: "0821234567" };
     const input = { checkoutToken: "c4c5b18e-4e64-4d3b-845e-d6432157f723", stage: "complete", fulfilmentMethod: "delivery", customer,
       address: { line1: "10 Test Street", suburb: "Test Suburb", city: "Cape Town", province: "Western Cape", postalCode: "0081" },
@@ -64,7 +64,8 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     assert.equal((await upsertCheckoutOrder(input, database)).created, false);
     await assert.rejects(upsertCheckoutOrder({ ...input, items: [{ sku: "AMINA-LAV-OS", quantity: 2 }] }, database), /new checkout/);
     // A second order updates the shared profile, never the first order's snapshot.
-    await upsertCheckoutOrder({ ...input, checkoutToken: "3f1ad40c-9fe5-44f4-aaba-98f567b32b70", customer: { ...customer, firstName: "Changed", phone: "0837654321" } }, database);
+    const newerInput = { ...input, checkoutToken: "3f1ad40c-9fe5-44f4-aaba-98f567b32b70", customer: { ...customer, firstName: "Changed", phone: "0837654321" } };
+    const newerOrder = await upsertCheckoutOrder(newerInput, database);
     const retried = await createPayFastCheckout(checkout, "https://test.invalid/api/payments/payfast/checkout");
     assert.equal(retried.fields.name_first, "Original");
     assert.equal(retried.fields.cell_number, "0821234567");
@@ -103,6 +104,29 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
       assert.equal(savedOrder.customer, "Original Customer");
       assert.equal(savedOrder.paymentStatus, "Paid");
       assert.equal(savedOrder.deliveryMethod, "Courier");
+      // Archiving is recoverable and never deletes items/payment history or
+      // changes the paid status. Fresh orders stay visible in the same portal.
+      await postgres.query("update orders set archived_at = now(), archive_reason = $2 where order_number = $1", [order.orderNumber, "TEST cleanup"]);
+      const cleaned = await getAdminSnapshot();
+      assert.equal(cleaned.orders.some((entry: { id: string }) => entry.id === order.orderNumber), false);
+      assert.equal(cleaned.orders.length, 1, "the newer checkout remains visible");
+      assert.equal((await postgres.query("select * from order_items where order_id = (select id from orders where order_number = $1)", [order.orderNumber])).rows.length, 1);
+      assert.equal((await postgres.query<{ status: string }>("select status from payments where merchant_payment_id = $1", [order.orderNumber])).rows[0].status, "paid");
+      assert.equal((await restoreSession(sessionRequest(input.checkoutToken))).status, 404);
+      await assert.rejects(upsertCheckoutOrder(input, database), { code: "CHECKOUT_CHANGED" });
+      await assert.rejects(createPayFastCheckout(checkout, "https://test.invalid/checkout"), /archived/);
+      assert.equal(await updateOrderStatus(order.orderNumber, "Cancelled"), null);
+      await postgres.query("update orders set archived_at = now(), archive_reason = $2 where order_number = $1", [newerOrder.orderNumber, "TEST cleanup"]);
+      const archivedUnpaid = { orderNumber: newerOrder.orderNumber, checkoutToken: newerInput.checkoutToken };
+      await assert.rejects(createPayFastCheckout(archivedUnpaid, "https://test.invalid/checkout"), /archived/);
+      await recordPayFastCheckoutFailure(archivedUnpaid, "Attempt to reuse an archived checkout");
+      assert.equal((await postgres.query("select * from payments where merchant_payment_id = $1", [newerOrder.orderNumber])).rows.length, 0);
+      assert.equal((await getAdminSnapshot()).orders.length, 0);
+      const fresh = await upsertCheckoutOrder({ ...input, checkoutToken: "f9ffec76-a82c-4d9b-a988-09dcd45e01f1" }, database);
+      assert.equal(fresh.created, true);
+      assert.deepEqual((await getAdminSnapshot()).orders.map((entry: { id: string }) => entry.id), [fresh.orderNumber]);
+      await postgres.query("update orders set archived_at = null, archive_reason = null where order_number = $1", [order.orderNumber]);
+      assert.equal((await getAdminSnapshot()).orders.find((entry: { id: string }) => entry.id === order.orderNumber).paymentStatus, "Paid");
     } finally { globalThis.fetch = originalFetch; }
   } finally { await postgres.close(); }
 });

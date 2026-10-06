@@ -36,7 +36,7 @@ async function getBobGoSetupStatus() {
 }
 
 export async function GET(request: Request) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   try {
     const [snapshot, bobGoSetup] = await Promise.all([
       getAdminSnapshot(),

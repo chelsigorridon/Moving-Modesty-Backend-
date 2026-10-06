@@ -13,7 +13,7 @@ const actionInput = z.discriminatedUnion("action", [
   z.object({ action: z.literal("refresh") }), z.object({ action: z.literal("waybill") }),
 ]);
 export async function POST(request: Request, context: { params: Promise<{ orderNumber: string }> }) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   const body = actionInput.safeParse(await request.json().catch(() => null));
   if (!body.success) return apiJson({ error: "Enter a valid packed weight in grams and length, width and height in centimetres." }, { status: 400 });
   const { orderNumber } = await context.params;

@@ -23,6 +23,9 @@ type OrderStatus =
 type PaymentStatus = "Pending payment" | "Paid" | "Failed" | "Refunded"
 
 interface OrderItem {
+    id?: string
+    returnableQuantity?: number
+    restockableQuantity?: number
     name: string
     variant: string
     quantity: number
@@ -51,6 +54,14 @@ interface AdminOrder {
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
     items: OrderItem[]
+    aftersales?: {
+        canStartReturn: boolean
+        canRecordRefund: boolean
+        refundedTotal: number
+        remainingRefundable: number
+        returns: Array<{ id: string; status: string; reason: string; waybillReference?: string; receivedAt?: string; items: Array<{ itemId: string; quantity: number; restocked: number }> }>
+        refunds: Array<{ id: string; amount: number; reference: string; reason: string; refundedAt: string; recordedBy: string }>
+    }
     actionNeeded?: Array<{ message: string; reference?: string }>
     notifications?: Array<{ id: string; title: string; recipient: string; status: "queued" | "sent" | "delivered" | "failed"; createdAt: string; retryable: boolean; deliveryMessage?: string; deliveryEvent?: string }>
     shipping?: {
@@ -90,6 +101,15 @@ interface Snapshot {
         matchCount: number
     } | null
 }
+
+interface OrderTrace {
+    order: { orderNumber: string; createdAt: string; updatedAt: string }
+    payment: { status: string; providerStatus?: string; merchantPaymentId?: string; providerPaymentId?: string; verifiedAt?: string; updatedAt: string } | null
+    shipment: { status: string; providerShipmentId?: string; waybillReference?: string; trackingNumber?: string; bookedAt?: string; updatedAt: string } | null
+    notifications: Array<{ template: string; status: string; providerEmailId?: string; deliveryEvent?: string; deliveryEventAt?: string; createdAt: string }>
+    incidents: Array<{ reference: string; source: string; operation: string; summary: string; lastSeenAt: string; resolvedAt?: string }>
+    history: Array<{ from?: string; to: string; at: string }>
+}
 interface CourierConnectionCheck {
     status: "unchecked" | "checking" | "connected" | "error"
     message?: string
@@ -113,6 +133,7 @@ interface ShippingResult {
     message?: string
 }
 type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill", payload?: Record<string, unknown>) => Promise<ShippingResult>
+type AftersalesRequest = (order: AdminOrder, payload: Record<string, unknown>) => Promise<void>
 type Confirmation = { title: string; description: string; run: () => void }
 const courierMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 })
 
@@ -264,6 +285,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         return snapshot.orders.filter((order) => {
             const matchesStatus = orderFilter === "All orders" ||
                 (orderFilter === "Needs attention" && Boolean(order.actionNeeded?.length)) ||
+                (orderFilter === "Needs attention" && Boolean(order.aftersales?.returns.some(record => record.status !== "received") || order.aftersales?.canRecordRefund)) ||
                 (orderFilter === "Needs attention" && order.paymentStatus === "Paid" &&
                     (order.status === "New" || order.status === "Confirmed" ||
                      (order.status === "Ready" && order.shipping?.status !== "Booking" && order.shipping?.status !== "Booked") ||
@@ -348,6 +370,49 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
+    async function requestAftersales(order: AdminOrder, payload: Record<string, unknown>) {
+        if (mutationPending.current || !liveEnabled) throw new Error("Wait for the current action to finish, then try again.")
+        mutationPending.current = true
+        startTransition(() => { setLoading(true); setNotice("") })
+        try {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/aftersales`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                body: JSON.stringify(payload),
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok) {
+                if (response.status === 401) route("/admin/login")
+                throw new Error(apiErrorMessage(data, "The return or refund could not be saved."))
+            }
+            startTransition(() => {
+                if (data.order) setSnapshot(current => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) }))
+                else setRefresh(current => current + 1)
+                setNotice(data.warning || data.message || "Saved.")
+            })
+        } catch (error) {
+            setRefresh(current => current + 1)
+            const failure = error instanceof Error ? error : new Error("The return or refund could not be saved.")
+            startTransition(() => setNotice(failure.message))
+            throw failure
+        } finally {
+            mutationPending.current = false
+            startTransition(() => setLoading(false))
+        }
+    }
+
+    async function requestTrace(order: AdminOrder): Promise<OrderTrace> {
+        const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/trace`, {
+            headers: { Authorization: `Bearer ${token()}` },
+        })
+        const data = await response.json().catch(() => null)
+        if (!response.ok) {
+            if (response.status === 401) route("/admin/login")
+            throw new Error(apiErrorMessage(data, "Support details could not be loaded."))
+        }
+        return data as OrderTrace
+    }
+
     async function checkCourierConnection() {
         if (mutationPending.current || !liveEnabled) return
         mutationPending.current = true
@@ -400,9 +465,26 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
-    function logout() {
-        if (typeof window !== "undefined") window.sessionStorage.removeItem("moving_modesty_admin_token")
-        route("/admin/login")
+    async function logout() {
+        if (mutationPending.current) return
+        mutationPending.current = true
+        startTransition(() => setLoading(true))
+        try {
+            if (liveEnabled && token()) {
+                const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/logout`, {
+                    method: "POST", headers: { Authorization: `Bearer ${token()}` },
+                })
+                const data = await response.json().catch(() => null)
+                if (!response.ok || data?.revoked !== true) throw new Error(apiErrorMessage(data, "Sign-out could not be confirmed. Please try again."))
+            }
+            if (typeof window !== "undefined") window.sessionStorage.removeItem("moving_modesty_admin_token")
+            route("/admin/login")
+        } catch (error) {
+            startTransition(() => setNotice(error instanceof Error ? error.message : "Sign-out could not be confirmed. Please try again."))
+        } finally {
+            mutationPending.current = false
+            startTransition(() => setLoading(false))
+        }
     }
 
     const cssVariables = {
@@ -437,7 +519,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                                 <div className="mm-admin__account-menu">
                                     <button type="button" className="mm-admin__text-button" aria-haspopup="dialog" onClick={openDeliverySettings}>Delivery settings</button>
                                     <a href="/" target="_blank" rel="noopener noreferrer">View website</a>
-                                    <button type="button" className="mm-admin__text-button" onClick={logout}>Log out</button>
+                                    <button type="button" className="mm-admin__text-button" disabled={loading} onClick={logout}>Log out</button>
                                 </div>
                             </details>
                         </div>
@@ -462,8 +544,10 @@ export default function AdminPortal(props: AdminPortalProps) {
                             setMethod={setMethod}
                             updateOrderStatus={updateOrderStatus}
                             requestShipping={requestShipping}
+                            requestAftersales={requestAftersales}
                             bobGoConnection={snapshot.bobGoConnection}
                             retryNotification={retryNotification}
+                            requestTrace={liveEnabled ? requestTrace : undefined}
                             loading={loading}
                         />
                     ) : (
@@ -708,8 +792,10 @@ function OrdersView({
     setMethod,
     updateOrderStatus,
     requestShipping,
+    requestAftersales,
     bobGoConnection,
     retryNotification,
+    requestTrace,
     loading,
 }: {
     orders: AdminOrder[]
@@ -724,8 +810,10 @@ function OrdersView({
     setMethod: (value: string) => void
     updateOrderStatus: (order: AdminOrder, status: OrderStatus) => void
     requestShipping: ShippingRequest
+    requestAftersales: AftersalesRequest
     bobGoConnection?: Snapshot["bobGoConnection"]
     retryNotification: (order: AdminOrder, notificationId: string) => void
+    requestTrace?: (order: AdminOrder) => Promise<OrderTrace>
     loading: boolean
 }) {
     const detailRef = useRef<HTMLElement>(null)
@@ -756,7 +844,7 @@ function OrdersView({
     function requestStatus(order: AdminOrder, status: OrderStatus, label: string) {
         if (["Confirmed", "Preparing", "Ready"].includes(status)) { updateOrderStatus(order, status); return }
         const description = status === "Cancelled"
-            ? `Cancel ${order.id}? This cannot be undone here. ${order.paymentStatus === "Paid" ? "This does not refund the payment. Handle any refund separately in PayFast. " : ""}The customer will be notified if email is configured.`
+            ? `Cancel ${order.id}? This cannot be undone here. ${order.paymentStatus === "Paid" ? "This does not refund the payment. Complete any refund in PayFast, then record it under Returns & refunds. " : ""}The customer will be notified if email is configured.`
             : status === "Collected" ? `Confirm that ${order.customer} has actually received the parcel. This completes the order.`
             : status === "Dispatched" ? "Confirm that you have handed the parcel to the courier or drop-off locker using the booked waybill."
             : status === "Delivered" ? "Confirm that courier tracking shows the parcel was delivered. This completes the order."
@@ -865,9 +953,11 @@ function OrdersView({
                                 {event.status === "failed" && event.retryable ? <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => retryNotification(selected, event.id)}>Retry email<span className="mm-admin__sr-only">: {event.title} to {event.recipient}</span></button> : null}
                             </li>)}</ul>}
                         </details>
+                        {selected.aftersales && (selected.aftersales.canStartReturn || selected.aftersales.canRecordRefund || selected.aftersales.returns.length > 0 || selected.aftersales.refunds.length > 0) ? <AftersalesPanel key={selected.id} order={selected} loading={loading} request={requestAftersales} confirm={setConfirmation} /> : null}
                         {selected.workflow?.canCancel ? <details key={selected.id} className="mm-admin__technical"><summary>More order options</summary><div className="mm-admin__actions">
                             {selected.workflow?.canCancel ? <button className="mm-admin__secondary-button" type="button" disabled={loading} onClick={() => requestStatus(selected, "Cancelled", "Cancel order")}>Cancel order</button> : null}
                         </div></details> : null}
+                        {requestTrace ? <OrderSupportTrace key={`trace-${selected.id}`} order={selected} request={requestTrace} /> : null}
                     </article>
                 ) : null}
             </div>
@@ -881,6 +971,152 @@ function OrdersView({
             </dialog>
         </>
     )
+}
+
+function OrderSupportTrace({ order, request }: { order: AdminOrder; request: (order: AdminOrder) => Promise<OrderTrace> }) {
+    const [trace, setTrace] = useState<OrderTrace | null>(null)
+    const [error, setError] = useState("")
+    const [busy, setBusy] = useState(false)
+    const sequence = useRef(0)
+    useEffect(() => () => { sequence.current++ }, [])
+    const timestamp = (value?: string) => {
+        if (!value) return "Not recorded"
+        const date = new Date(value)
+        return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" })
+    }
+    async function load(open: boolean) {
+        if (!open) { sequence.current++; return }
+        const current = ++sequence.current
+        startTransition(() => { setBusy(true); setError(""); setTrace(null) })
+        try {
+            const result = await request(order)
+            if (current === sequence.current) startTransition(() => setTrace(result))
+        } catch (failure) {
+            if (current === sequence.current) startTransition(() => setError(failure instanceof Error ? failure.message : "Support details could not be loaded."))
+        } finally {
+            if (current === sequence.current) startTransition(() => setBusy(false))
+        }
+    }
+    return <details className="mm-admin__technical mm-admin__support-trace" onToggle={event => void load(event.currentTarget.open)}>
+        <summary>Support details</summary>
+        <p className="mm-admin__helper">For troubleshooting only. Opening this section does not send emails, change the order or book delivery. Close and reopen to refresh.</p>
+        {busy ? <p role="status">Loading support details…</p> : error ? <p role="status">{error} Close and reopen to try again.</p> : trace ? <>
+            <p>Order reference: {trace.order.orderNumber}<br />Created: {timestamp(trace.order.createdAt)}<br />Last updated: {timestamp(trace.order.updatedAt)}</p>
+            <strong>Payment</strong>
+            {trace.payment ? <p>Status: {trace.payment.status} · {trace.payment.providerStatus || "No provider status recorded"}<br />Merchant reference: {trace.payment.merchantPaymentId || "Not recorded"}<br />PayFast reference: {trace.payment.providerPaymentId || "Not recorded"}<br />Verified: {timestamp(trace.payment.verifiedAt)}<br />Last check: {timestamp(trace.payment.updatedAt)}</p> : <p>No payment recorded.</p>}
+            <strong>Courier</strong>
+            {trace.shipment ? <p>Status: {trace.shipment.status}<br />Bob Go reference: {trace.shipment.providerShipmentId || "Not recorded"}<br />Waybill: {trace.shipment.waybillReference || "Not recorded"}<br />Tracking: {trace.shipment.trackingNumber || "Not recorded"}<br />Booked: {timestamp(trace.shipment.bookedAt)}<br />Last check: {timestamp(trace.shipment.updatedAt)}</p> : <p>No courier shipment recorded.</p>}
+            <strong>Email events</strong>
+            {!trace.notifications.length ? <p>No email events recorded.</p> : <ul>{trace.notifications.map((event, index) => <li key={index}>{event.template}: {event.status}<br />Provider reference: {event.providerEmailId || "Not recorded"}<br />{event.deliveryEvent || "Submission"}: {timestamp(event.deliveryEventAt || event.createdAt)}</li>)}</ul>}
+            <strong>Errors</strong>
+            {!trace.incidents.length ? <p>No linked errors recorded. This does not prove that every provider screen succeeded.</p> : <ul>{trace.incidents.map(event => <li key={event.reference}>{event.resolvedAt ? "Resolved" : "Needs attention"}: {event.summary}<br />{event.source} / {event.operation}<br />Reference: {event.reference}<br />Last seen: {timestamp(event.lastSeenAt)}</li>)}</ul>}
+            <strong>Recent order changes</strong>
+            {!trace.history.length ? <p>No status changes recorded.</p> : <ul>{trace.history.slice(0, 10).map((event, index) => <li key={index}>{event.from || "Created"} → {event.to} · {timestamp(event.at)}</li>)}</ul>}
+            <p className="mm-admin__helper">These are the latest recorded provider states. A missing PayFast callback does not confirm payment. Refresh courier tracking from the waybill panel.</p>
+        </> : null}
+    </details>
+}
+
+function aftersalesDate(value: string) {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("en-ZA", { timeZone: "Africa/Johannesburg", day: "2-digit", month: "short", year: "numeric" }).format(date)
+}
+
+function AftersalesPanel({ order, loading, request, confirm }: {
+    order: AdminOrder; loading: boolean; request: AftersalesRequest; confirm: (value: Confirmation) => void
+}) {
+    const sales = order.aftersales!
+    const active = sales.returns.find(record => record.status !== "received")
+    const [reason, setReason] = useState("")
+    const [quantities, setQuantities] = useState<Record<string, number>>({})
+    const [restock, setRestock] = useState<Record<string, number>>({})
+    const [waybill, setWaybill] = useState("")
+    const [inspected, setInspected] = useState(false)
+    const [refundAmount, setRefundAmount] = useState(sales.remainingRefundable.toFixed(2))
+    const [refundReference, setRefundReference] = useState("")
+    const [refundReason, setRefundReason] = useState("")
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+    const [refundDate, setRefundDate] = useState(today)
+    const [completed, setCompleted] = useState(false)
+    const [error, setError] = useState("")
+    const requestIds = useRef<{ approval?: string; refund?: string }>({})
+
+    async function save(payload: Record<string, unknown>, reset?: "approval" | "receipt" | "refund") {
+        setError("")
+        try {
+            await request(order, payload)
+            if (reset === "approval") { requestIds.current.approval = undefined; setReason(""); setQuantities({}) }
+            if (reset === "receipt") { setInspected(false); setRestock({}); setWaybill("") }
+            if (reset === "refund") { requestIds.current.refund = undefined; setRefundReference(""); setRefundReason(""); setCompleted(false); setRefundAmount("") }
+        } catch (failure) { setError(failure instanceof Error ? failure.message : "Not saved. Please try again.") }
+    }
+
+    function approve(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault()
+        const items = order.items.filter(item => item.id && quantities[item.id] > 0).map(item => ({ itemId: item.id!, quantity: quantities[item.id!] }))
+        if (!items.length) { setError("Choose at least one item to return."); return }
+        requestIds.current.approval ||= crypto.randomUUID()
+        void save({ action: "approve_return", requestId: requestIds.current.approval, reason, items }, "approval")
+    }
+
+    function refund(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault()
+        if (!completed) { setError("First complete the refund in PayFast."); return }
+        requestIds.current.refund ||= crypto.randomUUID()
+        const payload = { action: "record_refund", requestId: requestIds.current.refund, completedInPayFast: true, amount: Number(refundAmount).toFixed(2), reference: refundReference, reason: refundReason, refundedAt: refundDate }
+        confirm({ title: "Record completed refund?", description: `Record ${courierMoney.format(Number(refundAmount))} for ${order.id}, reference ${refundReference}? This records your confirmation and submits a customer email. It does not transfer money or refund again.`, run: () => { void save(payload, "refund") } })
+    }
+
+    return <details className="mm-admin__technical mm-admin__aftersales" open={active || sales.canRecordRefund ? true : undefined}>
+        <summary>Returns &amp; refunds{active ? " · Return in progress" : sales.refundedTotal > 0 ? ` · ${courierMoney.format(sales.refundedTotal)} refunded` : ""}</summary>
+        <p className="mm-admin__helper">Manage an approved return or record a refund here. Booking a waybill and refunding the payment are separate actions.</p>
+        {order.payment?.environment === "sandbox" ? <p className="mm-admin__notice">Sandbox payment: use sandbox PayFast and Bob Go only. No real money was collected.</p> : null}
+        {error ? <p className="mm-admin__notice" role="alert">{error}</p> : null}
+        {sales.canStartReturn ? <form className="mm-admin__aftersales-form" onSubmit={approve}>
+            <h3>Approve a return</h3>
+            <p className="mm-admin__helper">Agree the return with the customer first, then select the items. Stock and payment are unchanged at this step.</p>
+            <label className="mm-admin__field">Reason for return<textarea required minLength={3} maxLength={1000} value={reason} onChange={event => setReason(event.target.value)} /></label>
+            {order.items.filter(item => item.id && (item.returnableQuantity || 0) > 0).map(item => <label className="mm-admin__field" key={item.id}>{item.name} · {item.variant} — quantity to return<input type="number" min={0} max={item.returnableQuantity} step={1} value={quantities[item.id!] || 0} onChange={event => setQuantities(current => ({ ...current, [item.id!]: Number(event.target.value) }))} /></label>)}
+            <button className="mm-admin__secondary-button" type="submit" disabled={loading}>Approve return</button>
+        </form> : null}
+        {active ? <section className="mm-admin__aftersales-section" aria-label="Current return">
+            <h3>{active.status === "approved" ? "Arrange the return" : "Waiting for returned items"}</h3>
+            <p>{active.reason}</p>
+            {active.status === "approved" ? <>
+                <p className="mm-admin__helper">Book the return in Bob Go using the customer’s pickup address and Zarina’s private return address. Check the parcel and courier charge there. This portal does not book or pay for a return waybill.</p>
+                <a className="mm-admin__secondary-button" href={order.payment?.environment === "sandbox" ? "https://sandbox.bobgo.co.za/" : "https://app.bobgo.co.za/"} target="_blank" rel="noopener noreferrer">Open Bob Go to book return</a>
+                <form className="mm-admin__aftersales-form" onSubmit={event => { event.preventDefault(); void save({ action: "return_waybill", returnId: active.id, reference: waybill }) }}>
+                    <label className="mm-admin__field">Booked return waybill reference<input required minLength={3} maxLength={100} value={waybill} onChange={event => setWaybill(event.target.value)} /></label>
+                    <button className="mm-admin__secondary-button" type="submit" disabled={loading}>Save return waybill</button>
+                </form>
+            </> : <p>Return waybill: <strong>{active.waybillReference}</strong>. Save receipt only when the parcel actually arrives.</p>}
+            <form className="mm-admin__aftersales-form" onSubmit={event => { event.preventDefault(); if (!inspected) return; void save({ action: "receive_return", returnId: active.id, inspected: true, restock: active.items.map(item => ({ itemId: item.itemId, quantity: restock[item.itemId] || 0 })) }, "receipt") }}>
+                <h3>Receive &amp; inspect</h3>
+                <p className="mm-admin__helper">Only add items in resaleable condition back to stock. Leave damaged or worn items at zero.</p>
+                {active.items.map(returned => {
+                    const item = order.items.find(row => row.id === returned.itemId)
+                    const max = Math.min(returned.quantity, item?.restockableQuantity || 0)
+                    return <label className="mm-admin__field" key={returned.itemId}>{item?.name || "Returned item"} · {item?.variant} — {returned.quantity} expected<input type="number" aria-label={`Restock quantity for ${item?.name || "item"} ${item?.variant || ""}`} min={0} max={max} step={1} disabled={max === 0} value={restock[returned.itemId] || 0} onChange={event => setRestock(current => ({ ...current, [returned.itemId]: Number(event.target.value) }))} /><span className="mm-admin__helper">{max > 0 ? "Quantity inspected and suitable for resale" : "No recorded stock deduction to reverse. Record receipt, then review stock in Products."}</span></label>
+                })}
+                <label className="mm-admin__checkbox"><input type="checkbox" required checked={inspected} onChange={event => setInspected(event.target.checked)} />I have received all agreed items and checked their condition.</label>
+                <button className="mm-admin__button" type="submit" disabled={loading || !inspected}>Save received items</button>
+            </form>
+        </section> : null}
+        {sales.returns.filter(record => record.status === "received").map(record => <section className="mm-admin__aftersales-section" key={record.id}><strong>Return received{record.receivedAt ? ` · ${aftersalesDate(record.receivedAt)}` : ""}</strong><p>{record.reason}</p><p>{record.items.reduce((sum, item) => sum + item.restocked, 0)} item(s) restored to stock.{record.waybillReference ? ` Return waybill: ${record.waybillReference}.` : ""}</p></section>)}
+        {sales.canRecordRefund ? <form className="mm-admin__aftersales-form" onSubmit={refund}>
+            <h3>Record a completed refund</h3>
+            <p>Remaining refundable amount: <strong>{courierMoney.format(sales.remainingRefundable)}</strong></p>
+            <p className="mm-admin__helper">Refund the customer in PayFast first. Only record it here once PayFast confirms completion. A partial refund does not mark the entire payment as refunded.</p>
+            <a className="mm-admin__secondary-button" href={order.payment?.environment === "sandbox" ? "https://sandbox.payfast.co.za/" : "https://my.payfast.io/"} target="_blank" rel="noopener noreferrer">Open PayFast</a>
+            <label className="mm-admin__field">Completed refund amount (R)<input required type="number" inputMode="decimal" min={0.01} max={sales.remainingRefundable} step={0.01} value={refundAmount} onChange={event => setRefundAmount(event.target.value)} /></label>
+            <label className="mm-admin__field">PayFast refund reference<input required minLength={3} maxLength={100} value={refundReference} onChange={event => setRefundReference(event.target.value)} /></label>
+            <label className="mm-admin__field">Refund completed on<input required type="date" max={today} value={refundDate} onChange={event => setRefundDate(event.target.value)} /></label>
+            <label className="mm-admin__field">Reason for refund<textarea required minLength={3} maxLength={1000} value={refundReason} onChange={event => setRefundReason(event.target.value)} /></label>
+            <label className="mm-admin__checkbox"><input type="checkbox" required checked={completed} onChange={event => setCompleted(event.target.checked)} />PayFast confirms this refund is completed, not only requested.</label>
+            <button className="mm-admin__button" type="submit" disabled={loading || !completed}>Record completed refund</button>
+        </form> : null}
+        {sales.refunds.length > 0 ? <section className="mm-admin__aftersales-section"><h3>Refund history</h3><p>Total recorded: {courierMoney.format(sales.refundedTotal)} · Remaining: {courierMoney.format(sales.remainingRefundable)}</p>{sales.refunds.map(record => <div key={record.id}><strong>{courierMoney.format(record.amount)} · {aftersalesDate(record.refundedAt)}</strong><p>PayFast reference: {record.reference}</p><p>{record.reason}</p></div>)}<p className="mm-admin__helper">These are the refunds Zarina has confirmed, not an automatic PayFast refund-status check. Customer email status appears in Email notifications above.</p></section> : null}
+    </details>
 }
 
 function ShippingPanel({ order, loading, connection, requestShipping, confirm }: {
@@ -1013,6 +1249,12 @@ const styles = `
 .mm-admin__notifications p { margin: 4px 0 0; overflow-wrap: anywhere; }
 .mm-admin__sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .mm-admin__technical summary { min-height: 44px; cursor: pointer; padding: 12px 0; font-weight: 600; }
+.mm-admin__aftersales-form, .mm-admin__aftersales-section { display: grid; gap: 12px; margin: 20px 0; min-width: 0; }
+.mm-admin__aftersales h3, .mm-admin__aftersales p { margin: 0; }
+.mm-admin__aftersales-form .mm-admin__field input, .mm-admin__aftersales-form .mm-admin__field textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.mm-admin__aftersales button, .mm-admin__aftersales a { justify-self: start; max-width: 100%; white-space: normal; }
+.mm-admin__aftersales .mm-admin__checkbox { display: flex; align-items: flex-start; gap: 10px; line-height: 1.5; }
+.mm-admin__aftersales .mm-admin__checkbox input { width: 18px; height: 18px; flex: 0 0 18px; margin: 3px 0 0; }
 .mm-admin__parcel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
 .mm-admin__parcel-grid .mm-admin__field, .mm-admin__quote .mm-admin__field { min-width: 0; }
 .mm-admin__parcel-grid input, .mm-admin__quote select { width: 100% !important; min-width: 0; }

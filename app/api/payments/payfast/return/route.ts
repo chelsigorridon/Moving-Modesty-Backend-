@@ -3,6 +3,7 @@ import { requireDatabase } from "@/lib/db";
 import { orders, payments } from "@/lib/db/schema";
 import { requirePayFastConfiguration } from "@/lib/integrations/payfast/configuration";
 import { isPaymentFinal } from "@/lib/checkout-safety";
+import { reportFailure, resolveFailures } from "@/lib/monitoring";
 
 export const runtime = "nodejs";
 
@@ -16,11 +17,13 @@ function storefrontUrl(storeUrl: string, state: ReturnState, orderNumber?: strin
 }
 
 export async function GET(request: Request) {
-  const configuration = requirePayFastConfiguration();
   const url = new URL(request.url);
   const state: ReturnState = url.searchParams.get("state") === "cancelled" ? "cancelled" : "processing";
   const orderNumber = url.searchParams.get("order")?.trim() ?? "";
   const checkoutToken = url.searchParams.get("token")?.trim() ?? "";
+  let matchedOrderId: string | undefined;
+  try {
+  const configuration = requirePayFastConfiguration();
 
   if (!orderNumber || !checkoutToken) {
     return Response.redirect(storefrontUrl(configuration.storeUrl, state), 302);
@@ -40,6 +43,7 @@ export async function GET(request: Request) {
   if (!order) {
     return null;
   }
+  matchedOrderId = order.id;
 
   const now = new Date();
   if (state === "cancelled" && !isPaymentFinal(order.paymentStatus)) {
@@ -65,5 +69,12 @@ export async function GET(request: Request) {
   return order;
   });
 
+  await resolveFailures("payment_return", order?.id);
   return Response.redirect(storefrontUrl(configuration.storeUrl, state, order ? orderNumber : undefined), 302);
+  } catch (error) {
+    const incident = await reportFailure(error, { operation: "payment_return", orderId: matchedOrderId });
+    const fallback = storefrontUrl(process.env.STORE_URL || "https://holistic-brand-492217.framer.app", state);
+    fallback.searchParams.set("paymentErrorRef", incident.reference);
+    return Response.redirect(fallback, 302);
+  }
 }

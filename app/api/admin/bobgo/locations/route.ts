@@ -21,7 +21,7 @@ export function OPTIONS() {
 }
 
 export async function GET(request: Request) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
 
   const config = getBobGoConfiguration();
   if (!config.apiTokenConfigured) {

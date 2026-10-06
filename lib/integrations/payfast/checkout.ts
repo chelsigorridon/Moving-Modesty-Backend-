@@ -51,7 +51,7 @@ export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, 
   const database = requireDatabase();
   await database.transaction(async (transaction) => {
   const [order] = await transaction
-    .select({ id: orders.id, total: orders.total, paymentStatus: orders.paymentStatus, status: orders.status })
+    .select({ id: orders.id, total: orders.total, paymentStatus: orders.paymentStatus, status: orders.status, archivedAt: orders.archivedAt })
     .from(orders)
     .where(and(
       eq(orders.orderNumber, input.orderNumber),
@@ -59,7 +59,7 @@ export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, 
     ))
     .for("update").limit(1);
 
-  if (!order || isPaymentFinal(order.paymentStatus) || order.status !== "new") return;
+  if (!order || order.archivedAt || isPaymentFinal(order.paymentStatus) || order.status !== "new") return;
   const now = new Date();
   const failureReason = diagnosticReason("PayFast checkout setup failed", message);
 
@@ -103,6 +103,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       id: orders.id,
       orderNumber: orders.orderNumber,
       status: orders.status,
+      archivedAt: orders.archivedAt,
       paymentStatus: orders.paymentStatus,
       deliveryMethod: orders.deliveryMethod,
       deliveryAddressId: orders.deliveryAddressId,
@@ -124,6 +125,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     .for("update", { of: orders }).limit(1);
 
   if (!order) throw new PayFastCheckoutError("This checkout session could not be found.", 404);
+  if (order.archivedAt) throw new PayFastCheckoutError("This checkout has been archived. Please start a new checkout.", 409);
   Object.assign(order, readOrderCustomer(order.customerSnapshot, order));
   if (isPaymentFinal(order.paymentStatus) || order.status !== "new") throw new PayFastCheckoutError("This order is paid or closed. Please start a new checkout.", 409);
   if (order.deliveryMethod === "to_be_confirmed") {

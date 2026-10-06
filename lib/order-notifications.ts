@@ -25,6 +25,7 @@ export function notificationStatus(template: string): OrderStatus | undefined {
 }
 
 export function notificationTitle(template: string) {
+  if (template.startsWith("order-refund-")) return "Customer refund confirmation";
   if (template === "paid-order-customer") return "Customer payment confirmation";
   if (template === "paid-order-owner") return "New order notification to Zarina";
   const status = notificationStatus(template);
@@ -32,6 +33,7 @@ export function notificationTitle(template: string) {
 }
 
 export function canRetryNotification(template: string, order: Pick<AdminOrder, "status" | "paymentStatus" | "deliveryMethod">) {
+  if (/^order-refund-[0-9a-f-]{36}$/i.test(template)) return ["Paid", "Refunded"].includes(order.paymentStatus);
   if (template === "paid-order-customer" || template === "paid-order-owner") return order.paymentStatus === "Paid";
   const status = notificationStatus(template);
   return Boolean(status && status === order.status && shouldNotifyOrderStatus(order.deliveryMethod, status));

@@ -1,4 +1,4 @@
-type CheckoutState = { status: string; paymentStatus: string };
+type CheckoutState = { status: string; paymentStatus: string; archivedAt?: Date | null };
 
 export class CheckoutConflictError extends Error {
   readonly code: string;
@@ -24,6 +24,10 @@ export function readOrderCustomer(snapshot: unknown, fallback: OrderCustomer): O
 }
 
 export function assertCheckoutEditable(order: CheckoutState) {
+  if (order.archivedAt) {
+    // The published storefront already rotates its token for this code.
+    throw new CheckoutConflictError("This checkout has been archived. Please start a new checkout.", "CHECKOUT_CHANGED");
+  }
   if (isPaymentFinal(order.paymentStatus) || order.status !== "new") {
     throw new CheckoutConflictError("This order is already paid or closed. Please start a new checkout.");
   }

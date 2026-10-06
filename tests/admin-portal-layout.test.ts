@@ -35,6 +35,7 @@ function ordersDocument(selected: ReturnType<typeof order>) {
     setSelectedOrderId() {}, setFilter() {}, setSearch() {}, setMethod() {},
     updateOrderStatus() { throw new Error("Rendering must not change orders"); },
     requestShipping() { throw new Error("Rendering must not book shipping"); },
+    requestAftersales() { throw new Error("Rendering must not record refunds or returns"); },
     retryNotification() {},
   };
   return new JSDOM(renderToStaticMarkup(React.createElement(componentExports.OrdersView, props)));
@@ -50,6 +51,22 @@ test("orders have three compact views and no global courier setup controls", () 
   assert.doesNotMatch(doc.body.textContent || "", /Courier connection & setup|Check courier connection/);
   assert.equal(doc.querySelector('.mm-admin__order-card-top strong')?.textContent, "TEST Customer");
   assert.equal(doc.querySelector('.mm-admin__detail-heading h2')?.textContent, "TEST Customer");
+  dom.window.close();
+});
+
+test("per-order troubleshooting stays behind one collapsed disclosure without new action buttons", () => {
+  const selected = order();
+  const requestTrace = () => { throw new Error("Rendering must not fetch a support trace"); };
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(componentExports.OrdersView, {
+    orders: [selected], selected, selectedOrderId: selected.id, filter: "All orders", search: "", method: "All methods",
+    loading: false, requestTrace, setSelectedOrderId() {}, setFilter() {}, setSearch() {}, setMethod() {},
+    updateOrderStatus() {}, requestShipping() {}, requestAftersales() {}, retryNotification() {},
+  })));
+  const section = dom.window.document.querySelector(".mm-admin__support-trace");
+  assert.equal(section?.querySelector("summary")?.textContent, "Support details");
+  assert.equal(section?.hasAttribute("open"), false);
+  assert.equal(section?.querySelectorAll("button").length, 0);
+  assert.match(section?.textContent || "", /does not send emails, change the order or book delivery/);
   dom.window.close();
 });
 
@@ -181,5 +198,55 @@ test("dashboard keeps one order-management action without duplicate handover car
   assert.equal(dom.window.document.querySelectorAll('a.mm-admin__button-link[href="/admin/orders"]').length, 1);
   assert.equal(dom.window.document.querySelector('.mm-admin__quick-grid'), null);
   assert.equal(dom.window.document.querySelector('details')?.hasAttribute("open"), false);
+  dom.window.close();
+});
+
+const returnedItem = { id: "aa8e51b8-10b0-43a2-a15d-1eeb9c4fbdb5", quantity: 1, name: "Amina", variant: "Black", price: 420, returnableQuantity: 1, restockableQuantity: 0 };
+const baseAftersales = { canStartReturn: false, canRecordRefund: false, refundedTotal: 0, remainingRefundable: 420, returns: [], refunds: [] };
+
+test("return controls stay inside completed orders, collapsed until needed", () => {
+  const dom = ordersDocument(order({ status: "Delivered", items: [returnedItem], aftersales: { ...baseAftersales, canStartReturn: true }, workflow: { canCancel: false } }));
+  const panel = dom.window.document.querySelector('.mm-admin__aftersales')!;
+  assert.equal(panel.hasAttribute("open"), false);
+  assert.match(panel.textContent || "", /Approve a return/);
+  assert.doesNotMatch(panel.textContent || "", /Record a completed refund|Save received items/);
+  assert.equal(panel.querySelector('input[type="number"]')?.getAttribute('max'), "1");
+  assert.equal(panel.querySelector('textarea')?.hasAttribute("required"), true);
+  assert.equal(dom.window.document.querySelector('[aria-label="Order filters"]')?.textContent?.includes("Refund"), false);
+  dom.window.close();
+});
+
+test("approved returns require a separate manual waybill and actual receipt before a refund", () => {
+  const dom = ordersDocument(order({ status: "Delivered", items: [returnedItem], aftersales: { ...baseAftersales, returns: [{ id: "TEST", status: "approved", reason: "Agreed return", items: [{ itemId: returnedItem.id, quantity: 1, restocked: 0 }] }] } }));
+  const panel = dom.window.document.querySelector('.mm-admin__aftersales')!;
+  assert.equal(panel.hasAttribute("open"), true);
+  assert.equal(panel.querySelector('a')?.getAttribute('href'), "https://app.bobgo.co.za/");
+  assert.match(panel.textContent || "", /private return address/);
+  assert.match(panel.textContent || "", /does not book or pay/);
+  assert.match(panel.textContent || "", /No recorded stock deduction/);
+  assert.equal(panel.querySelector('input[type="number"]')?.hasAttribute('disabled'), true);
+  assert.equal(panel.querySelector('button[type="submit"].mm-admin__button')?.hasAttribute('disabled'), true);
+  assert.doesNotMatch(panel.textContent || "", /Record a completed refund/);
+  dom.window.close();
+});
+
+test("cancelled paid orders offer recording a completed refund, not an automatic refund button", () => {
+  const dom = ordersDocument(order({ status: "Cancelled", items: [returnedItem], aftersales: { ...baseAftersales, canRecordRefund: true }, workflow: { canCancel: false } }));
+  const panel = dom.window.document.querySelector('.mm-admin__aftersales')!;
+  assert.match(panel.textContent || "", /Refund the customer in PayFast first/);
+  assert.equal(panel.querySelector('a')?.getAttribute('href'), "https://my.payfast.io/");
+  assert.equal(panel.querySelector('input[type="number"]')?.getAttribute('max'), "420");
+  assert.equal(panel.querySelector('input[type="checkbox"]')?.hasAttribute('required'), true);
+  assert.equal(panel.querySelector('button[type="submit"]')?.hasAttribute('disabled'), true);
+  dom.window.close();
+});
+
+test("refund history is visible after a full refund without another refund action", () => {
+  const dom = ordersDocument(order({ paymentStatus: "Refunded", status: "Cancelled", aftersales: { ...baseAftersales, refundedTotal: 420, remainingRefundable: 0,
+    refunds: [{ id: "TEST", amount: 420, reference: "PF-TEST", reason: "Agreed cancellation", refundedAt: "2026-10-05", recordedBy: "Owner" }] }, workflow: { canCancel: false } }));
+  const panel = dom.window.document.querySelector('.mm-admin__aftersales')!;
+  assert.match(panel.textContent || "", /Refund history.*PF-TEST/);
+  assert.match(panel.textContent || "", /not an automatic PayFast refund-status check/);
+  assert.equal(panel.querySelector('button'), null);
   dom.window.close();
 });

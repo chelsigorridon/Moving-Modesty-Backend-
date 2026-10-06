@@ -51,7 +51,7 @@ test("durable incidents, capped alerts, signed delivery webhooks and browser tel
     return compiledModule.exports;
   }
   try {
-    for (const migration of ["0000_amusing_wallop", "0001_ordinary_lord_tyger", "0002_past_lester", "0003_slippery_pet_avengers", "0004_checkout_customer_snapshot", "0005_nostalgic_wallow"]) {
+    for (const migration of ["0000_amusing_wallop", "0001_ordinary_lord_tyger", "0002_past_lester", "0003_slippery_pet_avengers", "0004_checkout_customer_snapshot", "0005_nostalgic_wallow", "0006_clever_titania", "0007_archive_test_orders"]) {
       for (const statement of readFileSync(resolve(root, `drizzle/${migration}.sql`), "utf8").split("--> statement-breakpoint")) if (statement.trim()) await postgres.exec(statement);
     }
     const { orders, emailEvents, systemErrors, errorAlerts } = load("lib/db/schema.ts");

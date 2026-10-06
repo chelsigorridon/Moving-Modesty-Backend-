@@ -1,20 +1,15 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Cache-Control": "no-store",
-};
+import { securityHeaders } from "./api-security";
 
 export function apiJson(data: unknown, init: ResponseInit = {}) {
   return Response.json(data, {
     ...init,
     headers: {
-      ...corsHeaders,
+      ...securityHeaders,
       ...init.headers,
     },
   });
 }
 
 export function apiOptions() {
-  return new Response(null, { status: 204, headers: corsHeaders });
+  return new Response(null, { status: 204, headers: securityHeaders });
 }

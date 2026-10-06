@@ -2,8 +2,11 @@ node_modules
 .next
 .next.monitoring-cache-backup-*
 .vercel
-.env
-.env.local
-.env.*.local
+.tmp/
+.env*
+!.env.example
+previews/
+output/
+tsconfig.tsbuildinfo
 *.log
 .DS_Store

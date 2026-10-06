@@ -102,6 +102,9 @@ export const orders = pgTable("orders", {
   checkoutToken: text("checkout_token"),
   checkoutFingerprint: text("checkout_fingerprint"),
   inventoryIssue: text("inventory_issue"),
+  // Recoverable cleanup: archived tests stay in the payment/audit ledger.
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archiveReason: text("archive_reason"),
   ...timestamps,
 }, (table) => [
   uniqueIndex("orders_order_number_idx").on(table.orderNumber),
@@ -171,6 +174,31 @@ export const payments = pgTable("payments", {
   uniqueIndex("payments_merchant_payment_id_idx").on(table.merchantPaymentId),
   uniqueIndex("payments_provider_payment_id_idx").on(table.providerPaymentId),
 ]);
+
+// A return is independent of outbound fulfilment and of the actual PayFast refund.
+export const orderReturns = pgTable("order_returns", {
+  id: uuid("id").primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  status: text("status").default("approved").notNull(),
+  reason: text("reason").notNull(),
+  items: jsonb("items").$type<Array<{ itemId: string; quantity: number; restocked: number }>>().notNull(),
+  waybillReference: text("waybill_reference"),
+  receivedAt: timestamp("received_at", { withTimezone: true }),
+  recordedBy: text("recorded_by").notNull(),
+  ...timestamps,
+});
+
+// Manual attestation only: recording a refund NEVER transfers money.
+export const orderRefunds = pgTable("order_refunds", {
+  id: uuid("id").primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  reference: text("reference").notNull(),
+  reason: text("reason").notNull(),
+  refundedAt: timestamp("refunded_at", { withTimezone: true }).notNull(),
+  recordedBy: text("recorded_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("order_refunds_reference_idx").on(table.reference)]);
 
 export const orderStatusHistory = pgTable("order_status_history", {
   id: uuid("id").defaultRandom().primaryKey(),

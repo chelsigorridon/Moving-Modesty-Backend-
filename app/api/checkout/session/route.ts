@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { requireDatabase } from "@/lib/db";
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
       firstName: customers.firstName, lastName: customers.lastName, email: customers.email, phone: customers.phone,
       customerSnapshot: orders.customerSnapshot,
     }).from(orders).innerJoin(customers, eq(orders.customerId, customers.id))
-      .where(and(eq(orders.checkoutToken, parsed.data.checkoutToken), eq(orders.orderNumber, parsed.data.orderNumber))).limit(1);
+      .where(and(eq(orders.checkoutToken, parsed.data.checkoutToken), eq(orders.orderNumber, parsed.data.orderNumber), isNull(orders.archivedAt))).limit(1);
     if (!order) return apiJson({ error: "This checkout session is unavailable." }, { status: 404 });
     const customer = readOrderCustomer(order.customerSnapshot, order);
     const [address] = order.deliveryAddressId && order.deliveryMethod === "courier"

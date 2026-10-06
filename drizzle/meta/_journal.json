@@ -43,6 +43,20 @@
       "when": 1791212324195,
       "tag": "0005_nostalgic_wallow",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791287561644,
+      "tag": "0006_clever_titania",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791292440333,
+      "tag": "0007_archive_test_orders",
+      "breakpoints": true
     }
   ]
 }

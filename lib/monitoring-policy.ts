@@ -4,6 +4,7 @@ export const operations = {
   courier_book: "courier", courier_refresh: "courier", courier_waybill: "courier",
   courier_connection: "courier", email_send: "email", email_webhook: "email",
   contact_send: "contact", admin_load: "admin", admin_update: "admin", admin_product: "admin",
+  admin_auth: "admin", admin_login: "admin", admin_logout: "admin",
   server_request: "server", browser_checkout: "browser", browser_contact: "browser",
   browser_admin: "browser",
 } as const;

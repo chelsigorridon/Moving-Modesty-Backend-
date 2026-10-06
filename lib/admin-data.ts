@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import {
   addresses,
@@ -6,6 +6,8 @@ import {
   emailEvents,
   inventoryMovements,
   orderItems,
+  orderReturns,
+  orderRefunds,
   orders as ordersTable,
   orderStatusHistory,
   payments,
@@ -123,7 +125,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     throw new Error("DATABASE_URL is not configured.");
   }
 
-  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents] = await Promise.all([
+  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows] = await Promise.all([
     db
       .select({
         id: ordersTable.id,
@@ -140,6 +142,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         providerStatus: payments.providerStatus,
         paymentFailureReason: payments.failureReason,
         paymentUpdatedAt: payments.updatedAt,
+        paymentVerifiedAt: payments.verifiedAt,
+        originalPaymentStatus: payments.status,
+        paidAmount: payments.amount,
         customerFirstName: customers.firstName,
         customerLastName: customers.lastName,
         customerEmail: customers.email,
@@ -157,9 +162,12 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       .leftJoin(customers, eq(ordersTable.customerId, customers.id))
       .leftJoin(addresses, eq(ordersTable.deliveryAddressId, addresses.id))
       .leftJoin(payments, eq(ordersTable.id, payments.orderId))
+      .where(isNull(ordersTable.archivedAt))
       .orderBy(desc(ordersTable.createdAt)),
     db
       .select({
+        id: orderItems.id,
+        variantId: orderItems.variantId,
         orderId: orderItems.orderId,
         name: orderItems.productName,
         variant: orderItems.variantName,
@@ -213,6 +221,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       .from(shipments),
     db.select().from(emailEvents).orderBy(desc(emailEvents.createdAt)),
     getOperationalIssues().catch(() => null),
+    db.select().from(orderReturns),
+    db.select().from(orderRefunds).orderBy(desc(orderRefunds.createdAt)),
+    db.select({ orderId: inventoryMovements.orderId, variantId: inventoryMovements.variantId,
+      type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements),
   ]);
 
   const bobGo = getBobGoConfiguration();
@@ -222,6 +234,11 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
   for (const item of itemRows) {
     const items = itemsByOrder.get(item.orderId) ?? [];
     items.push({
+      id: item.id,
+      returnableQuantity: Math.max(0, item.quantity - returnRows.filter(row => row.orderId === item.orderId).flatMap(row => row.items)
+        .filter(row => row.itemId === item.id).reduce((sum, row) => sum + row.quantity, 0)),
+      restockableQuantity: item.variantId ? Math.max(0, stockRows.filter(row => row.orderId === item.orderId && row.variantId === item.variantId)
+        .reduce((sum, row) => sum + (row.type === "order_allocated" ? Math.abs(row.quantity) : row.type === "return" ? -Math.max(0, row.quantity) : 0), 0)) : 0,
       name: item.name,
       variant: item.variant,
       quantity: item.quantity,
@@ -252,6 +269,11 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     orders: orderRows.map((order) => {
       const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.customerFirstName ?? "", lastName: order.customerLastName ?? "", email: order.customerEmail ?? "", phone: order.customerPhone });
       const shipment = shipmentByOrder.get(order.id);
+      const orderReturnRows = returnRows.filter(row => row.orderId === order.id);
+      const orderRefundRows = refundRows.filter(row => row.orderId === order.id);
+      const refundedTotal = orderRefundRows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100;
+      const verifiedPaid = order.originalPaymentStatus === "paid" && Boolean(order.providerPaymentId && order.paymentVerifiedAt);
+      const remainingRefundable = verifiedPaid ? Math.max(0, Math.round((Math.min(Number(order.total), Number(order.paidAmount)) - refundedTotal) * 100) / 100) : 0;
       const blockers = shipmentBookingBlockers({
         deliveryMethod: order.deliveryMethod,
         paymentStatus: order.paymentStatus,
@@ -292,6 +314,17 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         providerPaymentId: order.providerPaymentId ?? undefined,
         failureReason: order.paymentFailureReason ?? undefined,
         updatedAt: order.paymentUpdatedAt?.toISOString(),
+      },
+      aftersales: {
+        canStartReturn: verifiedPaid && ["delivered", "collected"].includes(order.status)
+          && !orderReturnRows.some(row => row.status !== "received") && (itemsByOrder.get(order.id) || []).some(item => (item.returnableQuantity || 0) > 0),
+        canRecordRefund: verifiedPaid && remainingRefundable > 0 && (order.status === "cancelled"
+          || orderReturnRows.length > 0 && orderReturnRows.every(row => row.status === "received")),
+        refundedTotal, remainingRefundable,
+        returns: orderReturnRows.map(row => ({ id: row.id, status: row.status, reason: row.reason, items: row.items,
+          waybillReference: row.waybillReference || undefined, receivedAt: row.receivedAt?.toISOString() })),
+        refunds: orderRefundRows.map(row => ({ id: row.id, amount: Number(row.amount), reference: row.reference,
+          reason: row.reason, refundedAt: row.refundedAt.toISOString(), recordedBy: row.recordedBy })),
       },
       status: statusLabels[order.status] ?? "New",
       deliveryMethod: deliveryLabels[order.deliveryMethod],
@@ -497,7 +530,7 @@ export async function updateOrderStatus(orderNumber: string, nextStatus: OrderSt
     // Serialize status changes, including double clicks from separate sessions.
     const [existing] = await transaction.select({ id: ordersTable.id, status: ordersTable.status,
       paymentStatus: ordersTable.paymentStatus, deliveryMethod: ordersTable.deliveryMethod }).from(ordersTable)
-      .where(eq(ordersTable.orderNumber, orderNumber)).limit(1).for("update");
+      .where(and(eq(ordersTable.orderNumber, orderNumber), isNull(ordersTable.archivedAt))).limit(1).for("update");
     if (!existing) return false;
     const [shipment] = await transaction.select({ status: shipments.status, trackingNumber: shipments.trackingNumber }).from(shipments)
       .where(eq(shipments.orderId, existing.id)).limit(1).for("update");

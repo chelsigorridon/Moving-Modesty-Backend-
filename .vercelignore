@@ -7,3 +7,6 @@ tsconfig.tsbuildinfo
 .next.monitoring-cache-backup-*
 .codex-framer-mobile-menu.js
 .env*
+.tmp/
+tmp/
+output/

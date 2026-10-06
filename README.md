@@ -75,9 +75,33 @@ The seven current CMS product colours are included in the built-in catalogue. `C
 
 Verify the Moving Modesty sending domain in Resend, then configure `RESEND_API_KEY` and `RESEND_FROM_EMAIL`. The email service uses a stable idempotency key for each order/status combination to prevent duplicate customer updates.
 
+### Cancellations, returns and refund records
+
+The selected Framer order contains a single **Returns & refunds** disclosure. Cancellation remains unavailable after an outbound waybill is booked. Returns can be approved after delivery or collection; Zarina books the return manually in Bob Go, supplies her private return address directly, records the booked reference, and confirms physical receipt and inspection. Booking a return does not restock or refund the order.
+
+Refunds are completed separately in PayFast. Only an owner/manager may record a completed refund (amount, unique PayFast reference, completion date and reason) against a verified payment, after cancellation or receipt of an approved return. The portal never transfers money. Partial refunds retain Paid status; a full refund marks the order Refunded without replacing the original verified payment audit. Recorded refunds submit a separate customer confirmation with visible notification status and eligible failed-send retries.
+
+Restocking only reverses a recorded `order_allocated` deduction, once. The current checkout does not create these movements, so older/untracked sales must be received without automatic restocking and their stock reviewed separately. Worn or damaged items should not be restored as resaleable stock.
+
+Release sequence: apply `0006_clever_titania.sql`, create and publish the cancellation template in **Moving Modesty's** Resend account (not Party Pop), deploy the backend, then publish the Framer portal. `email-templates/customer-order-cancelled.html` is its source; `scripts/sync-cancellation-template.mjs` safely creates/updates and publishes alias `customer-order-cancelled` without sending emails. It requires a secure account API key. `RESEND_ORDER_CANCELLED_TEMPLATE` optionally overrides that alias. Do not enable this release before the hosted template exists.
+
+Production release verified on 6 October 2026: migration `0006` is applied with no pending migrations, the backend deployment is `dpl_6WnhY5JYYrb6omCv2Z7cpUQ22vx9`, and the Framer production version is `7e9bed752`. Resend template `customer-order-cancelled` is published in Moving Modesty's account. All 96 automated tests passed; live sign-in, order loading and the eligible completed-order return form were checked without changing an order, sending an email, booking a courier or issuing a refund.
+
 The custom Framer `ContactForm` submits to `POST /api/contact`; it does not use Framer's native form notifications. Set `STORE_URL` to the exact published storefront origin. The endpoint validates messages, escapes email content, applies a durable five-new-submissions-per-IP-per-hour limit, and records delivery attempts in `emailEvents` without creating an order. It sends enquiries to `ORDER_NOTIFICATION_EMAIL` (default `movingmodesty@gmail.com`) with the customer's email as Reply-To. A successful submission means Resend accepted the email, not that it reached the inbox. Deploy the API before publishing the new form, then verify an enquiry in the recipient inbox.
 
 ## Live and test orders
+
+### Administrator security and support traces
+
+Two-factor authentication is not enabled, at the owner's request. Both sign-in paths use a shared PostgreSQL login throttle (15-minute window). Administrator sessions expire after 12 hours, contain random opaque tokens, and store only keyed token hashes in Neon. Logging out revokes the server session. Changing the configured credentials or deployment environment invalidates existing sessions. The first release of this protection requires signing in again; the email and password do not change. Authentication fails closed if session storage cannot be checked.
+
+API browser access is restricted to the exact storefront/admin origins and the backend's own origin; add intentional extra origins through `API_ALLOWED_ORIGINS`, never a wildcard. This is not a substitute for authentication: admin routes still require a valid session, and PayFast/Resend notifications require provider verification. API responses are non-cacheable and carry restrictive security headers.
+
+Every live order has one collapsed **Support details** section. It loads `GET /api/admin/orders/[orderNumber]/trace` on demand and combines the latest payment/courier references, email events, recent status changes and privacy-safe error references. It does not change the order, send an email or book a shipment. Missing callbacks or missing error records are not proof of successful payment; check the provider dashboard when needed. Archived orders are excluded.
+
+Create a delivery-event webhook in Moving Modesty's Resend account pointing to `https://movingmodesty.vercel.app/api/webhooks/resend`, select email sent/delivered/delivery-delayed/bounced/complained/failed/suppressed events, and securely enter its signing secret as Production `RESEND_WEBHOOK_SECRET` in Vercel before redeploying. Without this connection, Submitted does not mean Delivered. Never post the signing secret in chat or commit it.
+
+Technical alerts go to `ERROR_ALERT_EMAIL` (default `moody.tech@gmail.com`). Repeated causes are grouped and capped at five email alerts per hour. Database outages still produce redacted Vercel log references, but cannot persist incidents or send database-backed alerts; use an independent availability monitor for that separate failure mode. `scripts/check-security-setup.mjs` provides a read-only, credential-free setup report when run with securely supplied deployment environment values.
 
 New PayFast checkouts persist `payfast-production` or `payfast-sandbox` on the payment record. The admin dashboard excludes known sandbox payments and older unclassified payments from live paid sales. Legacy `payfast` records are deliberately unclassified; verify them in PayFast before fulfilment instead of treating the current environment setting as proof that an old payment was live.
 

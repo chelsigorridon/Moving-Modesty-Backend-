@@ -11,6 +11,9 @@ export type OrderStatus =
   | "Cancelled";
 
 export type AdminOrderItem = {
+  id?: string;
+  returnableQuantity?: number;
+  restockableQuantity?: number;
   name: string;
   variant: string;
   quantity: number;
@@ -72,6 +75,15 @@ export type AdminOrder = {
     deliveryEvent?: string;
   }>;
   shipping?: AdminShipment;
+  aftersales?: {
+    canStartReturn: boolean;
+    canRecordRefund: boolean;
+    refundedTotal: number;
+    remainingRefundable: number;
+    returns: Array<{ id: string; status: string; reason: string; waybillReference?: string;
+      receivedAt?: string; items: Array<{ itemId: string; quantity: number; restocked: number }> }>;
+    refunds: Array<{ id: string; amount: number; reference: string; reason: string; refundedAt: string; recordedBy: string }>;
+  };
   workflow?: {
     nextStatus: OrderStatus | null;
     actionLabel: string;

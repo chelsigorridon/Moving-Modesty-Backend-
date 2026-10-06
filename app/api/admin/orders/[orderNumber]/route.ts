@@ -15,7 +15,7 @@ export function OPTIONS() {
 }
 
 export async function PATCH(request: Request, context: RouteContext<"/api/admin/orders/[orderNumber]">) {
-  if (!getRequestAdmin(request)) return apiJson({ error: "Unauthorized" }, { status: 401 });
+  if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });
   const parsed = updateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return apiJson({ error: "Choose a valid order status." }, { status: 400 });
   const { orderNumber } = await context.params;
