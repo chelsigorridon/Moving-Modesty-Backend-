@@ -12,6 +12,7 @@ import {
   ShoppingBag,
   Sparkles,
   Truck,
+  Tags,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -21,6 +22,7 @@ const navigation = [
   { label: "Overview", href: "/dashboard", icon: BarChart3 },
   { label: "Orders", href: "/orders", icon: ShoppingBag, badge: "3" },
   { label: "Products", href: "/products", icon: PackageOpen },
+  { label: "Discounts", href: "/discounts", icon: Tags },
   { label: "Inventory", href: "/inventory", icon: Box },
   { label: "Delivery", href: "/delivery", icon: Truck },
 ];

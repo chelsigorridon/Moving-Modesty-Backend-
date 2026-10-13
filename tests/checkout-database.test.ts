@@ -38,11 +38,12 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     return compiledModule.exports;
   }
   try {
-    for (const migration of ["0000_amusing_wallop", "0001_ordinary_lord_tyger", "0002_past_lester", "0003_slippery_pet_avengers", "0004_checkout_customer_snapshot", "0005_nostalgic_wallow", "0006_clever_titania", "0007_archive_test_orders"]) {
+    for (const { tag: migration } of JSON.parse(readFileSync(resolve(root, "drizzle/meta/_journal.json"), "utf8")).entries) {
       const sql = readFileSync(resolve(root, `drizzle/${migration}.sql`), "utf8");
       for (const statement of sql.split("--> statement-breakpoint")) if (statement.trim()) await postgres.exec(statement);
     }
     const { upsertCheckoutOrder } = load("lib/checkout-order.ts");
+    const { checkoutOrderSchema } = load("lib/checkout-input.ts");
     const { createPayFastCheckout, recordPayFastCheckoutFailure } = load("lib/integrations/payfast/checkout.ts");
     const { processPayFastNotification } = load("lib/integrations/payfast/notification.ts");
     const { createPayFastNotificationSignature } = load("lib/integrations/payfast/signature.ts");
@@ -50,9 +51,9 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     const { POST: restoreSession } = load("app/api/checkout/session/route.ts");
     const { getAdminSnapshot, updateOrderStatus } = load("lib/admin-data.ts");
     const customer = { firstName: "Original", lastName: "Customer", email: "test@example.com", phone: "0821234567" };
-    const input = { checkoutToken: "c4c5b18e-4e64-4d3b-845e-d6432157f723", stage: "complete", fulfilmentMethod: "delivery", customer,
-      address: { line1: "10 Test Street", suburb: "Test Suburb", city: "Cape Town", province: "Western Cape", postalCode: "0081" },
-      items: [{ sku: "AMINA-LAV-OS", quantity: 1 }] };
+    const input = checkoutOrderSchema.parse({ checkoutToken: "c4c5b18e-4e64-4d3b-845e-d6432157f723", stage: "complete", fulfilmentMethod: "delivery", customer: { ...customer, email: " TEST@EXAMPLE.COM " },
+      address: { line1: "10 Test Street", suburb: "Test Suburb", city: "Cape Town", province: " western cape ", postalCode: " 0081 " },
+      items: [{ sku: "AMINA-LAV-OS", quantity: 1 }] });
     const order = await upsertCheckoutOrder(input, database);
     assert.equal(order.total, 519);
     const checkout = { orderNumber: order.orderNumber, checkoutToken: input.checkoutToken };
@@ -76,6 +77,8 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     const recovered = await (await restoreSession(sessionRequest(input.checkoutToken))).json();
     assert.equal(recovered.session.customer.firstName, "Original");
     assert.equal(recovered.session.address.postalCode, "0081");
+    assert.equal(recovered.session.address.province, "Western Cape");
+    assert.equal(recovered.session.customer.email, "test@example.com");
     assert.equal(recovered.session.items[0].quantity, 1);
 
     const originalFetch = globalThis.fetch;

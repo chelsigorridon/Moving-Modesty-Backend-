@@ -50,9 +50,11 @@ async function checkout(paymentStatus: string, options: { processing?: boolean; 
   };
   const { setupSlider } = load(dom, "CheckoutSlider.tsx", "setupSlider");
   const root = window.document.getElementById("checkout");
+  let paymentState: any;
+  window.addEventListener("moving-modesty-checkout-payment-state", (event: any) => { paymentState = event.detail; });
   const cleanup = setupSlider(root);
   await new Promise(resolve => setTimeout(resolve, 20));
-  return { dom, window, root, close() { cleanup(); dom.window.close(); } };
+  return { dom, window, root, get paymentState() { return paymentState; }, close() { cleanup(); dom.window.close(); } };
 }
 
 test("cancelled payment restores all fields and offers retry, including proper autofill attributes", async () => {
@@ -67,7 +69,9 @@ test("cancelled payment restores all fields and offers retry, including proper a
     assert.equal(postal.value, "0081");
     postal.value = "ABC";
     assert.equal(postal.checkValidity(), false);
-    assert.match(page.root.querySelector('[data-mm-checkout-step="4"] button.mm-checkout-next').textContent, /Pay securely/);
+    assert.match(page.paymentState.label, /Pay securely/);
+    assert.equal(page.paymentState.disabled, false);
+    assert.equal(page.root.querySelector('[data-mm-checkout-step="4"] button.mm-checkout-next'), null);
     assert.notEqual(page.window.localStorage.getItem(CART), null);
   } finally { page.close(); }
 });
@@ -87,7 +91,7 @@ test("a processing URL with unavailable verification cannot clear the cart or cl
     assert.notEqual(page.window.localStorage.getItem(CART), null);
     assert.equal(page.window.localStorage.getItem(TOKEN), token);
     assert.doesNotMatch(page.root.textContent, /Payment confirmed/);
-    assert.match(page.root.querySelector('[data-mm-checkout-step="4"] button.mm-checkout-next').textContent, /Check payment status/);
+    assert.match(page.paymentState.label, /Check payment status/);
   } finally { page.close(); }
 });
 
@@ -97,7 +101,8 @@ test("server-confirmed payment clears the matching cart, not a different cart", 
     try {
       assert.match(page.root.textContent, /Payment confirmed/);
       assert.equal(page.window.localStorage.getItem(CART) === null, !changedCart);
-      assert.equal(page.root.querySelector('[data-mm-checkout-step="4"] button.mm-checkout-next').disabled, true);
+      assert.equal(page.paymentState.disabled, true);
+      assert.equal(page.paymentState.label, "Payment confirmed");
     } finally { page.close(); }
   }
 });
@@ -116,8 +121,8 @@ test("an unverified return blocks editing and a second payment until status is c
   try {
     const step = page.root.querySelector('[data-mm-checkout-step="4"]');
     assert.equal(step.querySelector("button.mm-checkout-back").disabled, true);
-    assert.equal(step.querySelector("button.mm-checkout-next").disabled, false);
-    assert.match(step.querySelector("button.mm-checkout-next").textContent, /Check payment status/);
+    assert.equal(page.paymentState.disabled, false);
+    assert.match(page.paymentState.label, /Check payment status/);
     step.querySelector("button.mm-checkout-back").click();
     assert.equal(page.root.dataset.mmActiveStep, "4");
   } finally { page.close(); }

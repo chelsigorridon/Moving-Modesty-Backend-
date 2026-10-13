@@ -1,5 +1,6 @@
 import {
     startTransition,
+    useCallback,
     useEffect,
     useMemo,
     useRef,
@@ -10,7 +11,7 @@ import {
 } from "react"
 import { addPropertyControls, ControlType, useIsStaticRenderer } from "framer"
 
-type View = "login" | "dashboard" | "orders" | "products"
+type View = "login" | "dashboard" | "orders" | "products" | "discounts"
 type OrderStatus =
     | "New"
     | "Confirmed"
@@ -39,6 +40,8 @@ interface AdminOrder {
     phone: string
     placedAt: string
     subtotal?: number
+    discountAmount?: number
+    discountCode?: string
     deliveryFee?: number
     total: number
     paymentStatus: PaymentStatus
@@ -513,7 +516,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                     <div className="mm-admin__utilities">
                         <AdminNav current={view} />
                         <div className="mm-admin__utility-actions">
-                            <button type="button" className="mm-admin__text-button" disabled={loading} onClick={() => setRefresh((current) => current + 1)}>{loading ? "Updating…" : "Refresh orders"}</button>
+                            {view === "dashboard" || view === "orders" ? <button type="button" className="mm-admin__text-button" disabled={loading} onClick={() => setRefresh((current) => current + 1)}>{loading ? "Updating…" : "Refresh orders"}</button> : null}
                             <details className="mm-admin__account" ref={accountRef}>
                                 <summary ref={accountSummaryRef}>Account</summary>
                                 <div className="mm-admin__account-menu">
@@ -526,7 +529,9 @@ export default function AdminPortal(props: AdminPortalProps) {
                     </div>
                     {notice ? <div className="mm-admin__notice" role="status">{notice}</div> : null}
                     {snapshot.operationalNotice ? <div className="mm-admin__notice" role="status">{snapshot.operationalNotice}</div> : null}
-                    {liveEnabled && loadState !== "ready" ? (
+                    {view === "discounts" ? (
+                        <DiscountManager apiBaseUrl={apiBaseUrl} enabled={liveEnabled} />
+                    ) : liveEnabled && loadState !== "ready" ? (
                         <div className="mm-admin__empty" role="status"><strong>{loadState === "error" ? "Orders could not be loaded" : "Loading your orders…"}</strong><span>{loadState === "error" ? "Use Refresh orders to try again. No order data has been changed." : "Connecting securely to your store."}</span></div>
                     ) : view === "dashboard" ? (
                         <DashboardView snapshot={snapshot} logout={logout} />
@@ -551,7 +556,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             loading={loading}
                         />
                     ) : (
-                        <ProductsView />
+                <ProductsView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} />
                     )}
                     <DeliverySettings open={deliverySettingsOpen} close={closeDeliverySettings} connection={snapshot.bobGoConnection}
                         check={courierCheck} checking={courierCheck.status === "checking"} disabled={loading || !liveEnabled || loadState !== "ready"}
@@ -705,7 +710,7 @@ function PageHeader({ eyebrow, title, action, onAction }: { eyebrow: string; tit
     )
 }
 
-function AdminNav({ current }: { current: "dashboard" | "orders" | "products" }) {
+function AdminNav({ current }: { current: "dashboard" | "orders" | "products" | "discounts" }) {
     const [open, setOpen] = useState(false)
     const triggerRef = useRef<HTMLButtonElement>(null)
     function close() {
@@ -726,7 +731,8 @@ function AdminNav({ current }: { current: "dashboard" | "orders" | "products" })
             <nav id="mm-admin-navigation" className="mm-admin__nav" aria-label="Admin navigation" hidden={!open}>
                 <a onClick={close} aria-current={current === "dashboard" ? "page" : undefined} className={current === "dashboard" ? "is-active" : ""} href="/admin">Dashboard</a>
                 <a onClick={close} aria-current={current === "orders" ? "page" : undefined} className={current === "orders" ? "is-active" : ""} href="/admin/orders">Orders</a>
-                <a onClick={close} aria-current={current === "products" ? "page" : undefined} className={current === "products" ? "is-active" : ""} href="/admin/products">Products (CMS)</a>
+            <a onClick={close} aria-current={current === "products" ? "page" : undefined} className={current === "products" ? "is-active" : ""} href="/admin/products">Products</a>
+                <a onClick={close} aria-current={current === "discounts" ? "page" : undefined} className={current === "discounts" ? "is-active" : ""} href="/admin/discounts">Discounts</a>
             </nav>
         </div>
     )
@@ -930,7 +936,9 @@ function OrdersView({
                         </Detail>
                         <Detail title="Payment">
                             <p>{selected.paymentStatus} · {money.format(selected.total)}</p>
-                            {selected.deliveryFee !== undefined ? <p>{selected.deliveryMethod === "Collection" ? "Collection: no delivery fee" : `Customer delivery fee: ${selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}`}</p> : null}
+                            {selected.subtotal !== undefined ? <p>Product subtotal: {money.format(selected.subtotal)}</p> : null}
+                            {(selected.discountAmount || 0) > 0 ? <p>Discount{selected.discountCode ? ` (${selected.discountCode})` : ""}: −{money.format(selected.discountAmount || 0)}</p> : null}
+                            {selected.deliveryFee !== undefined ? <p>{selected.deliveryMethod === "Collection" ? "Collection: no delivery fee" : `Delivery included in the customer's order total: ${selected.deliveryFee === 0 ? "Free" : money.format(selected.deliveryFee)}`}</p> : null}
                             <details className="mm-admin__technical"><summary>Payment details</summary>
                             <p>PayFast environment: {selected.payment?.environment === "production" ? "Live" : selected.payment?.environment === "sandbox" ? "Sandbox" : "Not recorded—check in PayFast if needed"}</p>
                             {selected.payment?.providerStatus ? <p>PayFast check: {selected.payment.providerStatus.replaceAll("_", " ")}</p> : null}
@@ -1125,7 +1133,6 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const shipping = order.shipping!
     const [parcel, setParcel] = useState({ weightGrams: String(shipping.weightGrams || ""), lengthCm: String(shipping.lengthCm || ""), widthCm: String(shipping.widthCm || ""), heightCm: String(shipping.heightCm || "") })
     const [measured, setMeasured] = useState(false)
-    const [cover, setCover] = useState(true)
     const [quote, setQuote] = useState<ShippingResult | null>(null)
     const [quoteIndex, setQuoteIndex] = useState(0)
     const [waybill, setWaybill] = useState("")
@@ -1153,14 +1160,15 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     function book() {
         if (!rate || !quote?.expires || quote.expires <= Date.now()) { setError("This quote expired. Get a new quote."); setQuote(null); return }
         confirm({ title: quote.environment === "production" ? "Confirm LIVE courier booking" : "Confirm sandbox booking",
-            description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. Drop-off at ${shipping.senderLocationName}, delivery to ${order.address}. ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} The customer's delivery fee is unchanged.`,
+            description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. Drop-off at ${shipping.senderLocationName}, delivery to ${order.address}. ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} Booking the courier does not charge the customer again.`,
             run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
     }
     return <Detail title="Bob Go delivery">
         {liveBookingForTest ? <p role="alert">This is a test payment. Live courier booking is blocked so it cannot create a real charge.</p> : null}
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
         <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p>
-        <p>Customer delivery fee: <strong>{order.deliveryFee === undefined ? "Not recorded" : order.deliveryFee === 0 ? "Free" : money.format(order.deliveryFee)}</strong>. This is separate from Zarina's courier cost.</p>
+        <p>Delivery paid by the customer: <strong>{order.deliveryFee === undefined ? "Not recorded" : order.deliveryFee === 0 ? "Free" : money.format(order.deliveryFee)}</strong></p>
+        <p className="mm-admin__helper">Already included in the order total — not an extra charge. The separate Bob Go courier cost appears after you get a quote.</p>
         {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}
         {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
         {pending ? <p>Booking is awaiting confirmation. Check its status; do not book another shipment or create a duplicate in Bob Go.</p> : null}
@@ -1175,13 +1183,12 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             <p className="mm-admin__helper">Check the packed box, including packaging. The 412 g / 25 × 20.5 × 3.5 cm measurement applies only to one Hawa + one Amina; measure other combinations.</p>
             <div className="mm-admin__parcel-grid">{fields.map(([field, label]) => <label className="mm-admin__field" key={field}>{label}<input type="number" min={field === "weightGrams" ? 1 : 0.01} max={field === "weightGrams" ? 30000 : 150} step={field === "weightGrams" ? 1 : 0.01} inputMode="decimal" value={parcel[field]} disabled={loading} onChange={event => { setParcel(current => ({ ...current, [field]: event.target.value })); setMeasured(false); setQuote(null) }} /></label>)}</div>
             <label className="mm-admin__courier-check"><input type="checkbox" checked={measured} disabled={loading} onChange={event => { setMeasured(event.target.checked); setQuote(null) }} />I have checked these packed measurements and the customer's address.</label>
-            <label className="mm-admin__courier-check"><input type="checkbox" checked={cover} disabled={loading} onChange={event => { setCover(event.target.checked); setQuote(null) }} />Request additional declared-value cover for {courierMoney.format(order.subtotal || 0)}.</label>
-            <p className="mm-admin__helper">Availability and cover depend on the courier's terms. If no quote supports it, review those terms before choosing standard cover only.</p>
-            {!rate ? <button type="button" className="mm-admin__button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: cover }) }}>{loading ? "Checking Bob Go…" : "Get delivery quote"}</button> : null}
+            <p className="mm-admin__helper">Standard courier liability only — no additional parcel cover is requested. Limits and exclusions depend on the courier.</p>
+            {!rate ? <button type="button" className="mm-admin__button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }) }}>{loading ? "Checking Bob Go…" : "Get delivery quote"}</button> : null}
             {rate ? <div className="mm-admin__quote">
                 <label className="mm-admin__field">Choose courier service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
-                <p><strong>Zarina's courier quote: {courierMoney.format(rate.amount)}</strong></p>
-                <p className="mm-admin__helper">This is Zarina's courier cost, not the customer's fixed R99 delivery fee. Quotes expire after 10 minutes; final courier charges can vary.</p>
+                <p><strong>Bob Go courier cost: {courierMoney.format(rate.amount)}</strong></p>
+                <p className="mm-admin__helper">Zarina pays this amount to Bob Go when booking. The customer's order total does not change. Quotes expire after 10 minutes; final courier charges can vary.</p>
                 <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Book waybill</button>
             </div> : null}
         </> : null}
@@ -1195,7 +1202,8 @@ function Detail({ title, children }: { title: string; children: ReactNode }) {
     return <section className="mm-admin__detail-block"><h3>{title}</h3>{children}</section>
 }
 
-function ProductsView() {
+function ProductsView({ apiBaseUrl, liveEnabled }: { apiBaseUrl: string; liveEnabled: boolean }) {
+    if (liveEnabled) return <LiveCatalogueEditor apiBaseUrl={apiBaseUrl} live />
     return (
         <>
             <PageHeader eyebrow="ADMIN / PRODUCTS" title="Products" />
@@ -1442,8 +1450,8 @@ addPropertyControls(AdminPortal, {
     view: {
         type: ControlType.Enum,
         title: "View",
-        options: ["login", "dashboard", "orders", "products"],
-        optionTitles: ["Login", "Dashboard", "Orders", "Products"],
+        options: ["login", "dashboard", "orders", "products", "discounts"],
+        optionTitles: ["Login", "Dashboard", "Orders", "Products", "Discounts"],
         defaultValue: "dashboard",
     },
     apiBaseUrl: {
@@ -1460,3 +1468,594 @@ addPropertyControls(AdminPortal, {
     sage: { type: ControlType.Color, title: "Action", defaultValue: "#7D896D" },
     border: { type: ControlType.Color, title: "Border", defaultValue: "#A69E95" },
 })
+
+// BEGIN GENERATED PRODUCT EDITOR
+type CatalogueDocument = {
+  name: string; slug: string; description: string; tagline?: string; productDetails?: string;
+  fabricMaterials?: string; benefits?: string; fabricWeight?: string; dimensions?: string; careInstructions?: string; deliveryReturns?: string; category: string;
+  homepageImage: { url: string; alt: string }; showOnHomepage: boolean; homepageOrder: number;
+  colours: Array<{ id: string; name: string; available: boolean; photos: Array<{ url: string; alt: string }>;
+    variants: Array<{ id: string; size: string; price: number; stock: number; stockVerified?: boolean; available: boolean }> }>;
+};
+type CatalogueEditorErrors = Record<string, string>;
+type CatalogueColour = CatalogueDocument["colours"][number];
+function productAddress(name: string, used: string[] = []) {
+  let base = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 140).replace(/-$/, "") || "product";
+  if (base.length === 1) base += "-product";
+  let address = base;
+  for (let suffix = 2; used.includes(address); suffix++) address = `${base}-${suffix}`;
+  return address;
+}
+
+function productSizes(document: CatalogueDocument) {
+  return [...new Set(document.colours.flatMap(colour => colour.variants.map(entry => entry.size)))];
+}
+function usualProductPrice(document: CatalogueDocument) {
+  const counts = new Map<number, number>();
+  for (const colour of document.colours) for (const entry of colour.variants) counts.set(entry.price, (counts.get(entry.price) || 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+}
+// Shared edits preserve identifiers, stock and any deliberately different price.
+function changeUsualPrice(document: CatalogueDocument, previous: number, price: number): CatalogueDocument {
+  return { ...document, colours: document.colours.map(colour => ({ ...colour,
+    variants: colour.variants.map(entry => entry.price === previous ? { ...entry, price } : entry) })) };
+}
+function addProductSize(document: CatalogueDocument, size: string, price: number): CatalogueDocument {
+  return { ...document, colours: document.colours.map(colour => ({ ...colour,
+    variants: [...colour.variants, { id: crypto.randomUUID(), size, price, stock: 0, stockVerified: true, available: true }] })) };
+}
+function renameProductSize(document: CatalogueDocument, previous: string, size: string, position?: number): CatalogueDocument {
+  return { ...document, colours: document.colours.map(colour => ({ ...colour,
+    variants: colour.variants.map((entry, index) => entry.size === previous && (position === undefined || position === index) ? { ...entry, size } : entry) })) };
+}
+function newProductColour(sizes: string[], price: number): CatalogueColour {
+  return { id: crypto.randomUUID(), name: "", available: true, photos: [],
+    variants: sizes.map(size => ({ id: crypto.randomUUID(), size, price, stock: 0, stockVerified: true, available: true })) };
+}
+function withProductColours(document: CatalogueDocument, colours: CatalogueColour[]): CatalogueDocument {
+  const photos = colours.flatMap(colour => colour.photos);
+  const wasColourPhoto = document.colours.some(colour => colour.photos.some(photo => photo.url === document.homepageImage.url));
+  const removed = wasColourPhoto && !photos.some(photo => photo.url === document.homepageImage.url);
+  return { ...document, colours, homepageImage: !document.homepageImage.url || removed ? (photos[0] || { url: "", alt: "" }) : document.homepageImage };
+}
+function catalogueEditorErrors(document: CatalogueDocument, demo = false): CatalogueEditorErrors {
+  void demo;
+  const errors: CatalogueEditorErrors = {};
+  if (document.name.trim().length < 2) errors.name = "Enter a product name.";
+  document.colours.forEach((colour, i) => {
+    if (!colour.name.trim()) errors[`colours.${i}.name`] = "Enter a colour name.";
+    colour.variants.forEach((variant, j) => {
+      const path = `colours.${i}.variants.${j}`;
+      if (!variant.size.trim()) errors[`${path}.size`] = "Enter a size name.";
+      if (!Number.isFinite(variant.price) || variant.price <= 0) errors[`${path}.price`] = "Enter a price greater than zero.";
+      if (!Number.isInteger(variant.stock) || variant.stock < 0) errors[`${path}.stock`] = "Enter a whole stock quantity.";
+    });
+  });
+  return errors;
+}
+function productAvailability(document: CatalogueDocument) {
+  if (!document.colours.some(colour => colour.available && colour.variants.some(entry => entry.available))) return "Unavailable";
+  return document.colours.some(colour => colour.available && colour.variants.some(entry => entry.available && (entry.stock > 0 || entry.stockVerified === false))) ? "Available" : "Out of stock";
+}
+type CatalogueDraft = { id?: string; revision: number; cmsVersion?: string; stockVersion?: string; publishedRevision?: number; publicationState?: string; publicationError?: string; pageUrl?: string; document: CatalogueDocument };
+type CatalogueEditorProps = { demo?: boolean; initialProducts?: CatalogueDraft[]; apiBaseUrl?: string; framerTrial?: boolean; live?: boolean };
+
+const catalogueMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" });
+const catalogueStages = ["Product details", "Colours & photos", "Preview"];
+
+function newDocument(): CatalogueDocument {
+  return { name: "", slug: "product", description: "", category: "Active hijabs", homepageImage: { url: "", alt: "" },
+    showOnHomepage: true, homepageOrder: 0, colours: [newProductColour(["One size fits all"], 0)] };
+}
+function fieldAttributes(path: string, errors: CatalogueEditorErrors) {
+  const describedBy = [path === "usualPrice" ? "hint-usualPrice" : "", errors[path] ? `error-${path.replaceAll(".", "-")}` : ""].filter(Boolean).join(" ");
+  return { id: `product-${path.replaceAll(".", "-")}`, "aria-invalid": !!errors[path],
+    "aria-describedby": describedBy || undefined };
+}
+function CatalogueField({ label, path, errors, hint, children }: { label: string; path: string; errors: CatalogueEditorErrors; hint?: string; children: ReactNode }) {
+  return <div className="mm-products__field">
+    <label htmlFor={`product-${path.replaceAll(".", "-")}`}>{label}</label>{children}{hint && <small id={`hint-${path.replaceAll(".", "-")}`}>{hint}</small>}
+    {errors[path] && <small className="mm-products__field-error" id={`error-${path.replaceAll(".", "-")}`}>{errors[path]}</small>}
+  </div>;
+}
+
+function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = "", framerTrial = false, live = false }: CatalogueEditorProps) {
+  const [products, setProducts] = useState<CatalogueDraft[]>(initialProducts);
+  const [current, setCurrent] = useState<CatalogueDraft | null>(null);
+  const [step, setStep] = useState(0);
+  const [preview, setPreview] = useState(false);
+  const [usualPrice, setUsualPrice] = useState("");
+  const [errors, setErrors] = useState<CatalogueEditorErrors>({});
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(!demo);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const saving = useRef(false);
+  const focusErrors = useRef(false);
+  const inputFile = useRef<HTMLInputElement>(null);
+  const pendingColour = useRef<string | null>(null);
+  const objectUrls = useRef<string[]>([]);
+  const editor = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const base = apiBaseUrl.replace(/\/$/, "");
+  const endpoint = live ? "/api/admin/product-catalogue" : framerTrial ? "/api/product-trial/framer" : "/api/admin/catalogue";
+  const isNew = current !== null && !current.id;
+  const document = current?.document;
+
+  const headers = useCallback((): Record<string, string> => {
+    if (framerTrial) return { "Content-Type": "application/json" };
+    return { "Content-Type": "application/json", Authorization: `Bearer ${window.sessionStorage.getItem("moving_modesty_admin_token") || ""}` };
+  }, [framerTrial]);
+  useEffect(() => {
+    if (demo) return;
+    const controller = new AbortController();
+    fetch(`${base}${endpoint}`, { headers: headers(), signal: controller.signal, cache: "no-store" })
+      .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Products could not be loaded."); return data; })
+      .then(data => { setProducts(data.products); setNeedsSetup(data.needsSetup === true); })
+      .catch(error => { if (!controller.signal.aborted) setError(error.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [base, demo, endpoint, headers]);
+  useEffect(() => () => objectUrls.current.forEach(url => URL.revokeObjectURL(url)), []);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+  useEffect(() => { heading.current?.focus(); heading.current?.scrollIntoView({ block: "start" }); }, [step, current?.id, isNew, preview]);
+  useEffect(() => {
+    if (!focusErrors.current) return;
+    focusErrors.current = false;
+    const field = editor.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    if (field) {
+      for (let parent = field.parentElement; parent; parent = parent.parentElement) if (parent.tagName === "DETAILS") (parent as HTMLDetailsElement).open = true;
+      field.focus();
+    }
+  }, [errors]);
+
+  function select(product: CatalogueDraft | null) {
+    if (dirty && !window.confirm("Leave without saving your changes?")) return;
+    setCurrent(product ? structuredClone(product) : { revision: 0, document: newDocument() });
+    const price = product ? usualProductPrice(product.document) : 0;
+    setUsualPrice(price ? String(price) : ""); setStep(0); setPreview(false); setDirty(false);
+    setErrors({}); setNotice(""); setError("");
+  }
+  function replace(document: CatalogueDocument) {
+    setCurrent(previous => previous && { ...previous, document }); setDirty(true); setNotice("");
+    const remaining = catalogueEditorErrors(document, demo);
+    setErrors(previous => Object.fromEntries(Object.entries(previous).filter(([path]) =>
+      path === "usualPrice" || (path === "description" && !document.description.trim()) || remaining[path])));
+  }
+  function patch(values: Partial<CatalogueDocument>) { if (document) replace({ ...document, ...values }); }
+  function changeColour(id: string, change: (colour: CatalogueColour) => CatalogueColour) {
+    if (document) replace(withProductColours(document, document.colours.map(colour => colour.id === id ? change(colour) : colour)));
+  }
+  function rename(name: string) { patch({ name, ...(isNew ? { slug: productAddress(name, products.map(product => product.document.slug)) } : {}) }); }
+  function changePrice(value: string) {
+    if (document) replace(changeUsualPrice(document, Number(usualPrice), Number(value)));
+    setUsualPrice(value);
+    const price = Number(value);
+    if (value && Number.isFinite(price) && price > 0 && price <= 100000 && Math.abs(price * 100 - Math.round(price * 100)) < 0.00001) {
+      setErrors(previous => Object.fromEntries(Object.entries(previous).filter(([path]) => path !== "usualPrice")));
+    }
+  }
+  function next() {
+    if (!document) return;
+    let found = catalogueEditorErrors(document, demo);
+    if (step === 0) {
+      found = Object.fromEntries(Object.entries(found).filter(([path]) => ["name", "slug", "description"].includes(path) || path.endsWith(".size")));
+      const price = Number(usualPrice);
+      if (!usualPrice || !Number.isFinite(price) || price <= 0 || price > 100000 || Math.abs(price * 100 - Math.round(price * 100)) > 0.00001) found.usualPrice = "Enter a price between R0.01 and R100,000, with no more than two decimal places.";
+      if (!document.description.trim()) found.description = "Add a short description of your product.";
+    }
+    focusErrors.current = true; setErrors(found); setError("");
+    if (Object.keys(found).length) return;
+    setStep(previous => Math.min(previous + 1, 2));
+  }
+  async function save(publish = false) {
+    if (!current || saving.current) return;
+    const found = catalogueEditorErrors(current.document, demo);
+    const price = Number(usualPrice);
+    if (!usualPrice || !Number.isFinite(price) || price <= 0 || price > 100000 || Math.abs(price * 100 - Math.round(price * 100)) > 0.00001) found.usualPrice = "Enter a price between R0.01 and R100,000, with no more than two decimal places.";
+    focusErrors.current = true; setErrors(found); setError(""); setNotice("");
+    if (Object.keys(found).length) {
+      setPreview(false);
+      if (isNew) setStep(Object.keys(found).some(path => ["name", "slug", "description", "usualPrice"].includes(path)) ? 0 : 1);
+      return;
+    }
+    saving.current = true; setBusy(true);
+    try {
+      let saved: CatalogueDraft;
+      if (demo) {
+        if (products.some(product => product.document.slug === current.document.slug && product.id !== current.id)) throw new Error("A product with this name already exists. Please use a different name.");
+        saved = { ...current, id: current.id || crypto.randomUUID(), revision: current.revision + 1 };
+      } else {
+        const checked = current.document;
+        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(`${data.error || "Your changes could not be saved."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
+        if (framerTrial && (data.cmsSynced !== true || data.published !== false || !data.product?.cmsVersion)) throw new Error("Framer has not confirmed this TEST draft save. Your changes remain here; reload to check CMS before retrying.");
+        saved = data.product;
+      }
+      // Keep the confirmed draft even if publication fails or times out.
+      setCurrent(saved); setDirty(false);
+      setProducts(previous => previous.some(product => product.id === saved.id) ? previous.map(product => product.id === saved.id ? saved : product) : [...previous, saved]);
+      if (publish && live) {
+        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
+        const data = await response.json();
+        if (!response.ok || data.published !== true || data.cmsSynced !== true) throw new Error(`${data.error || "Publication could not be verified. Your saved draft is retained."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
+        saved = data.product;
+        setProducts(previous => previous.map(product => product.id === saved.id ? saved : product));
+      }
+      setCurrent(null); setDirty(false); setPreview(false); setStep(0);
+      setNotice(publish && live ? `${saved.document.name} published. Its page, collection card and checkout are connected.` : demo ? `${saved.document.name} saved for this demo. Refreshing will reset your changes.` : framerTrial ? "TEST draft saved and verified in Framer. The live website has not changed." : "Draft saved. The live website has not changed.");
+    } catch (error) { setError(error instanceof Error ? error.message : "Your changes could not be saved. They are still in the editor."); }
+    finally { saving.current = false; setBusy(false); }
+  }
+  function submit(event: FormEvent) { event.preventDefault(); if (isNew && step < 2) next(); else void save(live); }
+  function leave() {
+    if (dirty && !window.confirm("Leave without saving your changes?")) return;
+    setCurrent(null); setDirty(false); setPreview(false); setErrors({}); setError(""); setNotice("");
+  }
+  function addPhotos(colourId: string | null) { pendingColour.current = colourId; inputFile.current?.click(); }
+  async function acceptPhotos(files: FileList | null) {
+    if (!files || !document) return;
+    const selected = Array.from(files);
+    if (selected.some(file => !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 4 * 1024 * 1024)) { setError("Choose JPG, PNG or WebP photos under 4 MB each."); return; }
+    const colour = document.colours.find(colour => colour.id === pendingColour.current);
+    if (colour && colour.photos.length + selected.length > 12) { setError("Each colour can have up to 12 photos. Remove a photo before adding more."); return; }
+    const target = pendingColour.current;
+    setBusy(true);
+    try {
+      const photos: Array<{ url: string; alt: string }> = [];
+      for (const file of selected) {
+        if (!live) { const url = URL.createObjectURL(file); objectUrls.current.push(url); photos.push({ url, alt: file.name }); }
+        else {
+          const body = new FormData(); body.set("photo", file);
+          const response = await fetch(`${base}${endpoint}/photos`, { method: "POST", headers: { Authorization: headers().Authorization }, body, signal: AbortSignal.timeout(60000) });
+          const data = await response.json();
+          if (!response.ok || !data.photo?.url) throw new Error(data.error || "Photo upload failed.");
+          photos.push(data.photo);
+        }
+      }
+      if (target) changeColour(target, colour => ({ ...colour, photos: [...colour.photos, ...photos] }));
+      else if (photos[0]) patch({ homepageImage: photos[0] });
+      setError("");
+    } catch (error) { setError(error instanceof Error ? error.message : "Photo upload failed."); }
+    finally { setBusy(false); }
+  }
+  async function initialize() {
+    setBusy(true); setError("");
+    try { const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(60000) });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || "Existing products could not be connected.");
+      setProducts(data.products); setNeedsSetup(false);
+    } catch (error) { setError(error instanceof Error ? error.message : "Connection failed."); } finally { setBusy(false); }
+  }
+  const detailsProps = document && { document, usualPrice, errors, patch, rename, changePrice, replace };
+  const colourProps = document && { document, demo: demo || live, errors, changeColour, addPhotos,
+    removeColour: (id: string) => { if (document.colours.length > 1) replace(withProductColours(document, document.colours.filter(colour => colour.id !== id))); },
+    addColour: () => { if (document.colours.length < 30) replace(withProductColours(document, [...document.colours, newProductColour(productSizes(document), Number(usualPrice))])); } };
+  const stockProps = document && { document, demo, errors, changeColour };
+
+  if (framerTrial) return <section className="mm-products" ref={editor}>
+    <style>{catalogueEditorStyles}</style>
+    <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY · UNPUBLISHED TEST</p><h1>Products</h1></div></header>
+    <p className="mm-products__notice">Connected TEST draft. Save the name, description and tagline directly to Framer. Nothing is published or saved to live stock.</p>
+    {notice && <p className="mm-products__success" role="status">{notice}</p>}
+    {error && <p className="mm-products__error" role="alert">{error}</p>}
+    {loading ? <p role="status">Loading TEST draft from Framer…</p> : !current ? <div className="mm-products__list">{products.map(product => <article className="mm-products__row" key={product.id}>
+      <img src={product.document.homepageImage.url} alt="" />
+      <div><h2>{product.document.name}</h2><p>{product.document.colours.length} colours · not for sale</p><span className="mm-products__badge">Framer draft</span></div>
+      <button onClick={() => select(product)}>Edit product</button>
+    </article>)}</div> : document && <>
+      <button className="mm-products__back" disabled={busy} onClick={leave}>← Products</button>
+      <div className="mm-products__title"><h2 ref={heading} tabIndex={-1}>Edit TEST product</h2><span>{dirty ? "Unsaved changes" : "Framer draft"}</span></div>
+      <form onSubmit={submit} noValidate><fieldset disabled={busy} className="mm-products__form"><div className="mm-products__section">
+        <CatalogueField label="Product name" path="name" errors={errors} hint="Keep TEST at the start of the name."><input {...fieldAttributes("name", errors)} value={document.name} onChange={event => rename(event.target.value)} maxLength={200} /></CatalogueField>
+        <CatalogueField label="Description" path="description" errors={errors}><textarea {...fieldAttributes("description", errors)} rows={4} value={document.description} onChange={event => patch({ description: event.target.value })} maxLength={10000} /></CatalogueField>
+        <CatalogueField label="Collection tagline" path="tagline" errors={errors} hint="Keep UNPUBLISHED TEST in the tagline."><input {...fieldAttributes("tagline", errors)} value={document.tagline ?? ""} onChange={event => patch({ tagline: event.target.value })} maxLength={300} /></CatalogueField>
+        <p>Read-only for this first test: {document.colours.map(colour => colour.name).join(" & ")} · {productSizes(document).join(" / ")} · {catalogueMoney.format(usualProductPrice(document))}. Photos, prices, colours and stock are not editable yet.</p>
+      </div><footer className="mm-products__footer"><span>Unpublished draft only</span><button className="mm-products__primary" type="submit">{busy ? "Saving…" : "Save draft"}</button></footer></fieldset></form>
+    </>}
+  </section>;
+
+  return <section className="mm-products" ref={editor}>
+    <style>{catalogueEditorStyles}</style>
+    <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY</p><h1>Products</h1></div>
+      {!current && <button className="mm-products__primary" disabled={loading || busy || needsSetup} onClick={() => select(null)}>Add product</button>}</header>
+    <p className="mm-products__notice">{live ? "Save a draft while you prepare. Publish when you’re ready for customers to see the changes." : demo ? "Demo only. Changes stay in this window and don’t affect your website." : "Draft trial. Changes are saved as drafts, not published to your website."}</p>
+    {notice && <p className="mm-products__success" role="status">{notice}</p>}
+    {error && <p className="mm-products__error" role="alert">{error}</p>}
+    <input ref={inputFile} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={event => { void acceptPhotos(event.target.files); event.target.value = ""; }} />
+    {needsSetup && <div className="mm-products__section"><p>Connect the existing Amina and Hawa products once. Their live pages and stock won’t be changed.</p><button disabled={busy} onClick={() => void initialize()}>{busy ? "Connecting…" : "Connect existing products"}</button></div>}
+    {loading ? <p role="status">Loading products…</p> : !current ? <div className="mm-products__list">
+      {products.length === 0 && <p>No products yet. Choose Add product to get started.</p>}
+      {products.map(product => <article className="mm-products__row" key={product.id}>
+        {product.document.homepageImage.url ? <img src={product.document.homepageImage.url} alt="" /> : <span className="mm-products__placeholder">M</span>}
+        <div><h2>{product.document.name}</h2><p>{product.document.colours.length} colours</p><span className="mm-products__badge">{live ? product.publicationState !== "idle" ? "Publication needs checking" : product.publishedRevision === product.revision ? "Published" : "Draft changes" : productAvailability(product.document) + (demo ? " · demo" : " · draft")}</span>{product.publicationError && <p role="alert">{product.publicationError}</p>}{live && product.publishedRevision ? <p><a href={product.pageUrl} target="_blank" rel="noreferrer">View product page ↗</a></p> : null}</div>
+        <button onClick={() => select(product)}>Edit product</button>
+      </article>)}
+    </div> : document && <>
+      <button className="mm-products__back" disabled={busy} onClick={leave}>← Products</button>
+      {isNew && <ol className="mm-products__steps" aria-label="Add product steps">{catalogueStages.map((stage, index) => <li key={stage} aria-current={step === index ? "step" : undefined}><span>{index + 1}</span>{stage}</li>)}</ol>}
+      <div className="mm-products__title"><h2 ref={heading} tabIndex={-1}>{isNew ? catalogueStages[step] : preview ? `Preview ${document.name}` : document.name}</h2><span>{dirty ? "Unsaved changes" : demo ? "Demo copy" : "Draft"}</span></div>
+      <form onSubmit={submit} noValidate>
+        <fieldset disabled={busy} className="mm-products__form">
+          {isNew ? step === 0 ? <DetailsFields {...detailsProps!} /> : step === 1 ? <>
+            <ColourFields {...colourProps!} />
+            <details className="mm-products__accordion" open><summary>Stock & availability</summary><StockFields {...stockProps!} /></details>
+          </> : <Preview document={document} demo={demo || live} patch={patch} addPhotos={addPhotos} /> : preview ? <Preview document={document} demo={demo || live} patch={patch} addPhotos={addPhotos} /> : <>
+            <p className="mm-products__intro">Choose what you want to change.</p>
+            <details className="mm-products__accordion"><summary>Product details <small>Name, description, price & sizes</small></summary><DetailsFields {...detailsProps!} /></details>
+            <details className="mm-products__accordion"><summary>Colours & photos <small>Colour names and their images</small></summary><ColourFields {...colourProps!} /></details>
+            <details className="mm-products__accordion"><summary>Stock & availability <small>Quantities and what customers can buy</small></summary><StockFields {...stockProps!} /></details>
+          </>}
+          <footer className="mm-products__footer">
+            <div>{isNew && step > 0 ? <button type="button" onClick={() => { setStep(previous => previous - 1); setErrors({}); }}>Back</button> : !isNew && <button type="button" onClick={() => setPreview(!preview)}>{preview ? "Back to editing" : "Preview"}</button>}</div>
+            {live && (!isNew || step === 2) && <button type="button" onClick={() => void save(false)}>Save draft</button>}
+            <button className="mm-products__primary" type="submit">{busy ? "Working…" : isNew && step < 2 ? "Continue" : live ? "Publish" : demo ? isNew ? "Save demo product" : "Save demo changes" : "Save draft"}</button>
+          </footer>
+        </fieldset>
+      </form>
+    </>}
+  </section>;
+}
+
+type DetailsProps = {
+  document: CatalogueDocument; usualPrice: string; errors: CatalogueEditorErrors;
+  patch: (values: Partial<CatalogueDocument>) => void; rename: (value: string) => void;
+  changePrice: (value: string) => void; replace: (document: CatalogueDocument) => void;
+};
+function DetailsFields({ document, usualPrice, errors, patch, rename, changePrice, replace }: DetailsProps) {
+  // Keep duplicate rows visible during typing so validation can explain and fix them.
+  const sizes = document.colours[0].variants.map(entry => entry.size);
+  return <div className="mm-products__section">
+    <CatalogueField label="Product name" path="name" errors={errors}><input {...fieldAttributes("name", errors)} value={document.name} onChange={event => rename(event.target.value)} placeholder="e.g. Noor Active Hijab" maxLength={200} /></CatalogueField>
+    <CatalogueField label="Description" path="description" errors={errors}><textarea {...fieldAttributes("description", errors)} rows={3} value={document.description} onChange={event => patch({ description: event.target.value })} placeholder="What should customers know about this product?" maxLength={10000} /></CatalogueField>
+    <CatalogueField label="Usual price (R)" path="usualPrice" errors={errors} hint="Used for new colours and sizes. Any different prices you set are kept."><input {...fieldAttributes("usualPrice", errors)} type="number" min="0.01" max={100000} step="0.01" inputMode="decimal" value={usualPrice} onChange={event => changePrice(event.target.value)} placeholder="e.g. 420" /></CatalogueField>
+    <div className="mm-products__sizes"><h3>Sizes</h3><p>Leave one size, or add the sizes this product comes in.</p>
+      {document.colours[0].variants.map((entry, index) => {
+        const path = `colours.0.variants.${index}.size`;
+        return <div className="mm-products__size" key={entry.id}><CatalogueField label={`Size ${index + 1}`} path={path} errors={errors}><input {...fieldAttributes(path, errors)} value={entry.size} maxLength={80} onChange={event => replace(renameProductSize(document, entry.size, event.target.value, index))} /></CatalogueField>
+          {sizes.length > 1 && <button type="button" disabled={document.colours.some(colour => colour.variants.length === 1)} aria-label={`Remove size ${entry.size || index + 1}`} onClick={() => replace({ ...document, colours: document.colours.map(colour => ({ ...colour, variants: colour.variants.filter((variant, position) => position !== index || variant.size !== entry.size) })) })}>Remove</button>}</div>;
+      })}
+      <button type="button" disabled={document.colours.some(colour => colour.variants.length >= 30)} onClick={() => {
+        let name = "New size";
+        for (let suffix = 2; sizes.some(size => size.toLowerCase() === name.toLowerCase()); suffix++) name = `New size ${suffix}`;
+        replace(addProductSize(document, name, Number(usualPrice)));
+      }}>Add size</button>
+    </div>
+    <details className="mm-products__optional"><summary>More product information <small>Optional</small></summary>
+      {([
+        ["tagline", "Collection tagline"], ["productDetails", "Product details"], ["fabricMaterials", "Fabric & materials"],
+        ["benefits", "Benefits"], ["fabricWeight", "Fabric weight"], ["dimensions", "Dimensions"],
+        ["careInstructions", "Care instructions"], ["deliveryReturns", "Delivery & returns information"],
+      ] as const).map(([key, label]) => <CatalogueField key={key} label={label} path={key} errors={errors}><textarea {...fieldAttributes(key, errors)} rows={2} maxLength={key === "tagline" ? 300 : 10000} value={document[key] || ""} onChange={event => patch({ [key]: event.target.value })} /></CatalogueField>)}
+    </details>
+  </div>;
+}
+
+type ColourProps = { document: CatalogueDocument; demo: boolean; errors: CatalogueEditorErrors; changeColour: (id: string, change: (colour: CatalogueColour) => CatalogueColour) => void; addPhotos: (id: string | null) => void; addColour: () => void; removeColour: (id: string) => void };
+function ColourFields({ document, demo, errors, changeColour, addPhotos, addColour, removeColour }: ColourProps) {
+  return <div className="mm-products__section"><p className="mm-products__intro">Add each colour and its photos. Your sizes and usual price are already carried across.</p>
+    {document.colours.map((colour, index) => <section className="mm-products__colour" key={colour.id}>
+      <CatalogueField label={`Colour ${index + 1}`} path={`colours.${index}.name`} errors={errors}><input {...fieldAttributes(`colours.${index}.name`, errors)} value={colour.name} maxLength={120} placeholder="e.g. Black" onChange={event => changeColour(colour.id, value => ({ ...value, name: event.target.value }))} /></CatalogueField>
+      {document.colours.length > 1 && <button type="button" className="mm-products__text-button" aria-label={`Remove colour ${colour.name || index + 1}`} onClick={() => removeColour(colour.id)}>Remove colour</button>}
+      <div className="mm-products__photos">{colour.photos.map((photo, photoIndex) => <div key={`${photo.url}-${photoIndex}`}><img src={photo.url} alt={photo.alt || colour.name} /><button type="button" aria-label={`Remove photo ${photoIndex + 1} from ${colour.name || `colour ${index + 1}`}`} onClick={() => changeColour(colour.id, value => ({ ...value, photos: value.photos.filter((_, position) => position !== photoIndex) }))}>Remove</button></div>)}</div>
+      {demo ? <button type="button" disabled={colour.photos.length >= 12} onClick={() => addPhotos(colour.id)}>{colour.photos.length ? "Add more photos" : "Upload photos"}</button> : <p>Photo uploads will be available once the website connection is complete.</p>}
+      <details className="mm-products__optional"><summary>Different prices for this colour <small>Optional</small></summary>
+        {colour.variants.map((entry, variantIndex) => {
+          const path = `colours.${index}.variants.${variantIndex}.price`;
+          return <CatalogueField key={entry.id} label={`${entry.size} price (R)`} path={path} errors={errors}><input {...fieldAttributes(path, errors)} type="number" min="0.01" max={100000} step="0.01" inputMode="decimal" value={entry.price || ""} onChange={event => changeColour(colour.id, value => ({ ...value, variants: value.variants.map(variant => variant.id === entry.id ? { ...variant, price: Number(event.target.value) } : variant) }))} /></CatalogueField>;
+        })}
+      </details>
+    </section>)}
+    {errors.colours && <p className="mm-products__field-error">{errors.colours}</p>}
+    <button type="button" disabled={document.colours.length >= 30} onClick={addColour}>Add colour</button>
+  </div>;
+}
+
+type StockProps = { document: CatalogueDocument; demo: boolean; errors: CatalogueEditorErrors; changeColour: ColourProps["changeColour"] };
+function StockFields({ document, demo, errors, changeColour }: StockProps) {
+  return <div className="mm-products__section"><p className="mm-products__intro">{demo ? "Sample quantities only. " : ""}Enter the quantity you have. Once confirmed, zero stock means sold out. Uncheck availability to pause a colour or size.</p>
+    {document.colours.map((colour, index) => <section className="mm-products__stock" key={colour.id}><header><h3>{colour.name || `Colour ${index + 1}`}</h3><label className="mm-products__check"><input type="checkbox" checked={colour.available && (colour.variants.length > 1 || colour.variants[0].available)} onChange={event => changeColour(colour.id, value => ({ ...value, available: event.target.checked, variants: value.variants.length === 1 ? value.variants.map(entry => ({ ...entry, available: event.target.checked })) : value.variants }))} />{colour.name || `Colour ${index + 1}`} available for sale</label></header>
+      {colour.variants.map((entry, variantIndex) => {
+        const path = `colours.${index}.variants.${variantIndex}.stock`;
+        return <div className="mm-products__stock-row" key={entry.id}><CatalogueField label={`${entry.size || "Size"} stock${entry.stockVerified === false ? " — not counted yet" : ""}`} path={path} errors={errors}><input {...fieldAttributes(path, errors)} type="number" min={0} max={100000} step={1} inputMode="numeric" value={entry.stock} onChange={event => changeColour(colour.id, value => ({ ...value, variants: value.variants.map(variant => variant.id === entry.id ? { ...variant, stock: Number(event.target.value), stockVerified: true } : variant) }))} /></CatalogueField>
+          {colour.variants.length > 1 && <label className="mm-products__check"><input type="checkbox" checked={entry.available} onChange={event => changeColour(colour.id, value => ({ ...value, variants: value.variants.map(variant => variant.id === entry.id ? { ...variant, available: event.target.checked } : variant) }))} />{entry.size || "Size"} available</label>}</div>;
+      })}
+    </section>)}
+  </div>;
+}
+
+function Preview({ document, demo, patch, addPhotos }: { document: CatalogueDocument; demo: boolean; patch: DetailsProps["patch"]; addPhotos: ColourProps["addPhotos"] }) {
+  const photos = document.colours.flatMap(colour => colour.photos);
+  return <div className="mm-products__preview"><p className="mm-products__intro">This is how your product cards could look. Preview buttons don’t place orders.</p><h3>{document.name}</h3><p>{document.description}</p>
+    <div className="mm-products__cards">{document.colours.map(colour => <ColourCard key={colour.id} name={document.name} colour={colour} />)}</div>
+    <section className="mm-products__homepage"><h3>Homepage collection</h3><label className="mm-products__check"><input type="checkbox" checked={document.showOnHomepage} onChange={event => patch({ showOnHomepage: event.target.checked })} />Show this product on the homepage</label>
+      {document.showOnHomepage ? <>
+        <article className="mm-products__collection"><CataloguePhoto url={document.homepageImage.url} alt={document.homepageImage.alt || document.name} /><h3>{document.name}</h3>{document.tagline && <p>{document.tagline}</p>}<span className="mm-products__mock-button">View product</span></article>
+        <details className="mm-products__optional"><summary>Choose a different collection photo</summary><div className="mm-products__photo-choices">{photos.map((photo, index) => <button key={`${photo.url}-${index}`} type="button" aria-label={`Use collection photo ${index + 1}`} aria-pressed={document.homepageImage.url === photo.url} onClick={() => patch({ homepageImage: photo })}><img src={photo.url} alt={photo.alt || `Photo ${index + 1}`} /></button>)}</div>{demo && <button type="button" onClick={() => addPhotos(null)}>Upload another photo</button>}</details>
+      </> : <p>This product won’t appear in Our Collection.</p>}
+    </section>
+  </div>;
+}
+function CataloguePhoto({ url, alt }: { url: string; alt: string }) { return url ? <img src={url} alt={alt} /> : <div className="mm-products__empty-photo">Photo not added yet</div>; }
+function ColourCard({ name, colour }: { name: string; colour: CatalogueColour }) {
+  const [selectedId, setSelectedId] = useState("");
+  const selected = colour.variants.find(entry => entry.id === selectedId);
+  const prices = colour.variants.map(entry => entry.price);
+  const available = colour.available && (selected ? selected.available && selected.stock > 0 : colour.variants.some(entry => entry.available && entry.stock > 0));
+  return <article><CataloguePhoto url={colour.photos[0]?.url || ""} alt={colour.photos[0]?.alt || `${name} ${colour.name}`} /><h3>{name} — {colour.name}</h3><p>{!selected && new Set(prices).size > 1 ? "From " : ""}{catalogueMoney.format(selected?.price ?? Math.min(...prices))}</p>
+    <label className="mm-products__field">Size<select value={selectedId} onChange={event => setSelectedId(event.target.value)}><option value="">Select size</option>{colour.variants.map(entry => <option key={entry.id} value={entry.id} disabled={!colour.available || !entry.available || entry.stock === 0}>{entry.size}{!colour.available || !entry.available || entry.stock === 0 ? " — sold out" : ""}</option>)}</select></label>
+    <span className="mm-products__mock-button">{available ? "Add to cart" : "Sold out"}</span></article>;
+}
+
+const catalogueEditorStyles = `
+.mm-products{font-family:Jost,Inter,Arial,sans-serif;color:#302a24;max-width:1000px;margin:0 auto;padding:32px;background:#f5f3f0;box-sizing:border-box}.mm-products *{box-sizing:border-box}.mm-products h1,.mm-products h2,.mm-products h3{font-family:Montserrat,Jost,Inter,Arial,sans-serif;letter-spacing:0;line-height:1.3;font-weight:500}.mm-products h1{font-size:30px;margin:4px 0 12px}.mm-products h2{font-size:22px;margin:0 0 8px}.mm-products h3{font-size:18px;margin:12px 0 8px}.mm-products p{line-height:1.5;margin:6px 0 16px}.mm-products button{font:inherit;padding:11px 17px;min-height:44px;border:1px solid #a69e95;background:transparent;color:inherit;cursor:pointer;transition:background .15s}.mm-products button:hover:not(:disabled){background:#e1e4dc}.mm-products button:disabled{opacity:.55;cursor:not-allowed}.mm-products .mm-products__primary{background:#758166;color:white;border-color:#758166}.mm-products .mm-products__primary:hover:not(:disabled){background:#5d684f}.mm-products :is(button,input,textarea,select,summary):focus-visible{outline:3px solid #758166;outline-offset:3px}.mm-products__header,.mm-products__footer,.mm-products__title{display:flex;align-items:center;justify-content:space-between;gap:16px}.mm-products__eyebrow{font-size:11px;letter-spacing:.12em;color:#746d65}.mm-products__notice{font-size:13px;color:#746d65;border-bottom:1px solid #d5cfc8;padding:0 0 18px}.mm-products__success,.mm-products__error{padding:14px 18px;background:#e9ede2;border-left:3px solid #758166;margin:16px 0;font-size:14px}.mm-products__error{background:#f4e6e1;border-color:#8b3e2f}.mm-products__list{display:grid;gap:1px;background:#d5cfc8;border:1px solid #d5cfc8}.mm-products__row{display:flex;align-items:center;gap:18px;background:#fffaf5;padding:20px}.mm-products__row>div{flex:1;min-width:0}.mm-products__row p{font-size:14px;margin:0 0 4px;color:#746d65}.mm-products__row img,.mm-products__placeholder{width:72px;height:72px;object-fit:cover;flex-shrink:0}.mm-products__placeholder{display:grid;place-items:center;background:#e9e5e0;font-size:28px}.mm-products__badge{font-size:12px;color:#746d65}.mm-products .mm-products__back{border:0;padding-left:0;margin-bottom:16px}.mm-products__steps{list-style:none;display:flex;gap:16px;padding:0;margin:8px 0 28px;border-bottom:1px solid #d5cfc8}.mm-products__steps li{flex:1;font-size:14px;color:#746d65;padding:0 0 14px;border-bottom:3px solid transparent}.mm-products__steps li[aria-current=step]{color:#302a24;border-color:#758166}.mm-products__steps li>span{display:inline-grid;place-items:center;width:25px;height:25px;background:#e4e7df;border-radius:50%;margin-right:8px}.mm-products__title{margin-bottom:20px}.mm-products__title>span{font-size:12px;color:#746d65}.mm-products__form{border:0;padding:0;margin:0;min-width:0}.mm-products__section{padding:24px;background:#fffaf5;min-width:0}.mm-products__field{display:flex;flex-direction:column;gap:7px;font-size:14px;margin:0 0 20px}.mm-products input:not([type=checkbox]),.mm-products textarea,.mm-products select{width:100%;border:1px solid #bbb3aa;background:#fffaf5;color:inherit;padding:12px;font:inherit;border-radius:4px;min-width:0}.mm-products input[aria-invalid=true],.mm-products textarea[aria-invalid=true]{border-color:#8b3e2f}.mm-products textarea{resize:vertical}.mm-products small{color:#746d65;line-height:1.5}.mm-products .mm-products__field-error{color:#8b3e2f}.mm-products__sizes>p,.mm-products__intro{font-size:14px;color:#746d65}.mm-products__size{display:flex;align-items:flex-start;gap:12px}.mm-products__size .mm-products__field{flex:1}.mm-products__size>button{margin-top:24px}.mm-products__check{display:flex;align-items:center;gap:10px;font-size:14px;line-height:1.4;min-height:44px}.mm-products input[type=checkbox]{width:18px;height:18px;accent-color:#758166;flex-shrink:0}.mm-products__optional{margin:18px 0 0;padding-top:18px;border-top:1px solid #d5cfc8}.mm-products summary{cursor:pointer;min-height:44px;padding:8px 0}.mm-products summary small{font-size:12px;margin-left:8px}.mm-products__optional[open]>summary{margin-bottom:14px}.mm-products__accordion{border:1px solid #d5cfc8;background:#fffaf5;margin:12px 0}.mm-products__accordion>summary{font-size:18px;padding:20px}.mm-products__accordion>summary small{display:block;margin:5px 0 0 20px;font-size:13px}.mm-products__colour{padding:20px;background:#f5f3f0;border:1px solid #d5cfc8;margin:0 0 20px}.mm-products__photos,.mm-products__photo-choices{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}.mm-products__photos>div{display:flex;flex-direction:column;gap:6px}.mm-products__photos img,.mm-products__photo-choices img{width:96px;height:96px;object-fit:cover}.mm-products__photos button{font-size:12px;padding:6px}.mm-products__photo-choices button{padding:3px;border:2px solid transparent}.mm-products__photo-choices button[aria-pressed=true]{border-color:#758166}.mm-products__stock{border-bottom:1px solid #d5cfc8;margin-bottom:20px;padding-bottom:12px}.mm-products__stock:last-child{border:0;margin:0}.mm-products__stock header{margin-bottom:14px}.mm-products__stock-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:center}.mm-products__footer{padding:20px 0;margin-top:16px;border-top:1px solid #d5cfc8}.mm-products__preview{padding:24px;background:#eeeae6}.mm-products__cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:760px;gap:32px;margin:24px auto 40px}.mm-products__cards article{padding:14px;border:1px solid #a69e95;min-width:0}.mm-products__cards img,.mm-products__empty-photo{width:100%;aspect-ratio:1;object-fit:cover}.mm-products__empty-photo{display:grid;place-items:center;background:#d8d4cf;color:#746d65;font-size:14px}.mm-products__mock-button{display:block;background:#758166;color:white;padding:13px;text-align:center;font-size:14px}.mm-products__collection{max-width:300px;margin-top:18px}.mm-products__collection img{width:100%;aspect-ratio:1;object-fit:cover}.mm-products__homepage{border-top:1px solid #cfc8c0;padding-top:20px}
+@media(max-width:760px){.mm-products{padding:20px}.mm-products__section,.mm-products__colour,.mm-products__preview{padding:16px}.mm-products__cards{gap:20px}.mm-products__steps{gap:10px}.mm-products__steps li>span{display:grid;margin:0 0 8px}.mm-products__title{align-items:flex-start}.mm-products__row{flex-wrap:wrap}.mm-products__row>button{margin-left:90px}}
+@media(max-width:480px){.mm-products__cards{grid-template-columns:1fr}.mm-products__stock-row{grid-template-columns:1fr;gap:0}.mm-products__stock-row>.mm-products__check{margin:-12px 0 18px}.mm-products__steps li{font-size:12px}.mm-products__header{flex-wrap:wrap}.mm-products__row{gap:12px}.mm-products__row img,.mm-products__placeholder{width:54px;height:54px}.mm-products__row>button{margin-left:66px}.mm-products__row h2{font-size:18px}.mm-products__footer{align-items:stretch}.mm-products__footer>button{max-width:70%}}
+`;
+
+// END GENERATED PRODUCT EDITOR
+
+// BEGIN GENERATED DISCOUNT MANAGER
+type DiscountRecord = { id: string; revision: number; code: string; type: "percentage" | "amount"; value: number; active: boolean;
+  productIds: string[]; minimumSpend: number; startsAt: string | null; endsAt: string | null };
+type DiscountProduct = { id: string; name: string };
+type DiscountDraft = Omit<DiscountRecord, "id" | "revision" | "value" | "minimumSpend"> & { id?: string; expectedRevision: number; value: string; minimumSpend: string };
+type DiscountManagerProps = { demo?: boolean; apiBaseUrl?: string; enabled?: boolean; products?: DiscountProduct[]; onReviewChange?: (records: DiscountRecord[]) => void };
+const discountMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 });
+function blankDiscount(): DiscountDraft { return { expectedRevision: 0, code: "", type: "percentage", value: "", active: false,
+  productIds: [], minimumSpend: "", startsAt: null, endsAt: null }; }
+function localDiscountDate(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  const pad = (number: number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function discountStatus(discount: DiscountRecord) {
+  if (!discount.active) return "Off";
+  if (discount.endsAt && new Date(discount.endsAt).getTime() <= Date.now()) return "Expired";
+  if (discount.startsAt && new Date(discount.startsAt).getTime() > Date.now()) return "Scheduled";
+  return "On";
+}
+
+function DiscountManager({ demo = false, apiBaseUrl = "", enabled = true, products: initialProducts = [], onReviewChange }: DiscountManagerProps) {
+  const [records, setRecords] = useState<DiscountRecord[]>([]);
+  const [products, setProducts] = useState(initialProducts);
+  const [draft, setDraft] = useState<DiscountDraft | null>(null);
+  const [loading, setLoading] = useState(!demo && enabled);
+  const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(demo || !enabled);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const [scope, setScope] = useState("all");
+  const pending = useRef(false);
+  const codeField = useRef<HTMLInputElement>(null);
+  const createButton = useRef<HTMLButtonElement>(null);
+  const base = apiBaseUrl.trim().replace(/\/$/, "");
+  async function requestDiscounts(payload?: unknown, signal?: AbortSignal) {
+    let session = "";
+    try { session = window.sessionStorage.getItem("moving_modesty_admin_token") || ""; } catch { /* Cookie auth is available in the backend portal. */ }
+    // Framer uses the explicit bearer session, not cross-site cookies. The native
+    // backend portal still sends its cookie on same-origin requests.
+    const response = await fetch(`${base}/api/admin/discounts`, { method: payload ? "POST" : "GET", credentials: "same-origin",
+      headers: { ...(payload ? { "Content-Type": "application/json" } : {}), ...(session ? { Authorization: `Bearer ${session}` } : {}) },
+      body: payload ? JSON.stringify(payload) : undefined, signal: signal || AbortSignal.timeout(20000) });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(`${result?.error || "Discounts could not be loaded."}${result?.errorRef ? ` Reference: ${result.errorRef}` : ""}`);
+    return result;
+  }
+  useEffect(() => {
+    if (demo || !enabled) return;
+    const controller = new AbortController();
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- A changed external API target or explicit reload resets confirmed backend state.
+    setLoading(true); setError(""); setReady(false);
+    requestDiscounts(undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]))
+      .then(result => { if (active) { setRecords(result.discounts); setProducts(result.products); setReady(true); } })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "Discounts could not be loaded."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Reload is explicit; draft edits must never trigger a fetch.
+  }, [base, demo, enabled, refresh]);
+  const editorOpen = Boolean(draft);
+  const editorId = draft?.id;
+  useEffect(() => { if (editorOpen) codeField.current?.focus(); }, [editorId, editorOpen]);
+  useEffect(() => { if (demo) onReviewChange?.(records); }, [demo, records, onReviewChange]);
+  function editDiscount(record?: DiscountRecord) {
+    setError(""); setMessage("");
+    setScope(record?.productIds.length ? "selected" : "all");
+    setDraft(record ? { ...record, expectedRevision: record.revision, value: String(record.value), minimumSpend: record.minimumSpend ? String(record.minimumSpend) : "" } : blankDiscount());
+  }
+  function closeEditor() {
+    if (busy) return;
+    setDraft(null); setError(""); createButton.current?.focus();
+  }
+  async function persistDiscount(current: DiscountDraft) {
+    if (pending.current) return;
+    const code = current.code.trim().toUpperCase();
+    const value = Number(current.value);
+    if (!/^[A-Z0-9][A-Z0-9_-]{1,39}$/.test(code)) { setError("Enter a code using 2–40 letters, numbers, hyphens or underscores, without spaces."); codeField.current?.focus(); return; }
+    if (!current.value.trim() || !Number.isFinite(value) || value <= 0 || (current.type === "percentage" && value >= 100)) { setError("Enter a discount greater than zero. Percentage discounts must be below 100%."); return; }
+    if (value > 100000 || Math.abs(value * 100 - Math.round(value * 100)) > 0.000001) { setError("Use an amount no greater than R100,000, with no more than two decimal places."); return; }
+    if (current.startsAt && current.endsAt && new Date(current.endsAt) <= new Date(current.startsAt)) { setError("The end date must be after the start date."); return; }
+    if (demo && records.some(record => record.id !== current.id && record.code === code)) { setError("That code already exists. Edit its existing discount or choose a different code."); return; }
+    const minimumSpend = Number(current.minimumSpend || 0);
+    if (!Number.isFinite(minimumSpend) || minimumSpend < 0 || minimumSpend > 100000 || Math.abs(minimumSpend * 100 - Math.round(minimumSpend * 100)) > 0.000001) { setError("Enter a valid minimum spend, with no more than two decimal places."); return; }
+    pending.current = true; setBusy(true); setError(""); setMessage("");
+    try {
+      const payload = { ...current, code, value, minimumSpend };
+      const saved: DiscountRecord = demo ? { ...payload, id: current.id || crypto.randomUUID(), revision: current.expectedRevision + 1 }
+        : (await requestDiscounts(payload)).discount;
+      setRecords(previous => [...previous.filter(record => record.id !== saved.id), saved].sort((a, b) => a.code.localeCompare(b.code)));
+      setDraft(null); setMessage(demo ? "Saved in this review only. Nothing on the live website changed." : `Saved. ${saved.code} is ${discountStatus(saved).toLowerCase()}.`);
+      createButton.current?.focus();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "The save could not be confirmed. Reload Discounts before trying again."); }
+    finally { pending.current = false; setBusy(false); }
+  }
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (draft && scope === "selected" && !draft.productIds.length) { setError("Select at least one product, or choose All products."); return; }
+    if (draft) void persistDiscount(draft);
+  }
+  function update<K extends keyof DiscountDraft>(key: K, value: DiscountDraft[K]) { setDraft(previous => previous ? { ...previous, [key]: value } : previous); }
+
+  return <section className="mm-discounts" aria-label="Discount management" aria-busy={busy || loading}>
+    <style>{discountStyles}</style>
+    <header className="mm-discounts__header"><div><p className="mm-discounts__eyebrow">MOVING MODESTY · DISCOUNTS</p><h1>{draft ? draft.id ? "Edit discount" : "Create discount" : "Discounts"}</h1>
+      <p>{draft ? "One shared code that customers enter at checkout." : "Create and control your specials without changing product prices."}</p></div>
+      {!draft ? <button ref={createButton} type="button" className="mm-discounts__primary" disabled={busy || loading || !ready || !enabled} onClick={() => editDiscount()}>Create discount</button> : null}
+    </header>
+    {demo ? <p className="mm-discounts__review">Unpublished review · Changes stay in this browser tab. No live codes, orders or payments are created.</p> : null}
+    {error ? <div className="mm-discounts__error" role="alert">{error}{!draft && !ready ? <button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)}>Reload discounts</button> : null}</div> : null}
+    {message ? <p className="mm-discounts__notice" role="status">{message}</p> : null}
+    {draft ? <form className="mm-discounts__form" onSubmit={save}>
+      <label>Discount code<input ref={codeField} value={draft.code} required maxLength={40} autoComplete="off" autoCapitalize="characters" spellCheck={false} onChange={event => update("code", event.target.value)} disabled={busy} /><span>Choose your own code. Everyone uses this same code.</span></label>
+      <div className="mm-discounts__fields"><label>Discount type<select value={draft.type} disabled={busy} onChange={event => update("type", event.target.value as DiscountDraft["type"])}><option value="percentage">Percentage off (%)</option><option value="amount">Rand amount off (R)</option></select></label>
+        <label>{draft.type === "percentage" ? "Percentage off" : "Rand amount off"}<input type="number" value={draft.value} required min="0.01" max={draft.type === "percentage" ? "99.99" : "100000"} step="0.01" inputMode="decimal" disabled={busy} onChange={event => update("value", event.target.value)} /></label></div>
+      <label>Applies to<select disabled={busy} value={scope} onChange={event => {
+        setScope(event.target.value); if (event.target.value === "all") update("productIds", []);
+      }}><option value="all">All products</option><option value="selected" disabled={!products.length}>Selected products</option></select></label>
+      {scope === "selected" ? <fieldset className="mm-discounts__products"><legend>Select products</legend>{products.map(product => <label key={product.id}><input type="checkbox" checked={draft.productIds.includes(product.id)} disabled={busy} onChange={event => update("productIds", event.target.checked ? [...draft.productIds, product.id] : draft.productIds.filter(id => id !== product.id))} />{product.name}</label>)}</fieldset> : null}
+      <div className="mm-discounts__active"><div><strong>Discount active</strong><p>{draft.active ? "Customers can use it while its dates are valid." : "Off. Customers cannot use this code yet."}</p></div>
+        <button className="mm-discounts__switch" type="button" role="switch" aria-label="Discount active" aria-checked={draft.active} disabled={busy} onClick={() => update("active", !draft.active)}><span aria-hidden="true" />{draft.active ? "ON" : "OFF"}</button></div>
+      <details className="mm-discounts__options"><summary>More options</summary><div className="mm-discounts__fields"><label>Start date and time<input type="datetime-local" value={localDiscountDate(draft.startsAt)} disabled={busy} onChange={event => update("startsAt", event.target.value ? new Date(event.target.value).toISOString() : null)} /></label>
+        <label>End date and time<input type="datetime-local" value={localDiscountDate(draft.endsAt)} disabled={busy} onChange={event => update("endsAt", event.target.value ? new Date(event.target.value).toISOString() : null)} /></label></div><p>Times use this device’s local time zone. Leave dates blank to control it manually.</p>
+        <label>Minimum product spend (R)<input type="number" min="0" max="100000" step="0.01" inputMode="decimal" value={draft.minimumSpend} disabled={busy} onChange={event => update("minimumSpend", event.target.value)} /></label></details>
+      <p className="mm-discounts__helper">One code per order. Discounts apply to products, not the delivery fee. Free delivery still qualifies at R1,200 before discounts. Already-started payments and paid orders keep their saved discount.</p>
+      <footer><button type="submit" className="mm-discounts__primary" disabled={busy}>{busy ? "Saving…" : "Save discount"}</button><button type="button" className="mm-discounts__secondary" disabled={busy} onClick={closeEditor}>Cancel</button></footer>
+    </form> : loading ? <p role="status">Loading discounts…</p> : ready && !records.length ? <div className="mm-discounts__empty"><h2>No discounts yet</h2><p>When you’re ready to run a special, choose Create discount.</p><span>No codes or specials are active.</span></div>
+      : <div className="mm-discounts__list">{records.map(record => <article key={record.id} className="mm-discounts__row"><div><h2>{record.code}</h2><p>{record.type === "percentage" ? `${record.value}% off` : `${discountMoney.format(record.value)} off`} · {record.productIds.length ? "Selected products" : "All products"}</p>
+        {discountStatus(record) === "Scheduled" || discountStatus(record) === "Expired" ? <span>{discountStatus(record)}{record.endsAt ? ` · Ends ${new Date(record.endsAt).toLocaleString("en-ZA")}` : ""}</span> : null}</div><div className="mm-discounts__actions">
+        <button type="button" className="mm-discounts__secondary" disabled={busy} onClick={() => editDiscount(record)}>Edit<span className="mm-discounts__sr"> {record.code}</span></button>
+        <button type="button" className="mm-discounts__switch" role="switch" aria-label={`${record.code} active`} aria-checked={record.active} disabled={busy} onClick={() => void persistDiscount({ ...record, expectedRevision: record.revision, value: String(record.value), minimumSpend: String(record.minimumSpend), active: !record.active })}><span aria-hidden="true" />{record.active ? "ON" : "OFF"}</button>
+      </div></article>)}</div>}
+  </section>;
+}
+
+const discountStyles = `
+.mm-discounts h2{font-family:Jost,Arial,sans-serif}.mm-discounts .mm-discounts__primary{background:#536047}.mm-discounts .mm-discounts__primary:hover{background:#405339}
+.mm-discounts{position:relative;box-sizing:border-box;color:var(--mm-ink,#302a24);font:16px/1.5 Jost,Arial,sans-serif;width:100%;container-type:inline-size}
+.mm-discounts *{box-sizing:border-box}.mm-discounts button,.mm-discounts input,.mm-discounts select{font:inherit;color:inherit}
+.mm-discounts button{cursor:pointer;transition:background .15s,opacity .15s}.mm-discounts button:disabled{cursor:not-allowed;opacity:.55}
+.mm-discounts button:focus-visible,.mm-discounts input:focus-visible,.mm-discounts select:focus-visible,.mm-discounts summary:focus-visible{outline:2px solid var(--mm-ink,#302a24);outline-offset:3px}
+.mm-discounts__header{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:28px}.mm-discounts__eyebrow{font-size:11px;letter-spacing:.15em;margin:0 0 12px;color:var(--mm-muted,#746d65)}
+.mm-discounts h1{font:400 38px/1.15 Montserrat,Arial,sans-serif;margin:0 0 12px}.mm-discounts h2{font-size:22px;font-weight:500;margin:0 0 8px}.mm-discounts p{margin:0;color:var(--mm-muted,#746d65)}
+.mm-discounts__primary,.mm-discounts__secondary{min-height:46px;padding:10px 20px;border:1px solid var(--mm-border,#a69e95);border-radius:3px;white-space:nowrap}.mm-discounts__primary{background:var(--mm-sage,#738063);color:#fff!important;border-color:transparent}.mm-discounts__primary:hover{background:#536047}.mm-discounts__secondary{background:transparent}.mm-discounts__secondary:hover{background:var(--mm-surface,#eeeae6)}
+.mm-discounts__review,.mm-discounts__notice,.mm-discounts__error{margin:0 0 24px!important;padding:12px 16px;border:1px solid var(--mm-border,#a69e95);font-size:14px}.mm-discounts__error{color:#7a352b;background:#f5e6e1}.mm-discounts__error button{margin-left:16px}.mm-discounts__notice{color:#405339}
+.mm-discounts__empty{padding:56px 28px;text-align:center;border:1px solid var(--mm-border,#a69e95);border-radius:4px;background:var(--mm-surface,#eeeae6)}.mm-discounts__empty span{display:block;margin-top:16px;color:var(--mm-muted,#746d65);font-size:14px}
+.mm-discounts__form{max-width:760px;border:1px solid var(--mm-border,#a69e95);padding:28px;background:var(--mm-surface,#eeeae6);border-radius:4px;display:grid;gap:24px}.mm-discounts__form label{display:grid;gap:8px;font-size:15px;font-weight:500}.mm-discounts__form label>span,.mm-discounts__helper{font-size:13px;font-weight:400;color:var(--mm-muted,#746d65)}
+.mm-discounts__form input:not([type=checkbox]),.mm-discounts__form select{width:100%;min-width:0;min-height:46px;padding:10px 12px;border:1px solid var(--mm-border,#a69e95);border-radius:3px;background:#faf8f5}.mm-discounts__fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.mm-discounts__active{display:flex;justify-content:space-between;align-items:center;gap:20px}.mm-discounts__active p{font-size:14px}.mm-discounts__switch{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-width:92px;min-height:44px;padding:8px 12px;border:1px solid var(--mm-border,#a69e95);border-radius:30px;background:#e2ded9;font-size:13px!important;font-weight:600!important;flex-shrink:0}.mm-discounts__switch[aria-checked=true]{background:#536047;border-color:#536047;color:#fff}.mm-discounts__switch>span{width:15px;height:15px;background:currentColor;border-radius:50%;opacity:.85}
+.mm-discounts__options{border-top:1px solid var(--mm-border,#a69e95);padding-top:18px}.mm-discounts__options summary{cursor:pointer}.mm-discounts__options[open] .mm-discounts__fields{margin-top:18px}.mm-discounts__options p{font-size:13px;margin:12px 0 18px}.mm-discounts__form footer{display:flex;gap:12px;flex-wrap:wrap}.mm-discounts__products{padding:16px;border:1px solid var(--mm-border,#a69e95)}.mm-discounts__products label{display:flex;align-items:center;margin:8px 0}.mm-discounts__products input{width:18px;height:18px;accent-color:#536047}
+.mm-discounts__list{display:grid;gap:16px}.mm-discounts__row{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:24px;border:1px solid var(--mm-border,#a69e95);border-radius:4px;background:var(--mm-surface,#eeeae6)}.mm-discounts__row h2{overflow-wrap:anywhere}.mm-discounts__row span{font-size:13px;color:var(--mm-muted,#746d65)}.mm-discounts__actions{display:flex;gap:12px;flex-shrink:0}.mm-discounts__sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@container(max-width:600px){.mm-discounts__header{align-items:flex-start;flex-direction:column;gap:16px}.mm-discounts h1{font-size:30px}.mm-discounts__form{padding:20px}.mm-discounts__fields{grid-template-columns:1fr;gap:20px}.mm-discounts__row{align-items:flex-start;flex-direction:column;padding:20px;gap:18px}.mm-discounts__actions{width:100%;justify-content:space-between}.mm-discounts__empty{padding:36px 20px}}
+`;
+
+// END GENERATED DISCOUNT MANAGER

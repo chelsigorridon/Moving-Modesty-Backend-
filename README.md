@@ -2,13 +2,13 @@
 
 The administration portal for Moving Modesty. It is a Next.js application designed for Vercel, with Neon Postgres for durable data and Resend for transactional customer email.
 
-The customer-facing site and admin interface live in the connected Framer project. This repository is the secure Vercel API layer; it keeps Neon, authentication, and Resend credentials out of Framer. Product content and collection items are managed directly in Framer CMS and are intentionally independent from the admin portal.
+The customer-facing site and admin interface live in the connected Framer project. This repository is the secure Vercel API layer; it keeps Neon, authentication, and Resend credentials out of Framer. The authenticated admin Products editor saves drafts in Neon and explicitly publishes product content to Framer CMS through a private server-only connection. Direct CMS edits are conflict-checked rather than silently imported into checkout.
 
 ## Phase 1 and 2 architecture
 
 - One Framer admin portal for order management
 - Legacy Vercel dashboard pages redirect to the Framer admin
-- Products are created and edited only in Framer CMS
+- Products are managed in the admin Products editor and published to Framer CMS
 - Stable CMS checkout SKUs for every product colour and size
 - Idempotent checkout order creation after customer details
 - Order updates through delivery/collection and address steps
@@ -25,7 +25,7 @@ The customer-facing site and admin interface live in the connected Framer projec
 Checkout pricing is enforced by the backend in `lib/shipping/policy.ts`:
 
 - nationwide door delivery: R99
-- free delivery for merchandise subtotals of R1500 or more
+- free delivery for merchandise subtotals of R1200 or more
 - local collection: no delivery fee
 
 Bob Go support is isolated under `lib/integrations/bobgo/` and shipment state is stored separately from orders in Neon. Collection orders do not create a shipment. The Framer admin order panel now provides a manual quote → review → confirm booking → waybill workflow for paid delivery orders marked Ready. The API key never goes to Framer. Quotes use the configured locker as origin and the customer's door address as destination; only courier services actually returned by Bob Go can be booked.
@@ -34,7 +34,7 @@ The public Constantia Emporium Bob Box listing is a human-facing reference only;
 
 Enable Production with `BOBGO_ENVIRONMENT=production`, the live API token, `BOBGO_INTEGRATION_ENABLED=true`, sender contacts and verified `BOBGO_PICKUP_POINT_LOCATION_ID` / `BOBGO_PICKUP_POINT_PROVIDER_SLUG`. Constantia Emporium was verified as API location `1156`, provider `ie`; each quote rechecks location availability for the packed parcel. Existing migration `0002_past_lester.sql` provides the shipment table; this workflow needs no additional migration. Keep Preview booking disabled, especially when it shares Production's Neon database.
 
-The admin's **Check courier connection (no booking)** performs a read-only live API check. Configuration alone is not proof that the API is reachable. A real booking can charge Bob Go credit; Zarina must approve the displayed service, quote and parcel details. Extra declared-value cover is requested by default and can only be turned off explicitly after reviewing courier terms. Final courier charges may differ from a quote. Customer delivery pricing remains R99/free at R1500 regardless of the courier quote.
+The admin's **Check courier connection (no booking)** performs a read-only live API check. Configuration alone is not proof that the API is reachable. A real booking can charge Bob Go credit; Zarina must approve the displayed service, quote and parcel details. Extra declared-value cover is requested by default and can only be turned off explicitly after reviewing courier terms. Final courier charges may differ from a quote. Customer delivery pricing remains R99/free at R1200 regardless of the courier quote.
 
 Before submitting a shipment, a transaction locks the order and commits a durable Booking state with a unique reconciliation reference. Unknown responses, timeouts and Bob Go's `failed-will-retry` remain locked to prevent duplicate waybills. Use **Check shipment status**, or reconcile in Bob Go with the website administrator if the reference cannot be matched safely. Shipment records are environment-tagged so Sandbox cannot overwrite live bookings. Waybills are fetched on demand because download URLs expire. Booking does not automatically dispatch or email the customer: mark Dispatched only after locker drop-off. Tracking opens Bob Go's official tracker and displays the waybill number to enter. Automatic tracking webhooks and courier cancellation are not implemented in this flow.
 
@@ -142,6 +142,147 @@ Apply migration `0003_slippery_pet_avengers.sql` before enabling PayFast. Test w
 - `PAYFAST_PASSPHRASE`
 - `PAYFAST_SOURCE_IP_VALIDATION` (keep `true` in production)
 
-No Framer API credentials are required by the Vercel backend. Editing a product in Framer CMS does not import it into Neon, and admin API actions do not create, update, or publish CMS collection items.
+The original backend did not need Framer API credentials. The current live product-management feature requires a private project-specific `FRAMER_API_KEY` in Vercel; it is never exposed in browser properties. Editing CMS directly does not automatically import it into Neon. The isolated local TEST connection below is historical and separate from the live Products editor.
+
+## Reversible product-management trial
+
+Branch `codex/product-catalogue-trial` adds a local, clearly labelled product editor at `/product-trial`. This route is available only in development and returns 404 in production. Its Amina/Hawa examples are copies of the current checkout catalogue, not an import of the complete CMS photo galleries or descriptions. Demo edits and photo previews stay in the browser window; refreshing discards them. No demo action calls checkout, payments, courier bookings, emails or Framer.
+
+Migration `0008` adds only `catalogue_drafts`. It was subsequently applied alongside `0009` for the live product-management release below; the trial API remains disabled in production. The authenticated `/api/admin/catalogue` draft API is disabled by default; enable `PRODUCT_CATALOGUE_TRIAL_ENABLED=true` only in an isolated Preview database after applying the migration there. It validates prices, quantities, colours, sizes and HTTPS image addresses, generates stable variant codes, and rejects stale saves, duplicate page addresses and cross-product identifier collisions. Draft revisions are entirely separate from existing live products/inventory/orders.
+
+The demo now uses three steps: **Product details → Colours & photos → Preview**, ending with **Save demo product**. Shared sizes/prices carry across to new colours, deliberately different prices are retained, and the first colour photo becomes the collection image automatically. Existing products open three collapsed sections for details, photos and stock, with a separate preview and **Save demo changes**. Page addresses, display order and technical publishing controls are hidden. Friendly errors appear beside the relevant fields. These changes do not enable live publication.
+
+The editor supports draft content, per-colour photos, per-size price/availability/stock inputs, and illustrative product/homepage previews. Its connected mode saves drafts to the database; permanent photo uploading is not connected yet. Live publication is intentionally disabled and is never reported as successful. This is the first trial stage, **not** a completed CMS migration or a replacement checkout catalogue.
+
+### Permanent Framer connection proof (read-only)
+
+`npm run framer:check` uses the official `framer-api` SDK, not the agent/editor session. Put `FRAMER_CATALOGUE_PROBE_ENABLED=true`, the project URL from `.env.example`, and a private project-specific `FRAMER_API_KEY` in the ignored `.env.local` file. Create the key yourself in the Moving Modesty project's Site Settings → General → Server API; never paste it into chat, commit it, or expose it in a browser property. Production execution is blocked.
+
+The check connects, reads only `CatalogueTrial` and `CatalogueTrialColours`, verifies the TEST Noor record, colour references, expected field types and draft status, then disconnects. It prints safe diagnostics and fails if the isolated test cannot be verified. It does not publish, update CMS records, change draft status, access Neon, send emails, or touch stock/orders/payments. A successful read is **not** proof of automatic CMS saving, product-page publication or checkout for new variants. Those remain separate rollout gates.
+
+### Connected TEST draft saving (local only)
+
+After the read-only connection passes, `FRAMER_CATALOGUE_DRAFT_SAVE_ENABLED=true` switches the existing local `/product-trial` editor to **TEST Noor only**. The first connected step edits name, description and tagline; images, prices, colours, sizes, stock and collection placement stay read-only. The previous browser-only add-product demo remains available when this flag is false. Do not enable this flag in Vercel: both Production and Preview are explicitly blocked.
+
+`GET/POST /api/product-trial/framer` requires loopback Host, matching local port, same browser origin for writes, JSON and the development-only opt-in. Next.js may use `localhost` internally while the browser uses `127.0.0.1`; both must be loopback. Add only the exact local development origin to `API_ALLOWED_ORIGINS` in ignored `.env.development.local` (currently `http://127.0.0.1:3012,http://localhost:3012`). No production origin rules or admin authentication routes are changed.
+
+The server key never enters the client. The server pins the verified project and isolated collections, checks field types and references, requires the exact three expected records to remain drafts, and permits only the fixed TEST family item’s three text fields. Each write explicitly preserves `draft: true`: the real Server API cleared the draft flag when it was omitted, which the read-back check detected during testing. It never allows the browser to change that flag or slug, add/delete records, publish, touch Neon, send mail or call checkout. `TEST` and `UNPUBLISHED TEST` labels are required. The CMS snapshot version rejects stale editor saves; a single-instance save lock prevents overlapping local saves. Framer offers no cross-system transaction/conditional-write guarantee here, so this is not yet a production concurrency design.
+
+Success requires reading the saved values back from Framer. Timeout, uncertain write outcome, failed verification or session-close failure leaves edits in the editor and asks for a reload instead of claiming success or automatically retrying. If CMS was edited in another window, preserve those edits and reload before retrying.
+
+Verified on 8 October 2026: a real local API save and a browser **Save draft** submission persisted the TEST description. Reopening the editor and a fresh Server API read returned the saved text; the product, both colours and both trial pages remained drafts. The first omitted-draft failure was repaired without publication. See `fixtures/catalogue-test-result.json` for the proof and remaining rollout limits. The suite passed 147 tests, with TypeScript, targeted lint and the production build clean.
+
+### Published storefront proof (temporary TEST)
+
+Later on 8 October 2026, the user explicitly approved temporarily publishing the **TEST — NOT FOR SALE** card and product page. Version `3177a496d` adds one CMS-backed TEST card inside the actual homepage collection at `https://holistic-brand-492217.framer.app/#collection`, linking to `/catalogue-trial/test-noor-active-hijab`. Existing Amina/Hawa data, cards and page links were preserved. The standalone `/catalogue-trial` collection page remains a draft, and the product page is no-index.
+
+The published card link and a full product-page reload were verified, with homepage and product-page layouts checked at desktop (1280px), tablet (900px) and mobile (390px). The product shows two referenced colours, illustrative sizes and clearly labelled existing Amina photographs as placeholders. Purchasing is disabled. No orders, Neon changes, stock changes, emails, payments or courier bookings were performed.
+
+Collection placement rule (user confirmed): preserve Amina on the left and Hawa on the right, then fill subsequent product rows **left to right**, starting underneath Amina. Do not use masonry for this collection: even small card-height differences can send the third card to the right. Framer version `6661819ee` disables masonry on the desktop/tablet Products grid and makes the CatalogueTrial list span a full row with its own two-column, non-masonry grid (40px desktop / 32px tablet gaps). Both lists remain vertical stacks on mobile. The single TEST card retains the original card width and appears on the left. Carry this same row-major rule into the eventual unified product list; this layout change does not enable the production Add product workflow.
+
+Product-page design follow-up: Framer version `e88bf8c5c` matches the CatalogueTrial CMS detail template to the existing Amina/Hawa introduction, card borders/padding, name/price presets and responsive spacing. Desktop uses their 648px two-column grid, 300px cards, 48px gap and 276px square photos. The existing `CMSProductCarousel` renders the CMS cover image; a single photo correctly has no gallery arrows/dots. `framer/CatalogueTrialPurchasePreview.tsx` mirrors the existing size field and button styling but is permanently non-purchasable: its only interaction is selecting an illustrative CMS size in local React state. It has no SKU, cart handler, network request or checkout link. The TEST disclaimer, no-index setting and disabled local draft writer remain intact. Framer type checking and publish diagnostics were clean. Published desktop measurements and the Small → Large selection were checked; tablet/mobile Framer breakpoint screenshots were reviewed. The browser viewport override did not resize the live browser during this follow-up, so no new live mobile-browser verification is claimed. Existing Amina/Hawa pages, Home, shared layout, CMS records and backend were not changed. Product-specific details and wearing guides are not duplicated into the TEST page.
+
+Historical public-test removal: at the user's request, version `afb8a505e` hid TEST Noor and returned its records/pages to draft, while preserving them for that trial. The homepage had only Amina/Hawa collection links, and the old TEST URL showed 404. The later two-collection consolidation removed those unused native test records/pages after backup. Earlier trial screenshots are historical proof, not the current live state.
+
+`FRAMER_CATALOGUE_DRAFT_SAVE_ENABLED` remains **false** locally. Do not automatically re-enable the local writer or republish the retained TEST records.
+
+### Live product management
+
+The authenticated Framer `/admin/products` portal now embeds the same simple three-step editor. `PRODUCT_MANAGEMENT_ENABLED=true` activates `/api/admin/product-catalogue`, permanent photo uploads, safe draft saving and explicit publication. Migrations `0008` and `0009` have been applied to the linked production database; Amina and Hawa were imported with all seven colour cards, 11 size variants and existing checkout SKU aliases preserved.
+
+Neon `catalogue_products.document` stores private drafts; `published_document` and real `product_variants` power checkout. Saving a draft does not change saleable prices, quantities or CMS content. Publishing updates the consolidated Products CMS collection and the shared `/collection/:slug` page template, then commits checkout prices and availability. Existing `/amina` and `/hawa` remain in place. Homepage cards use the existing collection list and family order, not a separate demo section.
+
+Publishing rejects stale revisions, inventory changes and direct conflicting CMS edits. It will not publish unrelated pending Framer work. An uncertain publication pauses checkout for that product and records `needs_review`; support must reconcile CMS and inventory before releasing it. Do not manually clear that state without checking both systems. Framer credentials remain server-only. No automatic emails, payments or waybill bookings are triggered by product edits.
+
+Existing zero-stock records were marked **not yet counted** before this feature. Their unverified state is preserved rather than inventing quantities or unexpectedly disabling the store. Entering a real stock count enables enforced reservations and one-time deductions after verified PayFast payment. New variants require stock quantities and enforce zero-stock availability immediately. New parcel combinations still require verified package measurements before courier booking.
+
+`node scripts/build-framer-product-editor.mjs` bundles the shared editor into the single-file Framer component. `scripts/manage-live-catalogue.mjs --migrate --import` performs the scoped additive setup using ignored local credentials; it does not publish products or submit orders. The obsolete TEST CMS collections/pages were removed during the backed-up consolidation below; the local trial source remains historical, not a live publishing path.
+
+### Two-collection CMS consolidation — 12 October 2026
+
+The live CMS now has exactly **Products** and **Customer Reviews**. Products retains the seven original colour records and contains two additional page-information records for Amina/Hawa. `Is Product Page=true` identifies page information; colour/homepage lists explicitly exclude it. Shared page fields live on these information records, while colour images, prices and checkout SKU aliases retain their existing records. Do not recreate ProductCatalogue or the two trial collections by default.
+
+Both existing detail templates now use Products: `/products/:slug` for individual colours and `/collection/:slug` for product families. Existing Home, `/amina`, `/hawa`, product URLs, responsive geometry and typography were preserved. Unlinked wrong-role detail URLs are no-index. The unused hidden shop and TEST draft pages were removed; no real product page was removed.
+
+The backend bridge supports `metadata.cmsLayout="products-v1"`, separates information records from purchase records, and retains conflict/preflight protections. A guarded one-time reconciliation changed only Amina/Hawa's CMS mapping metadata in Neon, not documents, revisions, prices, stock, availability or orders. Original CMS/page and catalogue/inventory backups plus the post-migration snapshot are in ignored `.tmp/cms-consolidation-20261012/`; they must not be committed. `scripts/consolidate-cms-metadata.mjs` validates those safeguards and requires explicit `--reconcile` for writes. It is an operational migration tool, not a routine product-management command.
+
+Framer production version `bfca63155` and backend deployment `dpl_6wdeDi6eoVPwj68AFYc9v7LHrysH` were verified. All 174 automated tests, TypeScript, targeted lint and the isolated production build passed. Home/Amina/Hawa were compared at 1280/820/390px; original family/colour URLs and fresh authenticated Products loading were checked without submitting orders, sending emails, taking payments or booking couriers. The production dependency audit reported zero vulnerabilities.
+
+Remaining operational setup: Zarina must reconcile real stock counts rather than relying on legacy uncounted quantities, and new product combinations require verified parcel measurements before courier booking. Keep existing Amina/Hawa paths, colour slugs and legacy checkout SKUs. Do not invent stock or substitute generated trial identifiers. The live editor, imports, uploads, CMS publication, checkout integration and preflight/concurrency protections described above supersede the original trial rollout gates.
+
+Rollback of the local editor: keep its trial feature flags disabled; saved Neon trial drafts remain separate. Native TEST collections/pages no longer exist in the current CMS. If an explicit recovery is requested, use the migration backups and review dependencies before restoring anything; do not recreate extra collections on the Basic plan automatically. No checkout rollback was required for removal of the public TEST proof.
 
 After deploying, paste the Vercel deployment URL into the **Vercel API** property on each `AdminPortal` instance in Framer.
+
+### Discounts — live rollout (9 October 2026)
+
+`/discount-review` is a development-only, isolated layout review. It starts empty,
+uses the shared Discounts editor, and keeps edits in React memory only. Refreshing
+removes its sample codes. Its customer checkout preview uses the real product
+discount calculation but never contacts Neon, PayFast, Framer or Resend. It returns
+404 outside development. It is not the live admin portal.
+
+The implementation adds authenticated `/api/admin/discounts`, a read-only public
+`/api/checkout/discount` quote, and server-validated discount snapshots on orders.
+Owners/managers can create, rename, edit and switch a shared code ON/OFF. New
+discounts default OFF with no predefined campaign/code/value. Optional dates,
+minimum spend and selected products are supported. One code applies per order;
+product prices and delivery charges are separate. The R1,200 free-delivery
+threshold uses the product subtotal before discounts. Zero-total/free-product
+checkouts are deliberately rejected because this workflow requires PayFast.
+
+Migration `0010_glamorous_cargill.sql` is additive: discount rules and change
+history, plus a default zero discount and nullable snapshot on existing orders.
+It does not create any discount codes. Payment-start revalidates availability and
+the saved amount. A submitted payment keeps its snapshot for retries even if
+Zarina later disables/renames the code; changed checkout contents require a new
+checkout. Paid/closed orders cannot be rewritten. Order details, recovery and
+payment emails use the saved snapshot, not the current editable promotion.
+Existing hosted Resend template variables are reused, so no unapproved template
+change or live email is needed for this feature.
+
+The approved additive migration 0010 is applied in production Neon, with all 11
+migration hashes verified. `DISCOUNTS_ENABLED=true` is set in Vercel Production.
+Final verification found zero discount codes, zero active codes and the same six
+existing orders. No order, payment, email or courier booking was created.
+
+The backend was deployed from the explicit scoped bundle prepared by
+`scripts/prepare-discounts-release.ps1`, based on Git HEAD plus the reviewed
+Discounts files and dependencies already needed by the live product editor.
+Unrelated product-trial routes, design assets and drafts were not deployed.
+The final production deployment is `dpl_8fP1Y7RaEVaxnrhCNLuqKMQsrBmn` at
+`https://movingmodesty.vercel.app`. This rollout did not commit or push Git changes.
+
+Framer production version `3fc18b11f` includes `/admin/discounts`, the shared admin
+navigation link and the checkout Discounts control on desktop/tablet/mobile.
+`AdminPortal`, `CheckoutOrderSummary` and `CheckoutSlider` were uploaded and
+type-checked. An initial live loading failure revealed an unnecessary cross-site
+cookie request; the shared manager now uses `credentials: "same-origin"` and the
+existing Framer bearer session, without broadening CORS. A regression test covers
+GET and POST authentication. The live authenticated page loads successfully,
+starts empty, opens a blank OFF form, and is accessible from the responsive menu.
+
+`node scripts/build-framer-discounts.mjs` keeps the shared review/Framer editor
+in sync. Leave the real list empty unless Zarina deliberately creates a code.
+Turning the feature flag off rejects new discount applications but does not
+change an already submitted payment's amount.
+
+Local verification passed 157 tests, targeted ESLint, TypeScript and the production
+build. A OneDrive lock prevented rebuilding the existing `.next` cache; the final
+build used `MM_DISCOUNT_REVIEW_BUILD=true` to put output in the ignored
+`.tmp/discount-review-build` directory instead. Normal/Vercel builds keep `.next`.
+The compiled review page was verified as a 404 in production. Desktop, 820px
+tablet and 390px mobile layouts were checked, including the mobile Menu, blank
+OFF form and absence of horizontal overflow. All 108 scoped release tests and
+the production build also pass with the approved Next.js/eslint-config-next 16.3.8
+security patch. `npm audit --omit=dev` reports zero known production dependency
+vulnerabilities; development-tool advisories remain outside this patch's scope.
+Live checks confirm the admin API rejects unauthenticated access, CORS permits
+the expected storefront origin without a wildcard, existing Amina pricing still loads, and an
+unknown code produces an honest validation error without changing the cart total.
+The customer code field was checked at desktop, 820px tablet and 390px mobile;
+mobile/tablet customers open the order summary to access it. The temporary added
+cart item was removed, preserving the original basket. Live code creation and
+actual payment settlement still require a deliberate user-led test. Repository-wide
+lint still reports four pre-existing CommonJS-import errors in the unrelated
+logo-tracing script; discount changes pass their targeted lint check.

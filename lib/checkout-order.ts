@@ -12,8 +12,9 @@ import {
   payments,
   shipments,
 } from "./db/schema";
-import { resolveCheckoutItem, type CheckoutCatalogueItem } from "./checkout-catalogue";
-import { calculateShippingQuote } from "./shipping/policy";
+import { type CheckoutCatalogueItem } from "./checkout-catalogue";
+import { resolveLiveCheckoutItem } from "./catalogue-storefront";
+import { checkoutPricing } from "./discounts";
 import { resolveVerifiedPackage } from "./shipping/packages";
 
 export { checkoutOrderSchema, type CheckoutOrderInput } from "./checkout-input";
@@ -21,24 +22,24 @@ export { checkoutOrderSchema, type CheckoutOrderInput } from "./checkout-input";
 export class CheckoutValidationError extends Error {}
 
 type ResolvedLine = {
-  product: CheckoutCatalogueItem;
+  product: CheckoutCatalogueItem & { variantId?: string; productId?: string };
   quantity: number;
   lineTotal: number;
 };
 
-function resolveLines(items: CheckoutOrderInput["items"]): ResolvedLine[] {
+async function resolveLines(items: CheckoutOrderInput["items"], excludeOrderId?: string): Promise<ResolvedLine[]> {
   const quantities = new Map<string, number>();
   for (const item of items) {
     const sku = item.sku.toUpperCase();
     quantities.set(sku, (quantities.get(sku) ?? 0) + item.quantity);
   }
 
-  return Array.from(quantities, ([sku, quantity]) => {
+  return Promise.all(Array.from(quantities, async ([sku, quantity]) => {
     if (quantity > 10) throw new CheckoutValidationError(`The quantity for ${sku} is too high.`);
-    const product = resolveCheckoutItem(sku);
-    if (!product) throw new CheckoutValidationError(`The product ${sku} is not available for checkout.`);
+    const product = await resolveLiveCheckoutItem(sku, undefined, excludeOrderId);
+    if (!product || !product.available || (product.stock !== null && product.stock < quantity)) throw new CheckoutValidationError(`The product ${sku} is not available in this quantity.`);
     return { product, quantity, lineTotal: product.price * quantity };
-  });
+  }));
 }
 
 function makeOrderNumber() {
@@ -47,11 +48,9 @@ function makeOrderNumber() {
 }
 
 export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = db) {
-  const lines = resolveLines(input.items);
   if (!database) throw new Error("DATABASE_URL is not configured.");
-  const subtotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
-  const quote = calculateShippingQuote(subtotal, input.fulfilmentMethod);
-  const { deliveryFee, total } = quote;
+  const [retry] = await database.select({ id: orders.id }).from(orders).where(eq(orders.checkoutToken, input.checkoutToken)).limit(1);
+  const lines = await resolveLines(input.items, retry?.id);
   const verifiedPackage = resolveVerifiedPackage(lines.map(({ product, quantity }) => ({
     sku: product.sku,
     quantity,
@@ -70,11 +69,15 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
     const [existingOrder] = await transaction
       .select({ id: orders.id, orderNumber: orders.orderNumber, deliveryAddressId: orders.deliveryAddressId,
         customerId: orders.customerId, customerSnapshot: orders.customerSnapshot, status: orders.status, paymentStatus: orders.paymentStatus,
-        deliveryMethod: orders.deliveryMethod, total: orders.total, archivedAt: orders.archivedAt })
+        deliveryMethod: orders.deliveryMethod, total: orders.total, archivedAt: orders.archivedAt,
+        discountSnapshot: orders.discountSnapshot, discountAmount: orders.discountAmount })
       .from(orders).where(eq(orders.checkoutToken, input.checkoutToken)).for("update").limit(1);
+    if (existingOrder) assertCheckoutEditable(existingOrder);
+    const [attempt] = existingOrder ? await transaction.select({ id: payments.id, providerStatus: payments.providerStatus }).from(payments).where(eq(payments.orderId, existingOrder.id)).limit(1) : [];
+    const quote = await checkoutPricing(input.discountCode, lines.map(line => ({ sku: line.product.sku, productId: line.product.productId, lineTotal: line.lineTotal })),
+      input.fulfilmentMethod, transaction, existingOrder?.discountSnapshot, Boolean(attempt && attempt.providerStatus !== "CHECKOUT_ERROR"), true);
+    const { subtotal, deliveryFee, total, discountAmount, discountSnapshot } = quote;
     if (existingOrder) {
-      assertCheckoutEditable(existingOrder);
-      const [attempt] = await transaction.select({ id: payments.id }).from(payments).where(eq(payments.orderId, existingOrder.id)).limit(1);
       if (attempt) {
         const [savedCustomer] = await transaction.select({ firstName: customers.firstName, lastName: customers.lastName,
           email: customers.email, phone: customers.phone }).from(customers).where(eq(customers.id, existingOrder.customerId!)).limit(1);
@@ -83,14 +86,14 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
         const savedItems = await transaction.select({ sku: orderItems.sku, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, existingOrder.id));
         const snapshotCustomer = existingOrder.customerSnapshot ?? savedCustomer;
         const saved = snapshotCustomer && checkoutContentSnapshot({ customer: snapshotCustomer, deliveryMethod: existingOrder.deliveryMethod,
-          address: savedAddress, items: savedItems, total: existingOrder.total });
+          address: savedAddress, items: savedItems, total: existingOrder.total, discountCode: existingOrder.discountSnapshot?.code });
         const requested = checkoutContentSnapshot({ customer: input.customer, deliveryMethod, address: input.address,
-          items: lines.map(line => ({ sku: line.product.sku, quantity: line.quantity })), total });
+          items: lines.map(line => ({ sku: line.product.sku, quantity: line.quantity })), total, discountCode: input.discountCode });
         if (!saved || !sameCheckoutContents(saved, requested)) {
           throw new CheckoutConflictError("Payment has already started for this order. Changed details need a new checkout.", "CHECKOUT_CHANGED");
         }
         // Idempotent retry: never rewrite a submitted payment's order snapshot.
-        return { orderNumber: existingOrder.orderNumber, created: false, paymentStatus: existingOrder.paymentStatus };
+        return { orderNumber: existingOrder.orderNumber, created: false, paymentStatus: existingOrder.paymentStatus, quote };
       }
     }
     const [customer] = await transaction
@@ -152,6 +155,8 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
           deliveryAddressId,
           deliveryMethod,
           subtotal: subtotal.toFixed(2),
+          discountAmount: discountAmount.toFixed(2),
+          discountSnapshot,
           deliveryFee: deliveryFee.toFixed(2),
           total: total.toFixed(2),
           updatedAt: new Date(),
@@ -172,6 +177,8 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
           paymentStatus: "pending",
           deliveryMethod,
           subtotal: subtotal.toFixed(2),
+          discountAmount: discountAmount.toFixed(2),
+          discountSnapshot,
           deliveryFee: deliveryFee.toFixed(2),
           total: total.toFixed(2),
         })
@@ -187,6 +194,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
 
     await transaction.insert(orderItems).values(lines.map(({ product, quantity, lineTotal }) => ({
       orderId: orderId!,
+      variantId: product.variantId,
       productName: product.name,
       variantName: `${product.colour} · ${product.size}`,
       sku: product.sku,
@@ -229,7 +237,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
       await transaction.delete(shipments).where(eq(shipments.orderId, orderId!));
     }
 
-    return { orderNumber: orderNumber!, created, paymentStatus: "pending" as const };
+    return { orderNumber: orderNumber!, created, paymentStatus: "pending" as const, quote };
   });
 
   return {
@@ -237,11 +245,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
     created: result.created,
     stage: input.stage,
     fulfilmentMethod: input.fulfilmentMethod,
-    subtotal,
-    deliveryFee,
-    total,
-    qualifiesForFreeDelivery: quote.qualifiesForFreeDelivery,
-    amountUntilFreeDelivery: quote.amountUntilFreeDelivery,
+    ...result.quote,
     paymentStatus: result.paymentStatus,
   };
 }

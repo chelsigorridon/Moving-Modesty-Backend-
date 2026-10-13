@@ -1,4 +1,5 @@
 import "server-only";
+import { deductPaidStock } from "@/lib/catalogue-storefront";
 
 import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "@/lib/db";
@@ -223,6 +224,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       .where(eq(orders.id, payment.orderId));
 
     if (nextStatus === "paid" && lockedOrder.status === "new") {
+      await deductPaidStock(transaction, payment.orderId);
       const [confirmed] = await transaction
         .update(orders)
         .set({ status: "confirmed", updatedAt: verifiedAt })

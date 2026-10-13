@@ -1,4 +1,6 @@
 import { boolean, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { CatalogueDocument } from "../catalogue-input";
+import type { DiscountSnapshot } from "../discount-input";
 
 export const adminRole = pgEnum("admin_role", ["owner", "manager", "fulfilment"]);
 export const productStatus = pgEnum("product_status", ["draft", "active", "archived"]);
@@ -57,6 +59,41 @@ export const products = pgTable("products", {
   ...timestamps,
 }, (table) => [uniqueIndex("products_slug_idx").on(table.slug)]);
 
+// Isolated drafts for the reversible product-management trial. The current
+// live products, inventory, order snapshots and checkout resolver are untouched.
+export const catalogueDrafts = pgTable("catalogue_drafts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  slug: text("slug").notNull(),
+  document: jsonb("document").$type<CatalogueDocument>().notNull(),
+  revision: integer("revision").default(1).notNull(),
+  ...timestamps,
+}, table => [uniqueIndex("catalogue_drafts_slug_idx").on(table.slug)]);
+
+export type CatalogueCmsMapping = {
+  familyCmsId?: string;
+  cmsHash?: string;
+  cmsLayout?: "legacy" | "products-v1";
+  colours: Record<string, { cmsId?: string; slug: string; baseSku: string }>;
+  variantSkus: Record<string, string>;
+  stockVersion?: string;
+};
+
+// Live management is separate from the retained, unpublished trial records.
+export const catalogueProducts = pgTable("catalogue_products", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  productId: uuid("product_id").notNull().references(() => products.id),
+  slug: text("slug").notNull(),
+  document: jsonb("document").$type<CatalogueDocument>().notNull(),
+  publishedDocument: jsonb("published_document").$type<CatalogueDocument>(),
+  metadata: jsonb("metadata").$type<CatalogueCmsMapping>().notNull(),
+  revision: integer("revision").default(1).notNull(),
+  publishedRevision: integer("published_revision").default(0).notNull(),
+  publicationState: text("publication_state").default("idle").notNull(),
+  publicationError: text("publication_error"),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  ...timestamps,
+}, table => [uniqueIndex("catalogue_products_slug_idx").on(table.slug)]);
+
 export const productVariants = pgTable("product_variants", {
   id: uuid("id").defaultRandom().primaryKey(),
   productId: uuid("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
@@ -82,6 +119,30 @@ export const inventoryMovements = pgTable("inventory_movements", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const discounts = pgTable("discounts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  code: text("code").notNull(),
+  type: text("type").notNull(),
+  value: numeric("value", { precision: 12, scale: 2 }).notNull(),
+  active: boolean("active").default(false).notNull(),
+  productIds: jsonb("product_ids").$type<string[]>().default([]).notNull(),
+  minimumSpend: numeric("minimum_spend", { precision: 12, scale: 2 }).default("0").notNull(),
+  startsAt: timestamp("starts_at", { withTimezone: true }),
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  revision: integer("revision").default(1).notNull(),
+  updatedBy: text("updated_by").notNull(),
+  ...timestamps,
+}, table => [uniqueIndex("discounts_code_idx").on(table.code)]);
+
+export const discountHistory = pgTable("discount_history", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  discountId: uuid("discount_id").notNull().references(() => discounts.id),
+  revision: integer("revision").notNull(),
+  snapshot: jsonb("snapshot").notNull(),
+  changedBy: text("changed_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderNumber: text("order_number").notNull(),
@@ -92,6 +153,8 @@ export const orders = pgTable("orders", {
   paymentStatus: paymentStatus("payment_status").default("pending").notNull(),
   deliveryMethod: deliveryMethod("delivery_method").default("to_be_confirmed").notNull(),
   subtotal: numeric("subtotal", { precision: 12, scale: 2 }).notNull(),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).default("0").notNull(),
+  discountSnapshot: jsonb("discount_snapshot").$type<DiscountSnapshot>(),
   deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }),
   total: numeric("total", { precision: 12, scale: 2 }).notNull(),
   courierName: text("courier_name"),

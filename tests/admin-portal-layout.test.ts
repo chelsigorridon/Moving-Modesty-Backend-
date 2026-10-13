@@ -12,6 +12,16 @@ const require = createRequire(import.meta.url);
 const compiled = ts.transpileModule(readFileSync(new URL("../framer/AdminPortal.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+
+test("bundled product editor keeps customer-facing labels out of identifier renaming", () => {
+  const portal = readFileSync(new URL("../framer/AdminPortal.tsx", import.meta.url), "utf8");
+  const generated = portal.slice(portal.indexOf("// BEGIN GENERATED PRODUCT EDITOR"));
+  assert.match(generated, /type CatalogueDraft =/);
+  assert.match(generated, /type CatalogueColour =/);
+  assert.match(generated, /"Draft"/);
+  assert.match(generated, /Colour names and their images/);
+  assert.doesNotMatch(generated, /"CatalogueDraft"|CatalogueColour names|CataloguePhoto uploaded/);
+});
 const componentExports: Record<string, React.ComponentType<Record<string, unknown>>> = {};
 runInNewContext(`${compiled}\nexports.OrdersView = OrdersView; exports.DashboardView = DashboardView; exports.DeliverySettings = DeliverySettings;`, {
   exports: componentExports,
@@ -99,7 +109,7 @@ test("Account opens delivery settings without adding an everyday courier button"
 });
 
 test("every admin page has one top-level responsive menu with all page destinations", () => {
-  for (const view of ["dashboard", "orders", "products"]) {
+  for (const view of ["dashboard", "orders", "products", "discounts"]) {
     const dom = new JSDOM(renderToStaticMarkup(React.createElement(componentExports.default, { view })));
     const doc = dom.window.document;
     const menu = doc.querySelector('.mm-admin__utilities .mm-admin__responsive-nav');
@@ -110,7 +120,7 @@ test("every admin page has one top-level responsive menu with all page destinati
     assert.equal(menu.querySelector('nav')?.hasAttribute("hidden"), true);
     assert.equal(doc.querySelectorAll('nav[aria-label="Admin navigation"]').length, 1);
     assert.deepEqual([...menu.querySelectorAll('nav a')].map(link => [link.textContent, link.getAttribute("href")]), [
-      ["Dashboard", "/admin"], ["Orders", "/admin/orders"], ["Products (CMS)", "/admin/products"],
+      ["Dashboard", "/admin"], ["Orders", "/admin/orders"], ["Products", "/admin/products"], ["Discounts", "/admin/discounts"],
     ]);
     assert.equal(menu.querySelector('a[aria-current="page"]')?.getAttribute("href"),
       view === "dashboard" ? "/admin" : `/admin/${view}`);
@@ -160,8 +170,75 @@ test("ready paid delivery has a prominent waybill action and separates customer 
   const dom = ordersDocument(order({ deliveryMethod: "Courier", deliveryFee: 99, workflow: { nextStatus: null },
     shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [] } }));
   assert.equal(dom.window.document.querySelector('[aria-label="Next step"] button')?.textContent, "Book waybill");
-  assert.match(dom.window.document.body.textContent || "", /Customer delivery fee:.*R\s*99/);
-  assert.match(dom.window.document.body.textContent || "", /separate from Zarina's courier cost/);
+  assert.match(dom.window.document.body.textContent || "", /Delivery paid by the customer:.*R\s*99/);
+  assert.match(dom.window.document.body.textContent || "", /Already included in the order total — not an extra charge/);
+  assert.match(dom.window.document.body.textContent || "", /separate Bob Go courier cost appears after you get a quote/);
+  assert.doesNotMatch(dom.window.document.body.textContent || "", /Customer delivery fee|Zarina's courier cost/);
+  dom.window.close();
+});
+
+test("free delivery wording does not imply a fixed R99 customer charge", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", subtotal: 1260, total: 1260, deliveryFee: 0,
+    shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [] } }));
+  const panel = dom.window.document.querySelector('[aria-label^="Book this order"] > section')!;
+  assert.match(panel.textContent || "", /Delivery paid by the customer:.*Free/);
+  assert.doesNotMatch(panel.textContent || "", /R\s*99|fixed R99/);
+  dom.window.close();
+});
+
+test("unpaid orders describe delivery as part of the order total without claiming payment", () => {
+  const dom = ordersDocument(order({ paymentStatus: "Pending payment", status: "New", deliveryMethod: "Courier", deliveryFee: 99,
+    workflow: { nextStatus: null, guidance: "Wait for payment." }, shipping: { status: "Not ready" } }));
+  assert.match(dom.window.document.body.textContent || "", /Delivery included in the customer's order total:.*R\s*99/);
+  assert.doesNotMatch(dom.window.document.body.textContent || "", /Delivery paid by the customer/);
+  dom.window.close();
+});
+
+test("courier preparation has one measurements confirmation and no optional extra-cover control", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", subtotal: 450, deliveryFee: 99,
+    shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [],
+      weightGrams: 412, lengthCm: 25, widthCm: 20.5, heightCm: 3.5 } }));
+  const panel = dom.window.document.querySelector('[aria-label^="Book this order"] > section')!;
+  assert.ok(panel);
+  assert.equal(panel.querySelectorAll('input[type="checkbox"]').length, 1);
+  assert.match(panel.textContent || "", /checked these packed measurements/);
+  assert.match(panel.textContent || "", /Standard courier liability only/);
+  assert.doesNotMatch(panel.textContent || "", /Request additional declared-value cover|cover for.*450/);
+  assert.equal(panel.querySelector('button')?.hasAttribute('disabled'), true);
+  dom.window.close();
+});
+
+test("the real quote click handler sends no additional cover and the backend resolves zero declared value", () => {
+  const source = readFileSync(new URL('../framer/AdminPortal.tsx', import.meta.url), 'utf8');
+  const handler = source.match(/onClick=\{\(\) => \{ setQuote\(null\); void run\("quote", (.*?)\) \}\}/)?.[1];
+  assert.ok(handler, 'Find the actual courier quote button payload');
+  const calls: Array<{ action: string; payload: { parcel: Record<string, number>; additionalCover: boolean } }> = [];
+  const click = new Function('parcel', 'run', 'setQuote', `return () => { setQuote(null); void run("quote", ${handler}); }`)(
+    { weightGrams: '412', lengthCm: '25', widthCm: '20.5', heightCm: '3.5' },
+    (action: string, payload: { parcel: Record<string, number>; additionalCover: boolean }) => calls.push({ action, payload }),
+    () => {},
+  );
+  click();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, 'quote');
+  assert.deepEqual(calls[0].payload, { parcel: { weightGrams: 412, lengthCm: 25, widthCm: 20.5, heightCm: 3.5 }, additionalCover: false });
+  const shipping = readFileSync(new URL('../lib/integrations/bobgo/shipping.ts', import.meta.url), 'utf8');
+  const expression = shipping.match(/const declaredValue = (.*);/)?.[1];
+  assert.ok(expression);
+  assert.equal(new Function('additionalCover', 'data', `return (${expression});`)(calls[0].payload.additionalCover, { order: { subtotal: '450.00' } }), 0);
+});
+
+test("already-booked waybills retain their status, print and tracking controls", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Dispatched",
+    shipping: { status: "Booked", senderLocationName: "Constantia Emporium", environment: "production", blockers: [],
+      waybillReference: "TEST-EXISTING", trackingUrl: "https://tracking.example.com/TEST-EXISTING" } }));
+  const panel = dom.window.document.querySelector('[aria-label^="Book this order"] > section')!;
+  assert.ok(panel);
+  assert.match(panel.textContent || "", /Booked/);
+  assert.match(panel.textContent || "", /Prepare printable waybill|Check shipment status/);
+  assert.equal(panel.querySelector('a[href="https://tracking.example.com/TEST-EXISTING"]')?.textContent, 'Open tracker (enter waybill number)');
+  assert.doesNotMatch(panel.textContent || "", /Get delivery quote|Request additional/);
+  assert.equal(panel.querySelector('input[type="checkbox"]'), null);
   dom.window.close();
 });
 

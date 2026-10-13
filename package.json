@@ -15,6 +15,7 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "framer:check": "node --experimental-strip-types scripts/check-framer-catalogue.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "auth:hash": "node scripts/hash-password.mjs"
@@ -22,8 +23,9 @@
   "dependencies": {
     "@neondatabase/serverless": "latest",
     "drizzle-orm": "latest",
+    "framer-api": "5.1.0",
     "lucide-react": "latest",
-    "next": "16.3.6",
+    "next": "16.3.8",
     "react": "latest",
     "react-dom": "latest",
     "resend": "latest",
@@ -37,7 +39,7 @@
     "@types/react-dom": "latest",
     "drizzle-kit": "latest",
     "eslint": "latest",
-    "eslint-config-next": "16.3.6",
+    "eslint-config-next": "16.3.8",
     "framer-motion": "^14.0.0",
     "jsdom": "^30.1.2",
     "typescript": "latest"

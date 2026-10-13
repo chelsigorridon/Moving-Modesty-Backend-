@@ -26,6 +26,7 @@ export async function POST(request: Request) {
       id: orders.id, orderNumber: orders.orderNumber, paymentStatus: orders.paymentStatus,
       status: orders.status, deliveryMethod: orders.deliveryMethod, deliveryAddressId: orders.deliveryAddressId,
       subtotal: orders.subtotal, deliveryFee: orders.deliveryFee, total: orders.total,
+      discountSnapshot: orders.discountSnapshot, discountAmount: orders.discountAmount,
       firstName: customers.firstName, lastName: customers.lastName, email: customers.email, phone: customers.phone,
       customerSnapshot: orders.customerSnapshot,
     }).from(orders).innerJoin(customers, eq(orders.customerId, customers.id))
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
       fulfilmentMethod: order.deliveryMethod === "courier" ? "delivery" : order.deliveryMethod,
       customer: { ...customer, phone: customer.phone ?? "" },
       address: address ?? null, items, subtotal: Number(order.subtotal), deliveryFee: Number(order.deliveryFee), total: Number(order.total),
+      discountSnapshot: order.discountSnapshot, discountAmount: Number(order.discountAmount),
     } });
   } catch (error) {
     const incident = await reportFailure(error, { operation: "checkout_recover" });

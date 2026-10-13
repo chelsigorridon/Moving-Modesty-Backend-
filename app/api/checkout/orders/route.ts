@@ -1,6 +1,7 @@
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { CheckoutValidationError, checkoutOrderSchema, upsertCheckoutOrder } from "@/lib/checkout-order";
 import { CheckoutConflictError } from "@/lib/checkout-safety";
+import { DiscountValidationError } from "@/lib/discount-input";
 import { reportFailure, resolveFailures } from "@/lib/monitoring";
 
 export function OPTIONS() {
@@ -21,12 +22,12 @@ export async function POST(request: Request) {
     await resolveFailures("checkout_save");
     return apiJson({ order });
   } catch (error) {
-    const expected = error instanceof CheckoutConflictError || error instanceof CheckoutValidationError;
+    const expected = error instanceof CheckoutConflictError || error instanceof CheckoutValidationError || error instanceof DiscountValidationError;
     const incident = expected ? null : await reportFailure(error, { operation: "checkout_save" });
     return apiJson(
       { error: expected && error instanceof Error ? error.message : "Your order could not be saved. Please try again shortly.", errorRef: incident?.reference,
         code: error instanceof CheckoutConflictError ? error.code : undefined },
-      { status: error instanceof CheckoutConflictError ? 409 : error instanceof CheckoutValidationError ? 400 : 503 },
+      { status: error instanceof CheckoutConflictError ? 409 : expected ? 400 : 503 },
     );
   }
 }

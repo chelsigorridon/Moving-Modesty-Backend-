@@ -1,0 +1,35 @@
+{
+  "name": "TEST Noor Active Hijab",
+  "slug": "test-noor-active-hijab",
+  "description": "Unpublished catalogue structure test. Existing Amina photographs are placeholders, not photographs of a new product. This item is not for sale.",
+  "category": "Active hijabs",
+  "tagline": "UNPUBLISHED TEST — NOT FOR SALE",
+  "homepageImage": {
+    "url": "https://framerusercontent.com/images/3J5Dcr1Y5v0kCYCmQKhGlGDEPD4.jpg",
+    "alt": "Existing Amina Lavender photograph used as a test placeholder"
+  },
+  "showOnHomepage": true,
+  "homepageOrder": 9999,
+  "colours": [
+    {
+      "id": "4e76e45c-a471-47b5-9392-cf0a7fbaf231",
+      "name": "Lavender",
+      "available": false,
+      "photos": [{ "url": "https://framerusercontent.com/images/3J5Dcr1Y5v0kCYCmQKhGlGDEPD4.jpg", "alt": "Amina Lavender placeholder for catalogue test" }],
+      "variants": [
+        { "id": "a47f9371-ef2d-46f8-9a09-3f6858e8379f", "size": "Small", "price": 450, "stock": 0, "available": false },
+        { "id": "9b042a1d-ef4f-481c-9eb6-1f8e51f44ea1", "size": "Large", "price": 450, "stock": 0, "available": false }
+      ]
+    },
+    {
+      "id": "99fe30d9-9537-4d50-862c-189a1710312a",
+      "name": "Black",
+      "available": false,
+      "photos": [{ "url": "https://framerusercontent.com/images/yTBnAmvzSKmhiXSLTuzL0Tr6iCg.png", "alt": "Amina Black placeholder for catalogue test" }],
+      "variants": [
+        { "id": "dbbd59ef-6aa1-4562-a186-1913180d90ae", "size": "Small", "price": 450, "stock": 0, "available": false },
+        { "id": "e9403bf9-a8c4-4e0d-b010-e4d7ed079ad1", "size": "Large", "price": 450, "stock": 0, "available": false }
+      ]
+    }
+  ]
+}

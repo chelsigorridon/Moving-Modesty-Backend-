@@ -43,6 +43,7 @@ export function checkoutContentSnapshot(input: {
   address?: { line1: string; line2?: string | null; suburb?: string | null; city: string; province: string; postalCode: string } | null;
   items: Array<{ sku: string; quantity: number }>;
   total: string | number;
+  discountCode?: string | null;
 }) {
   return {
     customer: { firstName: input.customer.firstName, lastName: input.customer.lastName,
@@ -54,5 +55,6 @@ export function checkoutContentSnapshot(input: {
     } : null,
     items: [...input.items].sort((a, b) => a.sku.localeCompare(b.sku)),
     total: Number(input.total).toFixed(2),
+    discountCode: input.discountCode?.trim().toUpperCase() || "",
   };
 }

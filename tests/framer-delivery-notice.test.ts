@@ -75,6 +75,15 @@ async function harness(options: { scrolled?: boolean; static?: boolean; blockedS
   };
 }
 
+test("delivery popup advertises free delivery from R1200", async () => {
+  const page = await harness({ scrolled: true });
+  try {
+    await page.expire();
+    assert.match(page.notice()?.textContent || "", /R1,200 & over/);
+    assert.doesNotMatch(page.notice()?.textContent || "", /R1,500/);
+  } finally { await page.close(); }
+});
+
 test("delivery popup waits ten seconds AND until the visitor scrolls past the hero", async () => {
   const page = await harness();
   try {

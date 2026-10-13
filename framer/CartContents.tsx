@@ -1,9 +1,11 @@
 
 import { addPropertyControls, ControlType, useIsStaticRenderer } from "framer"
-import { useEffect, useMemo, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 
 interface CartItem {
     id: string
+    sku?: string
+    productSlug?: string
     name: string
     colour: string
     size: string
@@ -25,6 +27,70 @@ interface Props {
 }
 
 const CART_KEY = "moving-modesty-cart-v1"
+
+interface AvailableVariant { sku: string; size: string; available: boolean; stock: number | null }
+interface StockCheck {
+    key: string
+    state: "loading" | "ready" | "error"
+    issues: Record<string, string>
+    limits: Record<string, number | null>
+}
+
+function cartKey(items: CartItem[]): string {
+    return JSON.stringify(items.map(item => [item.id, resolvedSku(item), item.productSlug, item.size, item.quantity]))
+}
+
+function resolvedSku(item: CartItem): string {
+    if (item.sku?.trim()) return item.sku.trim().toUpperCase()
+    // Keep baskets saved by the original purchase component compatible with
+    // the same legacy SKU identities already used by CheckoutSlider.
+    const identity = `${item.productSlug || ""} ${item.name || ""}`.toLowerCase()
+    const colour = String(item.colour || "").trim().toLowerCase()
+    const bases: Record<string, string> = identity.includes("amina")
+        ? { lavender: "AMINA-LAV", lilac: "AMINA-LIL", black: "AMINA-BLK" }
+        : identity.includes("hawa")
+            ? { black: "HAWA-BLK", pink: "HAWA-PNK", "soft pink": "HAWA-PNK", sage: "HAWA-SGE", grey: "HAWA-GRY", gray: "HAWA-GRY" } : {}
+    const size = String(item.size || "").trim().toLowerCase()
+    const suffix = size === "small" ? "S" : size === "large" ? "L" : size.includes("one size") ? "OS" : ""
+    return bases[colour] && suffix ? `${bases[colour]}-${suffix}` : ""
+}
+
+async function checkStock(items: CartItem[], signal: AbortSignal): Promise<Pick<StockCheck, "issues" | "limits">> {
+    const requests = new Map<string, Promise<AvailableVariant[]>>()
+    const issues: Record<string, string> = {}, limits: Record<string, number | null> = {}
+    await Promise.all(items.map(async item => {
+        const sku = resolvedSku(item)
+        const identity = String(item.productSlug || "").trim() || sku.replace(/-(?:S|L|OS)$/i, "")
+        if (!identity) {
+            issues[item.id] = "This item cannot be verified. Remove it and add it again from the product page."
+            return
+        }
+        if (!requests.has(identity)) requests.set(identity, fetch(
+            `https://movingmodesty.vercel.app/api/storefront/variants?base=${encodeURIComponent(identity)}`,
+            { cache: "no-store", signal }
+        ).then(async response => {
+            const data = await response.json()
+            if (!response.ok || !Array.isArray(data.variants)) throw new Error("Availability could not be checked.")
+            return data.variants as AvailableVariant[]
+        }))
+        const variants = await requests.get(identity)!
+        const variant = variants.find(value => sku ? value.sku === sku : value.size === item.size)
+        if (!variant || variant.available !== true || variant.stock === 0) {
+            issues[item.id] = "SOLD OUT — remove this item to continue."
+            return
+        }
+        const quantity = Number(item.quantity)
+        const totalQuantity = items.filter(value => sku ? resolvedSku(value) === sku : value.productSlug === item.productSlug && value.size === item.size)
+            .reduce((sum, value) => sum + Number(value.quantity || 0), 0)
+        limits[item.id] = variant.stock
+        if (!Number.isSafeInteger(quantity) || quantity < 1) issues[item.id] = "Invalid quantity — remove this item and add it again."
+        else if (totalQuantity > 10) issues[item.id] = "Choose no more than 10 of this item."
+        else if (variant.stock !== null && totalQuantity > variant.stock) {
+            issues[item.id] = `Only ${variant.stock} available — reduce the quantity to continue.`
+        }
+    }))
+    return { issues, limits }
+}
 
 const previewItem: CartItem = {
     id: "hawa-preview::small",
@@ -123,6 +189,15 @@ export default function CartContents(props: Props) {
     const isStatic = useIsStaticRenderer()
     const [items, setItems] = useState<CartItem[]>([])
     const displayedItems = isStatic ? [previewItem] : items
+    const itemsKey = cartKey(items)
+    const [stock, setStock] = useState<StockCheck>({ key: "", state: "loading", issues: {}, limits: {} })
+    const [stockRefresh, setStockRefresh] = useState(0)
+    const [checkingCheckout, setCheckingCheckout] = useState(false)
+    const checkSequence = useRef(0)
+    const checkoutController = useRef<AbortController | null>(null)
+    const mounted = useRef(false)
+    const stockCurrent = stock.key === itemsKey
+    const checkoutAllowed = isStatic || (stockCurrent && stock.state === "ready" && Object.keys(stock.issues).length === 0)
 
     useEffect(() => {
         if (isStatic || typeof window === "undefined") return
@@ -130,11 +205,66 @@ export default function CartContents(props: Props) {
         refresh()
         window.addEventListener("storage", refresh)
         window.addEventListener("moving-modesty-cart-updated", refresh as EventListener)
+        window.addEventListener("focus", refresh)
+        window.addEventListener("pageshow", refresh)
+        const onVisible = () => { if (document.visibilityState === "visible") refresh() }
+        document.addEventListener("visibilitychange", onVisible)
+        const interval = window.setInterval(() => {
+            if (document.visibilityState === "visible") refresh()
+        }, 30000)
         return () => {
             window.removeEventListener("storage", refresh)
             window.removeEventListener("moving-modesty-cart-updated", refresh as EventListener)
+            window.removeEventListener("focus", refresh)
+            window.removeEventListener("pageshow", refresh)
+            document.removeEventListener("visibilitychange", onVisible)
+            window.clearInterval(interval)
         }
     }, [isStatic])
+
+    useEffect(() => {
+        mounted.current = true
+        return () => { mounted.current = false; checkSequence.current++; checkoutController.current?.abort() }
+    }, [])
+
+    useEffect(() => {
+        if (isStatic) return
+        const sequence = ++checkSequence.current
+        const controller = new AbortController()
+        const timeout = window.setTimeout(() => controller.abort(), 15000)
+        setStock({ key: itemsKey, state: "loading", issues: {}, limits: {} })
+        checkStock(items, controller.signal).then(result => {
+            if (sequence === checkSequence.current) setStock({ key: itemsKey, state: "ready", ...result })
+        }).catch(() => {
+            if (sequence === checkSequence.current) setStock({ key: itemsKey, state: "error", issues: {}, limits: {} })
+        }).finally(() => window.clearTimeout(timeout))
+        return () => { controller.abort(); window.clearTimeout(timeout) }
+    }, [items, itemsKey, stockRefresh, isStatic])
+
+    async function proceedToCheckout() {
+        if (isStatic || checkingCheckout || !checkoutAllowed) return
+        setCheckingCheckout(true)
+        const current = readCart(), key = cartKey(current)
+        const sequence = ++checkSequence.current
+        const controller = new AbortController()
+        checkoutController.current = controller
+        const timeout = window.setTimeout(() => controller.abort(), 15000)
+        try {
+            const result = await checkStock(current, controller.signal)
+            if (!mounted.current || sequence !== checkSequence.current) return
+            if (cartKey(readCart()) !== key || key !== itemsKey) {
+                setItems(readCart())
+                return
+            }
+            setStock({ key, state: "ready", ...result })
+            if (current.length > 0 && Object.keys(result.issues).length === 0) window.location.assign(checkoutPath)
+        } catch {
+            if (mounted.current && sequence === checkSequence.current) setStock({ key, state: "error", issues: {}, limits: {} })
+        } finally {
+            window.clearTimeout(timeout)
+            if (mounted.current) setCheckingCheckout(false)
+        }
+    }
 
     const subtotal = useMemo(
         () => displayedItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0),
@@ -153,6 +283,7 @@ export default function CartContents(props: Props) {
     }
 
     function changeQuantity(id: string, delta: number) {
+        if (delta > 0 && (!checkoutAllowed || Number(items.find(item => item.id === id)?.quantity) >= (stock.limits[id] ?? 10))) return
         const next = items.map((item) =>
             item.id === id ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item
         )
@@ -180,6 +311,7 @@ export default function CartContents(props: Props) {
         ".mm-cart-button:hover,.mm-shop-button:hover{opacity:.92;transform:translateY(-1px)}",
         ".mm-cart-button:active,.mm-shop-button:active{opacity:1;transform:translateY(0) scale(.98);transition-duration:.16s}",
         ".mm-cart-button:focus-visible,.mm-shop-button:focus-visible,.mm-quantity-button:focus-visible,.mm-remove:focus-visible,.mm-text-link:focus-visible{outline:2px solid currentColor;outline-offset:3px}",
+        ".mm-cart-button:disabled,.mm-quantity-button:disabled{cursor:not-allowed!important;opacity:.65;transform:none}",
         ".mm-quantity-button:hover{background:rgba(51,43,37,.06)!important}",
         ".mm-remove:hover,.mm-text-link:hover{opacity:.68}",
         ".mm-reassurance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:72px;border-top:1px solid var(--mm-border);border-bottom:1px solid var(--mm-border)}",
@@ -299,6 +431,7 @@ export default function CartContents(props: Props) {
                                     <p style={{ margin: "13px 0 0", fontSize: 16, lineHeight: 1.45 }}>
                                         {[item.colour, item.size].filter(Boolean).join(" · ")}
                                     </p>
+                                    {stockCurrent && stock.issues[item.id] ? <p role="status" style={{ margin: "10px 0 0", fontSize: 14, lineHeight: 1.45 }}>{stock.issues[item.id]}</p> : null}
                                 </div>
 
                                 <strong
@@ -343,6 +476,7 @@ export default function CartContents(props: Props) {
                                             className="mm-quantity-button"
                                             type="button"
                                             aria-label="Increase quantity"
+                                            disabled={!isStatic && (!checkoutAllowed || item.quantity >= Math.min(stock.limits[item.id] ?? 10, 10))}
                                             onClick={() => changeQuantity(item.id, 1)}
                                             style={{
                                                 width: 46,
@@ -406,10 +540,17 @@ export default function CartContents(props: Props) {
                             <span>Total</span>
                             <strong style={{ fontWeight: 500 }}>{formatMoney(subtotal)}</strong>
                         </div>
-                        <a
+                        <button
                             className="mm-cart-button"
-                            href={checkoutPath}
+                            type="button"
+                            disabled={!checkoutAllowed || checkingCheckout}
+                            onClick={proceedToCheckout}
+                            aria-describedby="mm-cart-stock-status"
                             style={{
+                                width: "100%",
+                                border: 0,
+                                fontFamily: "inherit",
+                                cursor: "pointer",
                                 display: "flex",
                                 minHeight: 53,
                                 alignItems: "center",
@@ -425,8 +566,14 @@ export default function CartContents(props: Props) {
                                 letterSpacing: "0em",
                             }}
                         >
-                            Proceed to checkout <ArrowIcon />
-                        </a>
+                            {checkingCheckout ? "Checking availability…" : "Proceed to checkout"} <ArrowIcon />
+                        </button>
+                        {!isStatic ? <div id="mm-cart-stock-status" role="status" aria-live="polite" style={{ marginTop: 14, fontSize: 14, lineHeight: 1.45 }}>
+                            {!stockCurrent || stock.state === "loading" ? "Checking availability…" : stock.state === "error" ? <>
+                                Availability could not be checked. Please try again before checkout.
+                                <button type="button" onClick={() => setStockRefresh(value => value + 1)} style={{ display: "block", background: "transparent", border: 0, padding: "8px 0", minHeight: 44, color: "inherit", fontFamily: "inherit", textDecoration: "underline", cursor: "pointer" }}>Check availability again</button>
+                            </> : Object.keys(stock.issues).length > 0 ? "Please remove sold-out items or adjust their quantities before checkout." : null}
+                        </div> : null}
                     </aside>
                 </div>
             )}

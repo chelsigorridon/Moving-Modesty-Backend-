@@ -2,12 +2,13 @@ import "server-only";
 
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { resolveCheckoutItem } from "@/lib/checkout-catalogue";
+import { resolveLiveCheckoutItem, reserveOrderStock } from "@/lib/catalogue-storefront";
 import { requireDatabase } from "@/lib/db";
 import { addresses, customers, orderItems, orders, payments } from "@/lib/db/schema";
 import { checkoutOrderSchema } from "@/lib/checkout-input";
 import { isPaymentFinal, readOrderCustomer } from "@/lib/checkout-safety";
-import { calculateShippingQuote } from "@/lib/shipping/policy";
+import { checkoutPricing } from "@/lib/discounts";
+import { DiscountValidationError } from "@/lib/discount-input";
 import { requirePayFastConfiguration } from "./configuration";
 import { createPayFastSignature, type PayFastField } from "./signature";
 
@@ -60,6 +61,10 @@ export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, 
     .for("update").limit(1);
 
   if (!order || order.archivedAt || isPaymentFinal(order.paymentStatus) || order.status !== "new") return;
+  const [submitted] = await transaction.select({ providerStatus: payments.providerStatus }).from(payments).where(eq(payments.orderId, order.id)).for("update").limit(1);
+  // A later configuration/network failure must not erase an earlier submission:
+  // PayFast may still confirm it, and its saved discount must survive a retry.
+  if (submitted && submitted.providerStatus !== "CHECKOUT_ERROR") return;
   const now = new Date();
   const failureReason = diagnosticReason("PayFast checkout setup failed", message);
 
@@ -108,6 +113,8 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
       deliveryMethod: orders.deliveryMethod,
       deliveryAddressId: orders.deliveryAddressId,
       subtotal: orders.subtotal,
+      discountAmount: orders.discountAmount,
+      discountSnapshot: orders.discountSnapshot,
       deliveryFee: orders.deliveryFee,
       total: orders.total,
       firstName: customers.firstName,
@@ -138,11 +145,14 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     .where(eq(orderItems.orderId, order.id));
   if (lines.length === 0) throw new PayFastCheckoutError("This order has no items.", 409);
 
-  const currentSubtotal = lines.reduce((sum, line) => {
-    const product = resolveCheckoutItem(line.sku);
-    if (!product) throw new PayFastCheckoutError(`${line.sku} is no longer available. Please refresh your cart.`, 409);
-    return sum + product.price * line.quantity;
-  }, 0);
+  const pricedLines: Array<{ sku: string; productId?: string; lineTotal: number }> = [];
+  for (const line of lines) {
+    const product = await resolveLiveCheckoutItem(line.sku, undefined, order.id);
+    if (!product || !product.available) throw new PayFastCheckoutError(`${line.sku} is no longer available. Please refresh your cart.`, 409);
+    pricedLines.push({ sku: line.sku, productId: product.productId, lineTotal: product.price * line.quantity });
+  }
+  try { await reserveOrderStock(transaction, order.id); }
+  catch (error) { throw new PayFastCheckoutError(error instanceof Error ? error.message : "Stock could not be reserved.", 409); }
   const fulfilmentMethod = order.deliveryMethod === "courier" ? "delivery" : "collection";
   const [address] = order.deliveryAddressId && fulfilmentMethod === "delivery"
     ? await transaction.select().from(addresses).where(eq(addresses.id, order.deliveryAddressId)).limit(1) : [];
@@ -150,9 +160,14 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
     customer: { firstName: order.firstName, lastName: order.lastName, email: order.email, phone: order.phone },
     fulfilmentMethod, address: address ? { ...address, line2: address.line2 ?? "" } : undefined, items: lines });
   if (!validation.success) throw new PayFastCheckoutError(validation.error.issues[0]?.message ?? "Please check your checkout details.", 409);
-  const quote = calculateShippingQuote(currentSubtotal, fulfilmentMethod);
+  const [attempt] = await transaction.select({ providerStatus: payments.providerStatus }).from(payments).where(eq(payments.orderId, order.id)).limit(1);
+  let quote;
+  try { quote = await checkoutPricing(order.discountSnapshot?.code, pricedLines, fulfilmentMethod, transaction,
+    order.discountSnapshot, Boolean(attempt && attempt.providerStatus !== "CHECKOUT_ERROR"), true); }
+  catch (error) { if (error instanceof DiscountValidationError) throw new PayFastCheckoutError(error.message, 409); throw error; }
   if (
     cents(order.subtotal) !== cents(quote.subtotal) ||
+    cents(order.discountAmount) !== cents(quote.discountAmount) ||
     cents(order.deliveryFee) !== cents(quote.deliveryFee) ||
     cents(order.total) !== cents(quote.total)
   ) {
@@ -191,7 +206,7 @@ export async function createPayFastCheckout(input: PayFastCheckoutInput, request
 
     await transaction
       .update(orders)
-      .set({ paymentStatus: "pending", updatedAt: checkoutStartedAt })
+      .set({ paymentStatus: "pending", discountSnapshot: quote.discountSnapshot, updatedAt: checkoutStartedAt })
       .where(eq(orders.id, order.id));
 
   const fields: PayFastField[] = [

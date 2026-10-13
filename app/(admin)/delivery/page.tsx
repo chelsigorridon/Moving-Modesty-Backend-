@@ -73,7 +73,7 @@ export default async function DeliveryPage() {
         <p>Every paid delivery remains available for Zarina to review before a Bob Go shipment is created.</p>
         <ul>
           <li><Check size={14} /> Fixed R99 customer delivery fee</li>
-          <li><Check size={14} /> Free delivery from R1,500</li>
+          <li><Check size={14} /> Free delivery from R1,200</li>
           <li><Check size={14} /> No automatic live bookings</li>
         </ul>
       </section>

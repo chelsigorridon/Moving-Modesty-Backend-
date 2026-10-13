@@ -48,6 +48,8 @@ export type AdminOrder = {
   placedAt: string;
   placedDate: string;
   subtotal?: number;
+  discountAmount?: number;
+  discountCode?: string;
   deliveryFee?: number;
   total: number;
   paymentStatus: PaymentStatus;

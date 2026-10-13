@@ -5,6 +5,11 @@ export const southAfricanProvinces = [
   "Mpumalanga", "North West", "Northern Cape", "Western Cape",
 ] as const;
 
+export function normalizeCheckoutProvince(value: string) {
+  const key = value.trim().toLowerCase().replace(/[\s\u2010-\u2015-]+/g, "");
+  return southAfricanProvinces.find(province => province.toLowerCase().replace(/[\s-]+/g, "") === key) ?? value.trim();
+}
+
 export function normalizeCheckoutPhone(value: string) {
   return value.trim().replace(/[\s().-]/g, "").replace(/^0027/, "+27");
 }
@@ -14,7 +19,7 @@ const addressSchema = z.object({
   line2: z.string().trim().max(180).optional().default(""),
   suburb: z.string().trim().min(2, "Please enter your suburb.").max(100),
   city: z.string().trim().min(2, "Please enter your city.").max(100),
-  province: z.string().trim().pipe(z.enum(southAfricanProvinces, { error: "Please choose your province." })),
+  province: z.string().transform(normalizeCheckoutProvince).pipe(z.enum(southAfricanProvinces, { error: "Please choose your province." })),
   postalCode: z.string().trim().regex(/^\d{4}$/, "Please enter a valid postal code."),
 });
 
@@ -29,6 +34,7 @@ const orderSchema = z.object({
       .refine(value => /^(?:0\d{9}|\+?27\d{9})$/.test(value), "Please enter a valid South African phone number."),
   }),
   fulfilmentMethod: z.enum(["delivery", "collection", "to_be_confirmed"]),
+  discountCode: z.string().trim().toUpperCase().max(40).optional(),
   address: addressSchema.optional(),
   items: z.array(z.object({
     sku: z.string().trim().min(3).max(80),

@@ -1,5 +1,5 @@
 export const STANDARD_DELIVERY_FEE = 99;
-export const FREE_DELIVERY_THRESHOLD = 1500;
+export const FREE_DELIVERY_THRESHOLD = 1200;
 
 export type ShippingMethod = "delivery" | "collection" | "to_be_confirmed";
 

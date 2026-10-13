@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { calculateShippingQuote } from "../lib/shipping/policy.ts";
+import { FREE_DELIVERY_THRESHOLD } from "../lib/shipping/policy.ts";
+import { normalizeCheckoutPhone, normalizeCheckoutProvince } from "../lib/checkout-input.ts";
 
 const summary = readFileSync(new URL("../framer/CheckoutOrderSummary.tsx", import.meta.url), "utf8");
 const slider = readFileSync(new URL("../framer/CheckoutSlider.tsx", import.meta.url), "utf8");
@@ -23,26 +25,28 @@ test("checkout summary does not default to delivery when storage is empty, inval
 test("actual storefront totals agree with backend policy before and after choosing fulfilment", () => {
   const calculation = summary.slice(summary.indexOf("    const isCollection ="), summary.indexOf("    const css ="));
   const quote = new Function("subtotal", "fulfilmentMethod", "FREE_DELIVERY_THRESHOLD", "STANDARD_DELIVERY_FEE",
-    `${calculation}; return {deliveryFee, total};`);
-  for (const subtotal of [0, 420, 1499, 1500, 1800]) {
+    `const discountQuote = null, fingerprint = "", appliedCode = ""; ${calculation}; return {deliveryFee, total};`);
+  const storefrontThreshold = Number(summary.match(/const FREE_DELIVERY_THRESHOLD = (\d+)/)?.[1]);
+  assert.equal(storefrontThreshold, FREE_DELIVERY_THRESHOLD);
+  for (const subtotal of [0, 420, 1199.99, 1200, 1200.01, 1260, 1499, 1500, 1800]) {
     for (const method of ["to_be_confirmed", "delivery", "collection"]) {
       const expected = calculateShippingQuote(subtotal, method as "to_be_confirmed" | "delivery" | "collection");
-      assert.deepEqual(quote(subtotal, method, 1500, 99), { deliveryFee: expected.deliveryFee, total: expected.total });
+      assert.deepEqual(quote(subtotal, method, storefrontThreshold, 99), { deliveryFee: expected.deliveryFee, total: expected.total });
     }
   }
   // Switching back from delivery to collection removes the entire fee.
-  assert.equal(quote(420, "delivery", 1500, 99).total, 519);
-  assert.equal(quote(420, "collection", 1500, 99).total, 420);
+  assert.equal(quote(420, "delivery", storefrontThreshold, 99).total, 519);
+  assert.equal(quote(420, "collection", storefrontThreshold, 99).total, 420);
 });
 
 test("checkout cannot advance past fulfilment until a customer explicitly chooses", () => {
   const payloadFunction = slider.slice(slider.indexOf("function checkoutPayload(stage:"), slider.indexOf("async function syncOrder"))
     .replace("stage: CheckoutStage", "stage");
-  const makePayload = new Function("fulfilmentMethod", "fieldValue", "root", "readCartItems", "getCheckoutToken",
-    `${payloadFunction}; return checkoutPayload;`);
+  const makePayload = new Function("fulfilmentMethod", "fieldValue", "root", "readCartItems", "getCheckoutToken", "normalizeCheckoutPhone", "normalizeCheckoutProvince",
+    `const readDiscountCode = () => ""; ${payloadFunction}; return checkoutPayload;`);
   const fields: Record<string, string> = { checkoutFullName: "Test", lastName: "Customer", checkoutEmail: "test@example.com", checkoutPhone: "27766514548" };
   const payload = makePayload("to_be_confirmed", (_root: unknown, key: string) => fields[key] || "", {},
-    () => [{ sku: "AMINA-LAV-OS", quantity: 1 }], () => "c4c5b18e-4e64-4d3b-845e-d6432157f723");
+    () => [{ sku: "AMINA-LAV-OS", quantity: 1 }], () => "c4c5b18e-4e64-4d3b-845e-d6432157f723", normalizeCheckoutPhone, normalizeCheckoutProvince);
   assert.equal(payload("started").fulfilmentMethod, "to_be_confirmed");
   for (const stage of ["fulfilment", "address", "complete"]) {
     assert.throws(() => payload(stage), /Please choose delivery or collection/);

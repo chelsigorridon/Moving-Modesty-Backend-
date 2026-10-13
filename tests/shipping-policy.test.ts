@@ -17,18 +17,28 @@ test("delivery costs R99 below the free-delivery threshold", () => {
     deliveryFee: STANDARD_DELIVERY_FEE,
     total: 549,
     qualifiesForFreeDelivery: false,
-    amountUntilFreeDelivery: 1050,
+    amountUntilFreeDelivery: 750,
   });
 });
 
-test("delivery is free from R1500", () => {
+test("delivery is free from R1200", () => {
+  assert.equal(FREE_DELIVERY_THRESHOLD, 1200);
   assert.deepEqual(calculateShippingQuote(FREE_DELIVERY_THRESHOLD, "delivery"), {
-    subtotal: 1500,
+    subtotal: 1200,
     deliveryFee: 0,
-    total: 1500,
+    total: 1200,
     qualifiesForFreeDelivery: true,
     amountUntilFreeDelivery: 0,
   });
+});
+
+test("the R1200 boundary includes exactly R1200, but not R1199.99", () => {
+  assert.equal(calculateShippingQuote(1199.99, "delivery").deliveryFee, 99);
+  assert.equal(calculateShippingQuote(1199.99, "delivery").amountUntilFreeDelivery, 0.01);
+  for (const subtotal of [1200, 1200.01, 1260, 1499, 1500]) {
+    assert.equal(calculateShippingQuote(subtotal, "delivery").deliveryFee, 0);
+    assert.equal(calculateShippingQuote(subtotal, "delivery").total, subtotal);
+  }
 });
 
 test("collection never charges a delivery fee", () => {

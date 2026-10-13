@@ -163,6 +163,8 @@ export async function sendPaidOrderEmails(orderId: string, onlyRecipient?: "cust
       orderNumber: orders.orderNumber,
       paymentStatus: orders.paymentStatus,
       subtotal: orders.subtotal,
+      discountAmount: orders.discountAmount,
+      discountSnapshot: orders.discountSnapshot,
       deliveryFee: orders.deliveryFee,
       total: orders.total,
       deliveryMethod: orders.deliveryMethod,
@@ -197,6 +199,10 @@ export async function sendPaidOrderEmails(orderId: string, onlyRecipient?: "cust
     .map((item) => `${item.quantity} × ${item.name}${item.variant ? ` — ${item.variant}` : ""}`)
     .join(" · ");
   const ownerEmail = process.env.ORDER_NOTIFICATION_EMAIL?.trim() || "movingmodesty@gmail.com";
+  // Reuse a variable already supported by the published Resend templates.
+  // Do not add unrecognised template variables or look up today's editable code.
+  const subtotalWithDiscount = money(order.subtotal) + (Number(order.discountAmount) > 0
+    ? ` · Discount ${order.discountSnapshot?.code || "applied"}: −${money(order.discountAmount)}` : "");
 
   const [customerResult, ownerResult] = await Promise.allSettled([
     onlyRecipient === "owner" ? Promise.resolve({ skipped: true as const }) : sendRecordedEmail({
@@ -210,7 +216,7 @@ export async function sendPaidOrderEmails(orderId: string, onlyRecipient?: "cust
           CUSTOMER_NAME: order.firstName,
           ORDER_NUMBER: order.orderNumber,
           ORDER_ITEMS: customerItems || "Your Moving Modesty order",
-          SUBTOTAL: money(order.subtotal),
+          SUBTOTAL: subtotalWithDiscount,
           DELIVERY_FEE: Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee),
           ORDER_TOTAL: money(order.total),
           FULFILMENT_METHOD: fulfilment,
@@ -231,7 +237,7 @@ export async function sendPaidOrderEmails(orderId: string, onlyRecipient?: "cust
           CUSTOMER_EMAIL: order.email,
           CUSTOMER_PHONE: order.phone || "No phone supplied",
           ORDER_ITEMS: customerItems || "No order items were recorded",
-          SUBTOTAL: money(order.subtotal),
+          SUBTOTAL: subtotalWithDiscount,
           DELIVERY_FEE: Number(order.deliveryFee ?? 0) === 0 ? "Free" : money(order.deliveryFee),
           ORDER_TOTAL: money(order.total),
           FULFILMENT_METHOD: fulfilment,
