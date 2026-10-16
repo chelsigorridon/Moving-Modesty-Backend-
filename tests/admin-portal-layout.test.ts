@@ -25,6 +25,7 @@ test("bundled product editor keeps customer-facing labels out of identifier rena
 const componentExports: Record<string, React.ComponentType<Record<string, unknown>>> = {};
 runInNewContext(`${compiled}\nexports.OrdersView = OrdersView; exports.DashboardView = DashboardView; exports.DeliverySettings = DeliverySettings;`, {
   exports: componentExports,
+  structuredClone,
   require: (name: string) => name === "framer" ? { addPropertyControls() {}, ControlType: {}, useIsStaticRenderer: () => true } : require(name),
 });
 
@@ -156,6 +157,13 @@ test("delivery settings show verified connection and actionable errors separatel
   failed.window.close();
 });
 
+test("account checks do not claim locker availability or enabled order synchronisation", () => {
+  const dom = settingsDocument({ check: { status: "connected", location: "Collection and delivery are chosen per order", message: "Account access verified." } });
+  assert.match(dom.window.document.body.textContent || "", /read-only Bob Go account access, not locker availability, courier quotes or order synchronisation/);
+  assert.doesNotMatch(dom.window.document.body.textContent || "", /Drop-off point:/);
+  dom.window.close();
+});
+
 test("paid collection shows one clear next action and no delivery booking panel", () => {
   const dom = ordersDocument(order());
   const doc = dom.window.document;
@@ -204,7 +212,7 @@ test("courier preparation has one measurements confirmation and no optional extr
   assert.match(panel.textContent || "", /checked these packed measurements/);
   assert.match(panel.textContent || "", /Standard courier liability only/);
   assert.doesNotMatch(panel.textContent || "", /Request additional declared-value cover|cover for.*450/);
-  assert.equal(panel.querySelector('button')?.hasAttribute('disabled'), true);
+  assert.equal([...panel.querySelectorAll('button')].find(button => button.textContent === "Compare courier quotes")?.hasAttribute('disabled'), true);
   dom.window.close();
 });
 
@@ -239,6 +247,53 @@ test("already-booked waybills retain their status, print and tracking controls",
   assert.equal(panel.querySelector('a[href="https://tracking.example.com/TEST-EXISTING"]')?.textContent, 'Open tracker (enter waybill number)');
   assert.doesNotMatch(panel.textContent || "", /Get delivery quote|Request additional/);
   assert.equal(panel.querySelector('input[type="checkbox"]'), null);
+  dom.window.close();
+});
+
+const deliveryPlan = { version: 1, collection: { kind: "door", contact: { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" },
+  address: { company: "", line1: "10 Example Street", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" } },
+  delivery: { kind: "door", contact: { name: "TEST Buyer", email: "buyer@example.invalid", phone: "0821234567" },
+    address: { company: "", line1: "20 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" } },
+  collectionInstructions: "", deliveryInstructions: "Use bell", customerApprovedPickup: false };
+
+test("delivery editor stays inside the existing courier panel and requires setup before quotes", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", subtotal: 450, deliveryFee: 99,
+    deliveryDetails: { revision: 0, plan: null, draftPlan: deliveryPlan, privateNote: "", canEdit: true },
+    shipping: { status: "Ready to book", senderLocationName: "Old fixed locker", environment: "production", blockers: [] } }));
+  const editor = dom.window.document.querySelector('[aria-label="Delivery setup and notes"]');
+  assert.ok(editor);
+  assert.ok(editor.querySelector('button'));
+  assert.equal(editor.querySelector('[name="collection.line1"]'), null);
+  assert.ok([...editor.querySelectorAll('button')].some(button => button.textContent === "Change customer delivery"));
+  assert.equal([...editor.querySelectorAll('button')].find(button => button.textContent === "Confirm delivery details")?.disabled, true);
+  const quote = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === "Compare courier quotes");
+  assert.equal(quote, undefined, "Package and quote controls stay hidden until addresses are confirmed");
+  assert.doesNotMatch(dom.window.document.body.textContent || "", /Drop-off: Old fixed locker/);
+  dom.window.close();
+});
+
+test("booked delivery exposes private notes and an honest provider amendment handoff, never a fake edit", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Dispatched",
+    deliveryDetails: { revision: 2, plan: deliveryPlan, draftPlan: deliveryPlan, privateNote: "Private TEST note", canEdit: false,
+      blockedReason: "This waybill is booked. Changes must be confirmed in Bob Go." },
+    shipping: { status: "Booked", environment: "production", blockers: [] } }));
+  const editor = dom.window.document.querySelector('[aria-label="Delivery setup and notes"]')!;
+  assert.ok(editor.querySelector('textarea[name="privateNote"]'));
+  assert.equal(editor.querySelector('textarea')?.textContent, "Private TEST note");
+  assert.equal(editor.querySelector('a[href="https://app.bobgo.co.za/"]')?.textContent, "Open Bob Go to arrange the change");
+  assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Edit delivery|Set up delivery/);
+  assert.match(editor.textContent || "", /does not change the waybill/);
+  dom.window.close();
+});
+
+test("booked courier and service are shown without confusing account connection with order sync", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Dispatched", bobGoSync: { status: "Not enabled", message: "Order synchronisation is not activated." },
+    shipping: { status: "Booked", courierName: "TEST Other Courier", serviceName: "Express", courierStatus: "in-transit", environment: "production", blockers: [] } }));
+  const body = dom.window.document.body.textContent || "";
+  assert.match(body, /Booked courier: TEST Other Courier · Express/);
+  assert.match(body, /Latest courier status: in transit/);
+  assert.match(body, /Bob Go order sync: Not enabled/);
+  assert.doesNotMatch(body, /Activate sync|Sync now|Repeat payment notification/);
   dom.window.close();
 });
 

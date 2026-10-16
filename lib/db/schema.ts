@@ -1,6 +1,9 @@
 import { boolean, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { CatalogueDocument } from "../catalogue-input";
 import type { DiscountSnapshot } from "../discount-input";
+import type { CourierEndpoint, CourierPlan } from "../delivery-input";
+import type { CourierBookingSnapshot } from "../integrations/bobgo/protocol";
+import type { BobGoOrderPayload } from "../integrations/bobgo/order-sync-policy";
 
 export const adminRole = pgEnum("admin_role", ["owner", "manager", "fulfilment"]);
 export const productStatus = pgEnum("product_status", ["draft", "active", "archived"]);
@@ -105,6 +108,8 @@ export const productVariants = pgTable("product_variants", {
   lowStockThreshold: integer("low_stock_threshold").default(3).notNull(),
   active: boolean("active").default(true).notNull(),
   stockVerified: boolean("stock_verified").default(false).notNull(),
+  // Measured per item, never inferred from a multi-item packed parcel.
+  shippingWeightGrams: integer("shipping_weight_grams"),
   ...timestamps,
 }, (table) => [uniqueIndex("product_variants_sku_idx").on(table.sku)]);
 
@@ -161,6 +166,9 @@ export const orders = pgTable("orders", {
   trackingNumber: text("tracking_number"),
   trackingUrl: text("tracking_url"),
   deliveryNotes: text("delivery_notes"),
+  courierPlan: jsonb("courier_plan").$type<CourierPlan>(),
+  privateNote: text("private_note"),
+  deliveryRevision: integer("delivery_revision").default(0).notNull(),
   paymentReference: text("payment_reference"),
   checkoutToken: text("checkout_token"),
   checkoutFingerprint: text("checkout_fingerprint"),
@@ -217,8 +225,64 @@ export const shipments = pgTable("shipments", {
   trackingUrl: text("tracking_url"),
   lastError: text("last_error"),
   bookedAt: timestamp("booked_at", { withTimezone: true }),
+  bookingSnapshot: jsonb("booking_snapshot").$type<CourierBookingSnapshot>(),
+  courierStatus: text("courier_status"),
+  courierStatusAt: timestamp("courier_status_at", { withTimezone: true }),
+  courierCheckedAt: timestamp("courier_checked_at", { withTimezone: true }),
   ...timestamps,
 }, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId)]);
+
+// Only authenticated owner routes read these private collection details.
+export const courierSettings = pgTable("courier_settings", {
+  id: text("id").primaryKey(),
+  collection: jsonb("collection").$type<CourierEndpoint>().notNull(),
+  updatedBy: text("updated_by").notNull(),
+  ...timestamps,
+});
+
+export const orderDeliveryHistory = pgTable("order_delivery_history", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  before: jsonb("before").notNull(),
+  after: jsonb("after").notNull(),
+  changedBy: text("changed_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, table => [uniqueIndex("order_delivery_history_revision_idx").on(table.orderId, table.revision)]);
+
+// Durable outbox for a future, explicitly activated Bob Go sales channel.
+// A submission with an unknown outcome is reconciled, never blindly repeated.
+export const bobgoOrderSync = pgTable("bobgo_order_sync", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  environment: text("environment").notNull(),
+  channelRef: text("channel_ref").notNull(),
+  status: text("status").default("queued").notNull(),
+  attempts: integer("attempts").default(0).notNull(),
+  remoteOrderId: text("remote_order_id"),
+  deliveryRevision: integer("delivery_revision").default(0).notNull(),
+  requestSnapshot: jsonb("request_snapshot").$type<BobGoOrderPayload>(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+  lastErrorCode: text("last_error_code"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
+  ...timestamps,
+}, table => [
+  uniqueIndex("bobgo_order_sync_order_channel_idx").on(table.orderId, table.environment, table.channelRef),
+  uniqueIndex("bobgo_order_sync_remote_channel_idx").on(table.remoteOrderId, table.environment, table.channelRef),
+]);
+
+export const shippingWeightHistory = pgTable("shipping_weight_history", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  variantId: uuid("variant_id").notNull().references(() => productVariants.id),
+  previousGrams: integer("previous_grams"),
+  grams: integer("grams"),
+  changedBy: text("changed_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 export const payments = pgTable("payments", {
   id: uuid("id").defaultRandom().primaryKey(),

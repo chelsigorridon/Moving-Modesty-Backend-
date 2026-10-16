@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "@/lib/db";
 import { orderStatusHistory, orders, payments } from "@/lib/db/schema";
 import { isPaymentFinal } from "@/lib/checkout-safety";
+import { enqueuePaidBobGoOrder } from "@/lib/integrations/bobgo/order-sync";
 import { requirePayFastConfiguration } from "./configuration";
 import {
   createPayFastNotificationSignature,
@@ -199,6 +200,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
         throw new PayFastNotificationError("The PayFast transaction reference does not match.", 400, "transaction reference", merchantPaymentId);
       }
       // Delayed FAILED/PENDING callbacks can never undo a verified payment.
+      if (lockedOrder.paymentStatus === "paid") await enqueuePaidBobGoOrder(transaction, payment.orderId);
       return { duplicate: true, paymentStatus: lockedOrder.paymentStatus, orderId: payment.orderId };
     }
     await transaction
@@ -239,6 +241,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
         });
       }
     }
+    if (nextStatus === "paid") await enqueuePaidBobGoOrder(transaction, payment.orderId);
     return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId };
   });
 }

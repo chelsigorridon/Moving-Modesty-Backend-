@@ -35,6 +35,9 @@ export type AdminShipment = {
   trackingUrl?: string;
   lastError?: string;
   serviceLevelCode?: string;
+  courierName?: string;
+  serviceName?: string;
+  courierStatus?: string;
   environment?: "sandbox" | "production";
   bookingEnabled: boolean;
   blockers: string[];
@@ -64,6 +67,15 @@ export type AdminOrder = {
   status: OrderStatus;
   deliveryMethod: "Courier" | "Collection" | "To be confirmed";
   address?: string;
+  deliveryDetails?: {
+    revision: number;
+    plan: import("./delivery-input").CourierPlan | null;
+    draftPlan: import("./delivery-input").CourierPlan;
+    privateNote: string;
+    canEdit: boolean;
+    blockedReason?: string;
+  };
+  bobGoSync?: { status: string; message?: string; remoteOrderId?: string };
   items: AdminOrderItem[];
   actionNeeded?: Array<{ message: string; reference?: string }>;
   notifications?: Array<{

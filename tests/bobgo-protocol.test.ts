@@ -41,6 +41,18 @@ test("only successful services returned by the configured provider can be approv
   assert.deepEqual(parseRates({ provider_rate_requests: [] }, "ie"), []);
 });
 
+test("unrestricted routes retain every successful eligible courier, but exclude malformed and failed rates", () => {
+  const response = { provider_rate_requests: [
+    { provider_slug: "ie", provider_name: "Internet Express", status: "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 120 }] },
+    { provider_slug: "other", status: "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 100 }] },
+    { provider_slug: "invalid slug", status: "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 1 }] },
+    { provider_slug: "failed", status: "failed", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 1 }] },
+    { provider_slug: "nan", status: "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: "NaN" }] },
+  ] };
+  assert.deepEqual(parseRates(response).map(rate => rate.providerSlug), ["other", "ie"]);
+  assert.deepEqual(parseRates(response, "ie").map(rate => rate.providerSlug), ["ie"]);
+});
+
 test("pickup lookup never substitutes another provider, inactive location or incomplete address", () => {
   const location = { id: 1156, provider_slug: "ie", active: true, type: "locker", name: "Constantia Emporium", address };
   assert.deepEqual(parseLocation({ locations: [location] }, "1156", "ie"), { name: "Constantia Emporium", address });
@@ -61,6 +73,17 @@ test("only a confirmed locker-to-door shipment unlocks handover", () => {
   for (const submission_status of ["pending", "failed", "failed-will-retry", undefined]) assert.equal(submissionIsBooked({ ...shipment, submission_status }), false);
   assert.equal(submissionIsBooked({ ...shipment, delivery_location_type: "locker" }), false);
   assert.equal(submissionIsBooked({ ...shipment, tracking_reference: "" }), false);
+});
+
+test("all four route confirmations accept lockers and counters, never a different destination type", () => {
+  const shipment = { id: "TEST", tracking_reference: "TEST", submission_status: "success" };
+  for (const collection of ["door", "pickup_point"]) for (const delivery of ["door", "pickup_point"]) {
+    const current = { ...shipment, collection_location_type: collection === "door" ? "door" : "counter", delivery_location_type: delivery === "door" ? "door" : "locker" };
+    assert.equal(submissionIsBooked(current, { collection, delivery }), true);
+    assert.equal(submissionIsBooked({ ...current, delivery_location_type: delivery === "door" ? "locker" : "door" }, { collection, delivery }), false);
+    assert.equal(submissionIsBooked({ ...current, submission_status: "pending" }, { collection, delivery }), false);
+  }
+  assert.doesNotThrow(() => parseLocation([{ id: 2000, provider_slug: "other", active: true, type: "counter", name: "TEST Counter", address }], "2000", "other"));
 });
 
 test("booking stays server-side, commits a durable lock before the chargeable request and never auto-dispatches", () => {

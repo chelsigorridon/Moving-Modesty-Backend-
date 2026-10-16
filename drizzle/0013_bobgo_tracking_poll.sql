@@ -1,0 +1,1 @@
+ALTER TABLE "shipments" ADD COLUMN "courier_checked_at" timestamp with time zone;

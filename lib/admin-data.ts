@@ -3,6 +3,8 @@ import { db } from "./db";
 import {
   addresses,
   customers,
+  courierSettings,
+  bobgoOrderSync,
   emailEvents,
   inventoryMovements,
   orderItems,
@@ -26,6 +28,8 @@ import { readOrderCustomer } from "./checkout-safety";
 import { canRetryNotification, notificationTitle } from "./order-notifications";
 import { getOperationalIssues } from "./monitoring";
 import { incidentAction, notificationDeliveryMessage } from "./monitoring-policy";
+import { deliveryEditBlocker, type CourierEndpoint, type CourierPlan } from "./delivery-input";
+import { getOrderSyncConfiguration, orderSyncView } from "./integrations/bobgo/order-sync-policy";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -125,7 +129,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     throw new Error("DATABASE_URL is not configured.");
   }
 
-  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows] = await Promise.all([
+  const syncConfiguration = getOrderSyncConfiguration();
+  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows, senderSettings, syncRows] = await Promise.all([
     db
       .select({
         id: ordersTable.id,
@@ -152,6 +157,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         customerEmail: customers.email,
         customerPhone: customers.phone,
         customerSnapshot: ordersTable.customerSnapshot,
+        courierPlan: ordersTable.courierPlan,
+        deliveryRevision: ordersTable.deliveryRevision,
+        deliveryNotes: ordersTable.deliveryNotes,
+        privateNote: ordersTable.privateNote,
         recipientName: addresses.recipientName,
         line1: addresses.line1,
         line2: addresses.line2,
@@ -217,6 +226,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         trackingUrl: shipments.trackingUrl,
         lastError: shipments.lastError,
         serviceLevelCode: shipments.serviceLevelCode,
+        bookingSnapshot: shipments.bookingSnapshot,
+        courierStatus: shipments.courierStatus,
         providerShipmentId: shipments.providerShipmentId,
         shipmentProvider: shipments.provider,
       })
@@ -227,6 +238,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     db.select().from(orderRefunds).orderBy(desc(orderRefunds.createdAt)),
     db.select({ orderId: inventoryMovements.orderId, variantId: inventoryMovements.variantId,
       type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements),
+    db.select().from(courierSettings).where(eq(courierSettings.id, "sender")).limit(1),
+    syncConfiguration.enabled ? db.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.environment, syncConfiguration.environment), eq(bobgoOrderSync.channelRef, syncConfiguration.channelRef)))
+      : Promise.resolve([] as Array<typeof bobgoOrderSync.$inferSelect>),
   ]);
 
   const bobGo = getBobGoConfiguration();
@@ -271,6 +285,16 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     orders: orderRows.map((order) => {
       const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.customerFirstName ?? "", lastName: order.customerLastName ?? "", email: order.customerEmail ?? "", phone: order.customerPhone });
       const shipment = shipmentByOrder.get(order.id);
+      const defaultContact = { name: bobGo.senderName, email: bobGo.senderEmail, phone: bobGo.senderPhone };
+      const defaultCollection: CourierEndpoint = senderSettings[0]?.collection || (bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug
+        ? { kind: "pickup_point", contact: defaultContact, point: { id: bobGo.pickupPointLocationId, providerSlug: bobGo.pickupPointProviderSlug, name: bobGo.senderLocationName } }
+        : { kind: "door", contact: defaultContact, address: { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" } });
+      const draftPlan: CourierPlan = order.courierPlan || { version: 1, collection: defaultCollection,
+        delivery: { kind: "door", contact: { name: order.recipientName || `${customer.firstName} ${customer.lastName}`.trim(), email: customer.email, phone: customer.phone || "" },
+          address: { company: "", line1: order.line1 || "", line2: order.line2 || "", suburb: order.suburb || "", city: order.city || "",
+            province: (order.province || "Western Cape") as import("./delivery-input").CourierAddress["province"], postalCode: order.postalCode || "" } },
+        collectionInstructions: "", deliveryInstructions: order.deliveryNotes || "", customerApprovedPickup: false };
+      const editBlocker = deliveryEditBlocker(order, shipment);
       const orderReturnRows = returnRows.filter(row => row.orderId === order.id);
       const orderRefundRows = refundRows.filter(row => row.orderId === order.id);
       const refundedTotal = orderRefundRows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100;
@@ -289,7 +313,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         senderContactConfigured: Boolean(bobGo.senderEmail && bobGo.senderPhone),
         pickupPointLocationId: shipment?.pickupPointLocationId || bobGo.pickupPointLocationId,
       });
-      if (!bobGo.pickupPointProviderSlug) blockers.push("The pickup-point courier provider still needs to be configured.");
+      if (order.courierPlan) {
+        for (let i = blockers.length - 1; i >= 0; i--) if (/pickup-point ID|Private sender contact/.test(blockers[i])) blockers.splice(i, 1);
+      } else if (!bobGo.pickupPointProviderSlug) blockers.push("The pickup-point courier provider still needs to be configured.");
       if (bobGo.environment === "production" && paymentEnvironmentFromProvider(order.paymentProvider) === "sandbox") blockers.push("Test payments cannot create live courier bookings.");
       if (!customer.phone || !customer.email) blockers.push("Customer phone and email are required.");
       if (order.status !== "ready") blockers.push("Mark the packed order ready for courier first.");
@@ -347,6 +373,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         order.province,
         order.postalCode,
       ]),
+      deliveryDetails: order.deliveryMethod === "courier" ? { revision: order.deliveryRevision, plan: order.courierPlan, draftPlan,
+        privateNote: order.privateNote || "", canEdit: !editBlocker, blockedReason: editBlocker || undefined } : undefined,
+      bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled) : undefined,
       items: itemsByOrder.get(order.id) ?? [],
       actionNeeded: [
         ...(notificationRows.some(event => event.orderId === order.id && event.status === "failed") ? [{ message: "An email notification needs attention. Open Email notifications below to see what to do." }] : []),
@@ -380,6 +409,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         trackingUrl: shipment?.trackingUrl ?? undefined,
         lastError: shipment?.lastError ?? undefined,
         serviceLevelCode: shipment?.serviceLevelCode ?? undefined,
+        courierName: shipment?.bookingSnapshot?.providerName,
+        serviceName: shipment?.bookingSnapshot?.serviceName,
+        courierStatus: shipment?.courierStatus ?? undefined,
         environment: shipment?.shipmentProvider === "bobgo-sandbox" ? "sandbox" as const : shipment?.shipmentProvider === "bobgo-production" ? "production" as const : bobGo.environment,
         bookingEnabled: blockers.length === 0,
         blockers,

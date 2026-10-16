@@ -56,6 +56,8 @@ interface AdminOrder {
     status: OrderStatus
     deliveryMethod: "Courier" | "Collection" | "To be confirmed"
     address?: string
+    deliveryDetails?: DeliveryEditorDetails
+    bobGoSync?: { status: string; message?: string; remoteOrderId?: string }
     items: OrderItem[]
     aftersales?: {
         canStartReturn: boolean
@@ -81,6 +83,9 @@ interface AdminOrder {
         trackingUrl?: string
         lastError?: string
         serviceLevelCode?: string
+        courierName?: string
+        serviceName?: string
+        courierStatus?: string
         environment?: "sandbox" | "production"
         bookingEnabled: boolean
         blockers: string[]
@@ -134,8 +139,11 @@ interface ShippingResult {
     environment?: "sandbox" | "production"
     url?: string
     message?: string
+    points?: DeliveryPointResult[]
+    packages?: SavedParcelPackage[]
+    limited?: boolean
 }
-type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill", payload?: Record<string, unknown>) => Promise<ShippingResult>
+type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill" | "save_delivery" | "pickup_points" | "packages", payload?: Record<string, unknown>) => Promise<ShippingResult>
 type AftersalesRequest = (order: AdminOrder, payload: Record<string, unknown>) => Promise<void>
 type Confirmation = { title: string; description: string; run: () => void }
 const courierMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 })
@@ -341,16 +349,20 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
-    async function requestShipping(order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}): Promise<ShippingResult> {
+    async function requestShipping(order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill" | "save_delivery" | "pickup_points" | "packages", payload: Record<string, unknown> = {}): Promise<ShippingResult> {
         if (mutationPending.current || !liveEnabled) throw new Error("Wait for the current action to finish, then try again.")
         mutationPending.current = true
         startTransition(() => { setLoading(true); setNotice("") })
         try {
-            const endpoint = action === "book" ? "book-shipment" : "shipment"
-            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`, {
-                method: "POST",
+            const endpoint = action === "book" ? "book-shipment" : action === "save_delivery" ? "delivery" : "shipment"
+            const lookup = action === "pickup_points" || action === "packages"
+            const url = action === "packages" ? `${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/packages`
+                : action === "pickup_points" ? `${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/pickup-points?q=${encodeURIComponent(String(payload.query || ""))}`
+                : `${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`
+            const response = await adminFetch(url, {
+                method: lookup ? "GET" : action === "save_delivery" ? "PATCH" : "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
-                body: JSON.stringify(action === "book" ? { ...payload, confirm: true } : { ...payload, action }),
+                ...(lookup ? {} : { body: JSON.stringify(action === "book" ? { ...payload, confirm: true } : action === "save_delivery" ? payload : { ...payload, action }) }),
             })
             const data = await response.json().catch(() => null)
             if (!response.ok) {
@@ -359,7 +371,8 @@ export default function AdminPortal(props: AdminPortalProps) {
             }
             startTransition(() => {
                 if (data.order) setSnapshot((current) => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) }))
-                if (data.message) setNotice(data.message)
+                if (data.message || data.warning) setNotice(data.warning || data.message)
+                if (action === "save_delivery" && !data.order) setRefresh(current => current + 1)
             })
             return data as ShippingResult
         } catch (error) {
@@ -423,9 +436,9 @@ export default function AdminPortal(props: AdminPortalProps) {
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { Authorization: `Bearer ${token()}` } })
             const data = await response.json().catch(() => null)
-            if (!response.ok || !data?.connected) throw new Error(data?.error || "The drop-off point is not configured.")
+            if (!response.ok || !data?.connected) throw new Error(data?.error || "The Bob Go account connection could not be verified.")
             startTransition(() => setCourierCheck({ status: "connected", location: data.target,
-                message: data.bookingEnabled && data.senderContactConfigured ? "Manual booking is enabled." : "The connection works, but booking setup is incomplete.",
+                message: data.bookingEnabled ? "Account access verified. Manual booking is enabled; each order still needs valid delivery details and a courier quote." : "Account access verified. Courier booking is currently paused.",
                 checkedAt: new Date().toLocaleString("en-ZA") }))
         } catch (error) {
             startTransition(() => setCourierCheck({ status: "error", message: error instanceof Error ? error.message : "Connection check failed." }))
@@ -439,6 +452,24 @@ export default function AdminPortal(props: AdminPortalProps) {
         if (accountRef.current) accountRef.current.open = false
         setDeliverySettingsOpen(true)
         if (courierCheck.status === "unchecked") void checkCourierConnection()
+    }
+
+    async function requestShippingWeights(changes?: Array<{ id: string; expectedGrams: number | null; grams: number | null }>): Promise<ShippingWeightRow[]> {
+        if (mutationPending.current || !liveEnabled) throw new Error("Wait for the current action to finish, then try again.")
+        mutationPending.current = true
+        startTransition(() => setLoading(true))
+        try {
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/weights`, {
+                method: changes ? "PATCH" : "GET", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                ...(changes ? { body: JSON.stringify({ changes, confirmed: true }) } : {}),
+            })
+            const data = await response.json().catch(() => null)
+            if (!response.ok || !Array.isArray(data?.weights)) {
+                if (response.status === 401) route("/admin/login")
+                throw new Error(apiErrorMessage(data, "Product weights could not be loaded or saved."))
+            }
+            return data.weights
+        } finally { mutationPending.current = false; startTransition(() => setLoading(false)) }
     }
 
     function closeDeliverySettings() {
@@ -560,14 +591,14 @@ export default function AdminPortal(props: AdminPortalProps) {
                     )}
                     <DeliverySettings open={deliverySettingsOpen} close={closeDeliverySettings} connection={snapshot.bobGoConnection}
                         check={courierCheck} checking={courierCheck.status === "checking"} disabled={loading || !liveEnabled || loadState !== "ready"}
-                        checkConnection={checkCourierConnection} paymentEnvironment={snapshot.paymentEnvironment} />
+                        checkConnection={checkCourierConnection} paymentEnvironment={snapshot.paymentEnvironment} requestWeights={liveEnabled ? requestShippingWeights : undefined} />
                 </div>
             )}
         </section>
     )
 }
 
-function DeliverySettings({ open, close, connection, check, checking, disabled, checkConnection, paymentEnvironment }: {
+function DeliverySettings({ open, close, connection, check, checking, disabled, checkConnection, paymentEnvironment, requestWeights }: {
     open: boolean
     close: () => void
     connection?: Snapshot["bobGoConnection"]
@@ -576,6 +607,7 @@ function DeliverySettings({ open, close, connection, check, checking, disabled, 
     disabled: boolean
     checkConnection: () => void
     paymentEnvironment?: Snapshot["paymentEnvironment"]
+    requestWeights?: ShippingWeightSettingsProps["request"]
 }) {
     const dialogRef = useRef<HTMLDialogElement>(null)
     useEffect(() => {
@@ -600,7 +632,7 @@ function DeliverySettings({ open, close, connection, check, checking, disabled, 
         <section className="mm-admin__connection-status" aria-label="Courier connection status" aria-live="polite" aria-busy={checking}>
             <div className="mm-admin__settings-heading"><strong>Bob Go</strong>{connection ? <span className="mm-admin__helper">{connection.environment === "production" ? "Live account" : "Test account"}</span> : null}</div>
             <strong>{checking ? "Checking connection…" : check.status === "connected" ? "Connected" : check.status === "error" ? "Connection needs attention" : ready ? "Configured · not checked yet" : connection ? "Setup needs attention" : "Connection details unavailable"}</strong>
-            {check.location ? <p>Drop-off point: {check.location}</p> : null}
+            {check.location ? <p>Delivery setup: {check.location}</p> : null}
             {check.message ? <p className={check.status === "error" ? "mm-admin__error" : undefined} role={check.status === "error" ? "alert" : undefined}>{check.message}</p> : null}
             {connection && !ready ? <p>Courier booking is paused or setup is incomplete. Contact your website administrator.</p> : null}
             {check.checkedAt ? <p className="mm-admin__helper">Last checked: {check.checkedAt}</p> : null}
@@ -608,10 +640,11 @@ function DeliverySettings({ open, close, connection, check, checking, disabled, 
         <p className="mm-admin__helper">For delivery: prepare the parcel, mark the paid order Ready, then review its quote and confirm the booking. Collection orders do not use Bob Go.</p>
         {paymentEnvironment === "sandbox" && connection?.environment === "production" ? <p className="mm-admin__error">Payments are in test mode. Live courier booking is blocked for test-paid orders.</p> : null}
         <details className="mm-admin__technical"><summary>Troubleshooting</summary>
-            <p className="mm-admin__helper">This only checks the connection and drop-off point. It does not book a shipment or create a courier charge.</p>
+            <p className="mm-admin__helper">This checks read-only Bob Go account access, not locker availability, courier quotes or order synchronisation. It does not book a shipment or create a courier charge.</p>
             <button type="button" className="mm-admin__secondary-button" disabled={disabled} onClick={checkConnection}>{checking ? "Checking connection…" : "Check courier connection (no booking)"}</button>
             <p className="mm-admin__helper">If the check fails, contact your website administrator. No API keys need to be entered here.</p>
         </details>
+        {open && requestWeights ? <EmbeddedShippingWeightSettings request={requestWeights} /> : null}
     </dialog>
 }
 
@@ -951,7 +984,7 @@ function OrdersView({
                         </Detail>
                         {selected.deliveryMethod === "Courier" && selected.shipping &&
                             ((selected.paymentStatus === "Paid" && selected.status === "Ready") || ["Booking", "Booked", "Failed"].includes(selected.shipping.status)) ? (
-                            <div ref={courierRef} tabIndex={-1} aria-label="Book this order's waybill"><ShippingPanel key={selected.id} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} /></div>
+                            <div ref={courierRef} tabIndex={-1} aria-label="Book this order's waybill"><ShippingPanel key={`${selected.id}:${selected.deliveryDetails?.revision || 0}`} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} /></div>
                         ) : null}
                         <details key={`notifications-${selected.id}`} className="mm-admin__technical" open={notificationsOpen} onToggle={event => setNotificationsOpen(event.currentTarget.open)}>
                             <summary>Email notifications{selected.notifications?.some(event => event.status === "failed") ? " · Action needed" : ""}</summary>
@@ -1136,13 +1169,13 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const [quote, setQuote] = useState<ShippingResult | null>(null)
     const [quoteIndex, setQuoteIndex] = useState(0)
     const [waybill, setWaybill] = useState("")
+    const [editingDelivery, setEditingDelivery] = useState(false)
     const [error, setError] = useState("")
     const pending = shipping.status === "Booking"
     const booked = shipping.status === "Booked"
     const liveBookingForTest = connection?.environment === "production" && order.payment?.environment === "sandbox"
-    const canQuote = !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && connection.configured)
+    const canQuote = !editingDelivery && !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && (connection.configured || order.deliveryDetails?.plan))
     const rate = quote?.rates?.[quoteIndex]
-    const fields = [["weightGrams", "Packed weight (g)"], ["lengthCm", "Length (cm)"], ["widthCm", "Width (cm)"], ["heightCm", "Height (cm)"]] as const
 
     async function run(action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}) {
         startTransition(() => setError(""))
@@ -1159,40 +1192,54 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     }
     function book() {
         if (!rate || !quote?.expires || quote.expires <= Date.now()) { setError("This quote expired. Get a new quote."); setQuote(null); return }
+        const plan = order.deliveryDetails?.plan
+        const endpointLabel = (endpoint: CourierEndpoint) => endpoint.kind === "pickup_point" ? endpoint.point.name
+            : [endpoint.address.line1, endpoint.address.line2, endpoint.address.suburb, endpoint.address.city, endpoint.address.province, endpoint.address.postalCode].filter(Boolean).join(", ")
+        const routeDescription = plan ? `${plan.collection.kind === "door" ? "Courier collection from" : "Drop-off at"} ${endpointLabel(plan.collection)}. ${plan.delivery.kind === "door" ? "Delivery to" : "Customer collection at"} ${endpointLabel(plan.delivery)}.`
+            : `Drop-off at ${shipping.senderLocationName}, delivery to ${order.address}.`
         confirm({ title: quote.environment === "production" ? "Confirm LIVE courier booking" : "Confirm sandbox booking",
-            description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. Drop-off at ${shipping.senderLocationName}, delivery to ${order.address}. ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} Booking the courier does not charge the customer again.`,
+            description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. ${routeDescription} ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} Booking the courier does not charge the customer again.`,
             run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
     }
     return <Detail title="Bob Go delivery">
         {liveBookingForTest ? <p role="alert">This is a test payment. Live courier booking is blocked so it cannot create a real charge.</p> : null}
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
-        <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p>
+        {!order.deliveryDetails ? <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p> : null}
         <p>Delivery paid by the customer: <strong>{order.deliveryFee === undefined ? "Not recorded" : order.deliveryFee === 0 ? "Free" : money.format(order.deliveryFee)}</strong></p>
         <p className="mm-admin__helper">Already included in the order total — not an extra charge. The separate Bob Go courier cost appears after you get a quote.</p>
+        {order.bobGoSync ? <EmbeddedOrderSyncStatus value={order.bobGoSync} /> : null}
+        {order.deliveryDetails ? <EmbeddedDeliveryEditor details={order.deliveryDetails} disabled={loading}
+            onEditingChange={editing => { setEditingDelivery(editing); setQuote(null); setMeasured(false) }}
+            save={async payload => { await requestShipping(order, "save_delivery", payload) }}
+            searchPoints={async query => { const result = await requestShipping(order, "pickup_points", { query }); return { points: result.points || [], limited: result.limited } }} /> : null}
         {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}
+        {booked ? <p>Booked courier: <strong>{shipping.courierName || "Not recorded — check Bob Go"}</strong>{shipping.serviceName || shipping.serviceLevelCode ? ` · ${shipping.serviceName || shipping.serviceLevelCode}` : ""}</p> : null}
+        {shipping.courierStatus ? <p>Latest courier status: <strong>{shipping.courierStatus.replaceAll("-", " ")}</strong><span className="mm-admin__helper"> · This is the courier’s report; the order’s fulfilment status is managed separately.</span></p> : null}
         {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
         {pending ? <p>Booking is awaiting confirmation. Check its status; do not book another shipment or create a duplicate in Bob Go.</p> : null}
-        {booked ? <p>{order.status === "Dispatched" || order.status === "Delivered" ? "This order has been handed over. Use the tracking number to check its progress; email results are shown below." : "Download the waybill, attach it to the parcel and drop it off. Only then mark the order Dispatched to submit the customer's tracking email."}</p> : null}
+        {booked ? <p>{order.status === "Dispatched" || order.status === "Delivered" ? "This order has been handed over. Use the tracking number to check its progress; email results are shown below." : "Download the waybill, attach it to the parcel and hand it over using the booked collection method. Only then mark the order Dispatched to submit the customer's tracking email."}</p> : null}
         {(pending || booked) ? <div className="mm-admin__actions mm-admin__courier-actions">
             <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button>
             {booked && !waybill ? <button type="button" className="mm-admin__button" disabled={loading} onClick={() => { void run("waybill") }}>Prepare printable waybill</button> : null}
             {waybill ? <a className="mm-admin__button" href={waybill} target="_blank" rel="noopener noreferrer">Print waybill</a> : null}
             {shipping.trackingUrl ? <a href={shipping.trackingUrl} target="_blank" rel="noopener noreferrer">Open tracker (enter waybill number)</a> : null}
         </div> : null}
-        {canQuote ? <>
-            <p className="mm-admin__helper">Check the packed box, including packaging. The 412 g / 25 × 20.5 × 3.5 cm measurement applies only to one Hawa + one Amina; measure other combinations.</p>
-            <div className="mm-admin__parcel-grid">{fields.map(([field, label]) => <label className="mm-admin__field" key={field}>{label}<input type="number" min={field === "weightGrams" ? 1 : 0.01} max={field === "weightGrams" ? 30000 : 150} step={field === "weightGrams" ? 1 : 0.01} inputMode="decimal" value={parcel[field]} disabled={loading} onChange={event => { setParcel(current => ({ ...current, [field]: event.target.value })); setMeasured(false); setQuote(null) }} /></label>)}</div>
+        {canQuote && (!order.deliveryDetails || order.deliveryDetails.plan) ? <>
+            <EmbeddedParcelEditor value={parcel} disabled={loading} change={value => { setParcel(value); setMeasured(false); setQuote(null) }}
+                loadPackages={async () => { const result = await requestShipping(order, "packages"); return result.packages || [] }} />
             <label className="mm-admin__courier-check"><input type="checkbox" checked={measured} disabled={loading} onChange={event => { setMeasured(event.target.checked); setQuote(null) }} />I have checked these packed measurements and the customer's address.</label>
             <p className="mm-admin__helper">Standard courier liability only — no additional parcel cover is requested. Limits and exclusions depend on the courier.</p>
-            {!rate ? <button type="button" className="mm-admin__button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }) }}>{loading ? "Checking Bob Go…" : "Get delivery quote"}</button> : null}
+            {order.deliveryDetails && !order.deliveryDetails.plan ? <p className="mm-admin__helper">Save the delivery setup above before getting courier quotes.</p> : null}
+            {!rate ? <button type="button" className="mm-admin__button" disabled={loading || !measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }) }}>{loading ? "Checking Bob Go…" : "Compare courier quotes"}</button> : null}
             {rate ? <div className="mm-admin__quote">
-                <label className="mm-admin__field">Choose courier service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
+                <h4>3. Choose courier & book</h4><label className="mm-admin__field">Choose courier and service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.providerName}-${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
+                <p className="mm-admin__helper">Only services returned by Bob Go for these addresses, pickup points and parcel measurements are shown.</p>
                 <p><strong>Bob Go courier cost: {courierMoney.format(rate.amount)}</strong></p>
                 <p className="mm-admin__helper">Zarina pays this amount to Bob Go when booking. The customer's order total does not change. Quotes expire after 10 minutes; final courier charges can vary.</p>
                 <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Book waybill</button>
             </div> : null}
         </> : null}
-        {!canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
+        {editingDelivery ? <p>Save or cancel delivery editing before getting a fresh courier quote.</p> : !canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
         {!booked && !pending && shipping.blockers.length ? <details className="mm-admin__technical"><summary>What is still needed?</summary><ul className="mm-admin__blockers">{shipping.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></details> : null}
         {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
     </Detail>
@@ -2059,3 +2106,295 @@ const discountStyles = `
 `;
 
 // END GENERATED DISCOUNT MANAGER
+
+// BEGIN_MM_DELIVERY_EDITOR
+type CourierAddress = { company: string; line1: string; line2: string; suburb: string; city: string; province: string; postalCode: string };
+type CourierContact = { name: string; email: string; phone: string };
+type PickupPoint = { id: string; providerSlug: string; name: string };
+type CourierEndpoint = { kind: "door"; contact: CourierContact; address: CourierAddress }
+  | { kind: "pickup_point"; contact: CourierContact; point: PickupPoint };
+type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierEndpoint;
+  collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean };
+
+type DeliveryPointResult = PickupPoint & { description: string; type: string };
+type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string };
+interface DeliveryEditorProps {
+  details: DeliveryEditorDetails;
+  disabled?: boolean;
+  save: (payload: Record<string, unknown>) => Promise<void>;
+  searchPoints: (query: string) => Promise<{ points: DeliveryPointResult[]; limited?: boolean }>;
+  onEditingChange?: (editing: boolean) => void;
+}
+const emptyCourierAddress: CourierAddress = { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" };
+const deliveryProvinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"];
+
+function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange }: DeliveryEditorProps) {
+  const [editing, setEditing] = useState(false);
+  const [editSide, setEditSide] = useState<"collection" | "delivery">("delivery");
+  const [saving, setSaving] = useState(false);
+  const [plan, setPlan] = useState<CourierPlan>(() => structuredClone(details.draftPlan));
+  const [confirmed, setConfirmed] = useState(false);
+  const [approvedPickup, setApprovedPickup] = useState(details.draftPlan.customerApprovedPickup);
+  const [remember, setRemember] = useState(false);
+  const [note, setNote] = useState(details.privateNote);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
+    delivery: details.draftPlan.delivery.kind === "door" ? details.draftPlan.delivery.address : emptyCourierAddress });
+  function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
+    setPlan(current => ({ ...current, [side]: endpoint })); setConfirmed(false);
+    if (endpoint.kind === "door") doorAddresses.current[side] = endpoint.address;
+    if (side === "delivery") setApprovedPickup(false);
+  }
+  function changeKind(side: "collection" | "delivery", kind: "door" | "pickup_point") {
+    const current = plan[side];
+    changeEndpoint(side, kind === "door" ? { kind, contact: current.contact, address: doorAddresses.current[side] }
+      : { kind, contact: current.contact, point: { id: "", providerSlug: "", name: "" } });
+  }
+  function readDeliveryForm(form: FormData) {
+    const text = (name: string, fallback = "") => String(form.has(name) ? form.get(name) || "" : fallback).trim();
+    function endpoint(side: "collection" | "delivery"): CourierEndpoint {
+      const current = plan[side], contact = { name: text(`${side}.name`, current.contact.name), email: text(`${side}.email`, current.contact.email), phone: text(`${side}.phone`, current.contact.phone) };
+      return current.kind === "pickup_point" ? { ...current, contact }
+        : { kind: "door", contact, address: { company: text(`${side}.company`, current.address.company), line1: text(`${side}.line1`, current.address.line1), line2: text(`${side}.line2`, current.address.line2),
+          suburb: text(`${side}.suburb`, current.address.suburb), city: text(`${side}.city`, current.address.city), province: text(`${side}.province`, current.address.province), postalCode: text(`${side}.postalCode`, current.address.postalCode) } };
+    }
+    return { ...plan, collection: endpoint("collection"), delivery: endpoint("delivery"),
+      collectionInstructions: text("collectionInstructions", plan.collectionInstructions), deliveryInstructions: text("deliveryInstructions", plan.deliveryInstructions),
+      customerApprovedPickup: plan.delivery.kind === "pickup_point" ? form.has("approvedPickup") : false };
+  }
+  async function saveDelivery(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(""); setMessage("");
+    // Read this component's own form at submit time, including silent autofill.
+    const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
+    if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
+    if (next.collection.kind === "pickup_point" && next.delivery.kind === "pickup_point" && next.collection.point.providerSlug !== next.delivery.point.providerSlug) {
+      setError("Both pickup points must belong to the same courier. Choose another point or use door delivery."); return;
+    }
+    setSaving(true);
+    try {
+      await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: form.has("confirmed"), rememberCollection: form.has("remember") });
+      setEditing(false); onEditingChange?.(false); setConfirmed(false); setMessage("Delivery setup saved. Get a fresh quote to choose a courier.");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Delivery details could not be saved."); }
+    finally { setSaving(false); }
+  }
+  async function savePrivateNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(""); setMessage("");
+    const next = String(new FormData(event.currentTarget).get("privateNote") || "");
+    try { await save({ action: "private_note", expectedRevision: details.revision, note: next }); setMessage("Private note saved. It was not sent to Bob Go or the customer."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Private note could not be saved."); }
+  }
+  function summaryEndpoint(value: CourierEndpoint, side: "collection" | "delivery") {
+    return value.kind === "pickup_point" ? `${side === "collection" ? "Drop off" : "Customer collects"}: ${value.point.name}`
+      : `${side === "collection" ? "Courier collects" : "Customer's door"}: ${[value.address.line1, value.address.line2, value.address.suburb, value.address.city, value.address.province, value.address.postalCode].filter(Boolean).join(", ") || "Address needed"}`;
+  }
+  const shownPlan = editing ? plan : details.plan || details.draftPlan;
+  function edit(side: "collection" | "delivery") {
+    setPlan(structuredClone(details.draftPlan)); setEditSide(side); setError(""); setConfirmed(false); setEditing(true); onEditingChange?.(true);
+  }
+  return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
+    <style>{deliveryEditorCss}</style>
+    <div className="mm-delivery__heading"><strong>1. Check delivery details</strong><span className="mm-admin__helper">{details.plan ? "Confirmed" : "Check before continuing"}</span></div>
+    <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
+      <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
+      <p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p>
+      {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Change customer delivery"}</button> : null}
+    </div>)}</div>
+    {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
+    {!editing && details.canEdit && details.plan ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit("delivery")}>Edit courier instructions</button> : null}
+    {!details.canEdit ? <div className="mm-admin__notice"><p>{details.blockedReason}</p>
+      {details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
+        <p>Address or courier changes must be confirmed by Bob Go or the courier. Their documented API does not provide booked-waybill editing. A courier change may require cancellation and a new paid booking.</p>
+        <p>Do not create a second shipment while the first is active. Editing a private note below does not change the waybill.</p>
+        <a href="https://app.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
+      </details> : null}</div> : null}
+    {(editing || !details.plan) && details.canEdit ? <form onSubmit={saveDelivery} onChange={event => {
+      const target: EventTarget = event.target;
+      const name = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement ? target.name : "";
+      // A checkbox click can be the first event after browser autofill. Capture
+      // our own form before React rerenders controlled inputs with stale state.
+      if (!name.endsWith(".kind")) {
+        const next = readDeliveryForm(new FormData(event.currentTarget)); setPlan(next);
+        for (const side of ["collection", "delivery"] as const) { const endpoint = next[side]; if (endpoint.kind === "door") doorAddresses.current[side] = endpoint.address; }
+      }
+      if (!["confirmed", "remember"].includes(name)) setConfirmed(false);
+    }}><fieldset disabled={disabled || saving} className="mm-delivery__fieldset">
+      {editing ? <><p className="mm-admin__helper">The other address stays unchanged. Saving does not book or pay for a courier.</p>
+      <DeliveryEndpointFields key={editSide} side={editSide} value={plan[editSide]}
+        changeKind={kind => changeKind(editSide, kind)} change={value => changeEndpoint(editSide, value)} searchPoints={searchPoints} />
+      <details><summary>Courier instructions (optional)</summary><div className="mm-delivery__grid">
+        <label className="mm-admin__field">Collection instructions<textarea name="collectionInstructions" maxLength={1000} rows={3} value={plan.collectionInstructions}
+          onChange={event => setPlan(current => ({ ...current, collectionInstructions: event.target.value }))} placeholder="For the collecting courier" /></label>
+        <label className="mm-admin__field">Delivery instructions<textarea name="deliveryInstructions" maxLength={1000} rows={3} value={plan.deliveryInstructions}
+          onChange={event => setPlan(current => ({ ...current, deliveryInstructions: event.target.value }))} placeholder="Gate, access or delivery instructions" /></label>
+      </div></details></> : null}
+      {plan.delivery.kind === "pickup_point" ? <label className="mm-delivery__check"><input type="checkbox" name="approvedPickup" required checked={approvedPickup} onChange={event => setApprovedPickup(event.target.checked)} />The customer agreed to collect from this pickup point.</label> : null}
+      {editing && editSide === "collection" ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders.</label> : null}
+      <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked these addresses and courier contact details.</label>
+      {editing ? <p className="mm-admin__helper">Changes need a fresh courier quote. The customer’s paid total stays unchanged.</p> : null}
+      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button" disabled={disabled || saving || !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
+        {editing ? <button type="button" className="mm-admin__text-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); }}>Cancel editing</button> : null}</div>
+    </fieldset></form> : null}
+    <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
+      <form onSubmit={savePrivateNote}><label className="mm-admin__field">Private note<textarea name="privateNote" rows={3} maxLength={3000} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} /></label>
+        <button type="submit" className="mm-admin__secondary-button" disabled={disabled || note === details.privateNote}>Save private note</button></form>
+    </details>
+    {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
+    {message ? <p className="mm-admin__helper" role="status">{message}</p> : null}
+  </section>;
+}
+
+function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints }: { side: "collection" | "delivery"; value: CourierEndpoint;
+  change: (value: CourierEndpoint) => void; changeKind: (kind: "door" | "pickup_point") => void; searchPoints: DeliveryEditorProps["searchPoints"] }) {
+  const [query, setQuery] = useState(""); const [points, setPoints] = useState<DeliveryPointResult[]>([]);
+  const [searching, setSearching] = useState(false); const [error, setError] = useState(""); const [searched, setSearched] = useState(false); const [limited, setLimited] = useState(false);
+  async function search() {
+    if (query.trim().length < 2) { setError("Enter at least two letters of the place name or suburb."); return; }
+    setSearching(true); setError("");
+    try { const result = await searchPoints(query); setPoints(result.points); setLimited(Boolean(result.limited)); setSearched(true); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Pickup points could not be loaded."); }
+    finally { setSearching(false); }
+  }
+  const title = side === "collection" ? "1. Where does the parcel leave from?" : "2. Where is it going?";
+  return <section className="mm-delivery__endpoint" aria-label={side === "collection" ? "Sender collection details" : "Customer delivery details"}>
+    <h4>{title}</h4><label className="mm-admin__field">{side === "collection" ? "Collection method" : "Delivery method"}
+      <select name={`${side}.kind`} value={value.kind} onChange={event => changeKind(event.target.value as "door" | "pickup_point")}>
+        <option value="door">{side === "collection" ? "Courier collects from an address" : "Deliver to the customer's door"}</option>
+        <option value="pickup_point">{side === "collection" ? "Zarina drops off at a locker or counter" : "Customer collects at a locker or counter"}</option>
+      </select></label>
+    {value.kind === "pickup_point" ? <div className="mm-delivery__point-search">
+      <label className="mm-admin__field">Find a Bob Go pickup point<input name={`${side}.search`} value={query} maxLength={100} onChange={event => setQuery(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} placeholder="Place name, suburb or postcode" autoComplete="off" /></label>
+      <button type="button" className="mm-admin__secondary-button" disabled={searching} onClick={() => { void search(); }}>{searching ? "Searching…" : "Search pickup points"}</button>
+      {value.point.id ? <p className="mm-delivery__selected-point">Selected: <strong>{value.point.name}</strong> · Courier: {value.point.providerSlug}</p> : <p>Choose a point from the search results.</p>}
+      {points.length ? <ul className="mm-delivery__point-results" aria-label={`${side} pickup point results`}>{points.map(point => <li key={`${point.providerSlug}:${point.id}`}>
+        <button type="button" aria-pressed={point.id === value.point.id && point.providerSlug === value.point.providerSlug}
+          onClick={() => change({ ...value, point: { id: point.id, providerSlug: point.providerSlug, name: point.name } })}>
+          <strong>{point.name}</strong><span>{point.description}</span><span>{point.type === "counter" ? "Counter" : "Locker"} · {point.providerSlug}</span></button></li>)}</ul> : null}
+      {searched && !points.length ? <p role="status">No matching points returned by Bob Go. Try a nearby suburb or another place name.</p> : null}
+      {limited ? <p>Narrow your search to see more relevant results.</p> : null}
+      <p className="mm-admin__helper">Pickup points can limit the eligible couriers. Availability and parcel capacity are checked again when quoting.</p>
+      {error ? <p role="alert" className="mm-admin__error">{error}</p> : null}
+    </div> : <div className="mm-delivery__grid">{([
+      ["company", "Company (optional)", false], ["line1", "Street address", true], ["line2", "Unit / building (optional)", false],
+      ["suburb", "Suburb", true], ["city", "City", true], ["postalCode", "Postal code", true],
+    ] as const).map(([key, label, required]) => <label className="mm-admin__field" key={key}>{label}<input name={`${side}.${key}`} required={required}
+      maxLength={key === "postalCode" ? 4 : key === "company" ? 150 : key === "city" || key === "suburb" ? 100 : 180} inputMode={key === "postalCode" ? "numeric" : "text"}
+      value={value.address[key]} autoComplete={`section-${side} ${key === "postalCode" ? "postal-code" : key === "city" ? "address-level2" : key === "line1" ? "address-line1" : key === "line2" ? "address-line2" : key === "company" ? "organization" : "address-level3"}`}
+      onChange={event => change({ ...value, address: { ...value.address, [key]: event.target.value } })} /></label>)}
+      <label className="mm-admin__field">Province<select name={`${side}.province`} value={value.address.province} autoComplete={`section-${side} address-level1`}
+        onChange={event => change({ ...value, address: { ...value.address, province: event.target.value as CourierAddress["province"] } })}>{deliveryProvinces.map(province => <option key={province}>{province}</option>)}</select></label>
+    </div>}
+    <div className="mm-delivery__grid">{([ ["name", "Courier contact name", "text"], ["email", "Courier contact email", "email"], ["phone", "Courier contact phone", "tel"] ] as const)
+      .map(([key, label, type]) => <label className="mm-admin__field" key={key}>{label}<input required type={type} name={`${side}.${key}`} maxLength={key === "phone" ? 30 : key === "email" ? 180 : 160}
+        autoComplete={`section-${side} ${key === "name" ? "name" : key === "email" ? "email" : "tel"}`} value={value.contact[key]}
+        onChange={event => change({ ...value, contact: { ...value.contact, [key]: event.target.value } })} /></label>)}</div>
+  </section>;
+}
+
+const deliveryEditorCss = `
+.mm-admin__delivery-editor{margin:18px 0;padding:18px;border:1px solid var(--mm-border,#a69e95);border-radius:10px;min-width:0;overflow-wrap:anywhere}
+.mm-admin__delivery-editor *{box-sizing:border-box}.mm-delivery__heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.mm-delivery__summary{margin:12px 0;font-size:14px}.mm-delivery__address-card{padding:14px;border:1px solid var(--mm-border,#a69e95);border-radius:8px}.mm-delivery__address-card p{margin:8px 0}.mm-delivery__fieldset{margin:16px 0 0;padding:0;border:0;min-width:0;display:grid;gap:16px}
+.mm-delivery__endpoint{padding:16px 0;border-top:1px solid var(--mm-border,#a69e95);display:grid;gap:14px;min-width:0}.mm-delivery__endpoint h4{margin:0;font-size:15px}
+.mm-delivery__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.mm-admin__delivery-editor .mm-admin__field{display:grid;align-content:start;gap:6px;min-width:0}
+.mm-admin__delivery-editor .mm-admin__field :is(input,select,textarea){width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+.mm-delivery__check{display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.5}.mm-delivery__check input{flex:none;width:20px;height:20px;margin:1px 0}
+.mm-delivery__actions{display:flex;gap:16px;flex-wrap:wrap;align-items:center}.mm-delivery__point-search{display:grid;gap:12px;min-width:0}.mm-delivery__point-search>button{justify-self:start}
+.mm-delivery__point-results{list-style:none;margin:0;padding:0;max-height:280px;overflow:auto;display:grid;gap:8px}.mm-delivery__point-results button{display:grid;gap:5px;width:100%;padding:12px;text-align:left;border:1px solid var(--mm-border,#a69e95);border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.mm-delivery__point-results button[aria-pressed=true]{border:2px solid var(--mm-sage,#7d896d);background:var(--mm-soft,#e8e9e2)}.mm-delivery__point-results span{font-size:13px}
+.mm-delivery__selected-point{padding:12px;background:var(--mm-soft,#e8e9e2);border-radius:8px;font-size:14px}.mm-delivery__private{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}
+.mm-delivery__private summary{cursor:pointer}.mm-delivery__private form{display:grid;gap:12px;margin-top:12px}.mm-delivery__private button{justify-self:start}
+@media(max-width:600px){.mm-admin__delivery-editor{padding:14px}.mm-delivery__grid{grid-template-columns:1fr}.mm-delivery__actions>button{width:100%}}
+`;
+// END_MM_DELIVERY_EDITOR
+
+// BEGIN_MM_ORDER_SYNC_STATUS
+interface OrderSyncStatusProps {
+  value: { status: string; message?: string; remoteOrderId?: string };
+}
+
+function EmbeddedOrderSyncStatus({ value }: OrderSyncStatusProps) {
+  return <section aria-label="Bob Go order synchronisation" role="status" style={{ margin: "16px 0", padding: "14px 16px", border: "1px solid var(--mm-border, #a69e95)", borderRadius: 8, overflowWrap: "anywhere" }}>
+    <strong>Bob Go order sync: {value.status}</strong>
+    {value.message ? <p className="mm-admin__helper" style={{ margin: "8px 0 0" }}>{value.message}</p> : null}
+    {value.remoteOrderId ? <p className="mm-admin__helper" style={{ margin: "8px 0 0" }}>Bob Go order reference: {value.remoteOrderId}</p> : null}
+  </section>;
+}
+// END_MM_ORDER_SYNC_STATUS
+
+// BEGIN_MM_PARCEL_EDITOR
+type ParcelValues = { weightGrams: string; lengthCm: string; widthCm: string; heightCm: string };
+type SavedParcelPackage = { id: string; name: string; lengthCm: number; widthCm: number; heightCm: number };
+interface ParcelEditorProps {
+  value: ParcelValues; change: (value: ParcelValues) => void; disabled?: boolean;
+  loadPackages: () => Promise<SavedParcelPackage[]>;
+}
+
+function EmbeddedParcelEditor({ value, change, disabled = false, loadPackages }: ParcelEditorProps) {
+  const [packages, setPackages] = useState<SavedParcelPackage[]>([]), [selected, setSelected] = useState("");
+  const [loading, setLoading] = useState(false), [loaded, setLoaded] = useState(false), [error, setError] = useState("");
+  async function load() {
+    setLoading(true); setError("");
+    try { setPackages(await loadPackages()); setLoaded(true); }
+    catch { setError("Saved packages could not be loaded. Retry or use custom dimensions below."); }
+    finally { setLoading(false); }
+  }
+  function choose(id: string) {
+    setSelected(id); const item = packages.find(entry => entry.id === id);
+    if (item) change({ ...value, lengthCm: String(item.lengthCm), widthCm: String(item.widthCm), heightCm: String(item.heightCm) });
+  }
+  return <section className="mm-admin__parcel-editor" aria-label="Packed parcel">
+    <h4>2. Choose the packed parcel</h4>
+    {!loaded || error ? <button type="button" className="mm-admin__secondary-button" disabled={disabled || loading} onClick={() => { void load(); }}>{loading ? "Loading packages…" : error ? "Retry saved packages" : "Load my saved Bob Go packages"}</button> : null}
+    {loaded && packages.length ? <label className="mm-admin__field">Package<select value={selected} disabled={disabled || loading} onChange={event => choose(event.target.value)}>
+      <option value="">Custom dimensions</option>{packages.map(item => <option key={item.id} value={item.id}>{item.name} · {item.lengthCm} × {item.widthCm} × {item.heightCm} cm</option>)}
+    </select></label> : loaded ? <p className="mm-admin__helper">No saved packages returned. Use custom dimensions, or save your packaging sizes in Bob Go.</p> : null}
+    {error ? <p role="status" className="mm-admin__helper">{error}</p> : null}
+    {selected ? <p>Package dimensions: <strong>{value.lengthCm} × {value.widthCm} × {value.heightCm} cm</strong> <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => setSelected("")}>Change dimensions</button></p> :
+      <div className="mm-admin__parcel-grid">{([["lengthCm", "Length (cm)"], ["widthCm", "Width (cm)"], ["heightCm", "Height (cm)"]] as const).map(([key, label]) =>
+        <label className="mm-admin__field" key={key}>{label}<input type="number" required min={0.01} max={150} step={0.01} inputMode="decimal" value={value[key]} disabled={disabled} onChange={event => change({ ...value, [key]: event.target.value })} /></label>)}</div>}
+    <label className="mm-admin__field">Actual packed weight (g)<input type="number" required min={1} max={30000} step={1} inputMode="numeric" disabled={disabled} value={value.weightGrams} onChange={event => change({ ...value, weightGrams: event.target.value })} /></label>
+    <p className="mm-admin__helper">Weigh the sealed parcel, including packaging. A saved package fills dimensions only—not the actual weight or Bob Go’s volumetric weight.</p>
+  </section>;
+}
+// END_MM_PARCEL_EDITOR
+
+// BEGIN_MM_SHIPPING_WEIGHT_SETTINGS
+type ShippingWeightRow = { id: string; product: string; colour: string; size: string; grams: number | null };
+interface ShippingWeightSettingsProps {
+  request: (changes?: Array<{ id: string; expectedGrams: number | null; grams: number | null }>) => Promise<ShippingWeightRow[]>;
+}
+function EmbeddedShippingWeightSettings({ request }: ShippingWeightSettingsProps) {
+  const [rows, setRows] = useState<ShippingWeightRow[] | null>(null), [busy, setBusy] = useState(false), [confirmed, setConfirmed] = useState(false);
+  const [message, setMessage] = useState(""), [error, setError] = useState(""), [revision, setRevision] = useState(0);
+  async function load() {
+    setBusy(true); setError("");
+    try { setRows(await request()); setRevision(value => value + 1); setConfirmed(false); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Weights could not be loaded."); }
+    finally { setBusy(false); }
+  }
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget); setError(""); setMessage("");
+    const changes = (rows || []).map(row => { const raw = String(form.get(row.id) || "").trim(); return { id: row.id, expectedGrams: row.grams, grams: raw ? Number(raw) : null }; }).filter(row => row.grams !== row.expectedGrams);
+    if (changes.some(row => row.grams !== null && (!Number.isInteger(row.grams) || row.grams < 1 || row.grams > 30000))) { setError("Enter measured whole grams between 1 and 30000."); return; }
+    if (!form.has("confirmed")) return;
+    if (!changes.length) { setMessage("No weights changed."); return; }
+    setBusy(true);
+    try { setRows(await request(changes)); setRevision(value => value + 1); setConfirmed(false); setMessage("Measured weights saved. Automatic sync remains off."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Weights could not be saved."); }
+    finally { setBusy(false); }
+  }
+  return <details className="mm-delivery__private mm-admin__weight-settings"><summary>Product weights for future order sync</summary>
+    <style>{`.mm-admin__weight-settings{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}.mm-admin__weight-settings summary{cursor:pointer}.mm-admin__weight-settings .mm-admin__field{display:grid;gap:6px;min-width:0}.mm-admin__weight-settings .mm-admin__field input{width:100%;box-sizing:border-box}.mm-admin__weight-settings .mm-delivery__check{display:flex;align-items:flex-start;gap:10px}.mm-admin__weight-settings .mm-delivery__check input{flex:none;width:20px;height:20px}.mm-admin__weight-settings .mm-delivery__actions{display:flex;flex-wrap:wrap;gap:12px}`}</style>
+    <p className="mm-admin__helper">One-time setup: weigh one scarf of each colour/size, without shipping packaging. Leave unknown weights blank. Never use the combined parcel weight or volumetric weight. This does not enable automatic sync.</p>
+    {!rows ? <button type="button" className="mm-admin__secondary-button" disabled={busy} onClick={() => { void load(); }}>{busy ? "Loading…" : "Load product weights"}</button> : <form key={revision} onSubmit={save}>
+      <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, display: "grid", gap: 12 }}>
+        {rows.map(row => <label className="mm-admin__field" key={row.id}>{row.product} · {row.colour} · {row.size} (g)<input name={row.id} type="number" min={1} max={30000} step={1} inputMode="numeric" defaultValue={row.grams ?? ""} /></label>)}
+        <label className="mm-delivery__check"><input type="checkbox" name="confirmed" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />These are measured individual product weights.</label>
+        <div className="mm-delivery__actions"><button type="submit" className="mm-admin__secondary-button" disabled={busy || !confirmed}>{busy ? "Saving…" : "Save product weights"}</button><button type="button" className="mm-admin__text-button" disabled={busy} onClick={() => { void load(); }}>Reload saved weights</button></div>
+      </fieldset></form>}
+    {error ? <p role="alert" className="mm-admin__error">{error}</p> : null}{message ? <p role="status" className="mm-admin__helper">{message}</p> : null}
+  </details>;
+}
+// END_MM_SHIPPING_WEIGHT_SETTINGS
