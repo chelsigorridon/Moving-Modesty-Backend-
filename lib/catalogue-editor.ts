@@ -69,7 +69,10 @@ export function catalogueEditorErrors(document: CatalogueDocument, demo = false)
   }
   return errors;
 }
+export function variantAvailable(entry: Colour["variants"][number]) {
+  return entry.available && (entry.stock > 0 || entry.stockVerified === false);
+}
 export function productAvailability(document: CatalogueDocument) {
   if (!document.colours.some(colour => colour.available && colour.variants.some(entry => entry.available))) return "Unavailable";
-  return document.colours.some(colour => colour.available && colour.variants.some(entry => entry.available && (entry.stock > 0 || entry.stockVerified === false))) ? "Available" : "Out of stock";
+  return document.colours.some(colour => colour.available && colour.variants.some(variantAvailable)) ? "Available" : "Out of stock";
 }

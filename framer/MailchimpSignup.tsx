@@ -216,7 +216,7 @@ export default function MailchimpSignup(props: MailchimpSignupProps) {
                     minHeight: 42,
                     border: 0,
                     borderRadius: 0,
-                    background: "#7D896D",
+                    background: "#536047",
                     color: "#EAE6E3",
                     cursor: status === "pending" || status === "success" ? "default" : "pointer",
                     fontFamily: "Montserrat, sans-serif",

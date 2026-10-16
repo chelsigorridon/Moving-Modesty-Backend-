@@ -60,6 +60,21 @@ test("a CMS slug keeps purchase working when the hydrated SKU binding is empty",
   } finally { await page.close(); }
 });
 
+test("adding to an old cart merges every matching legacy line and respects the aggregate stock limit", async () => {
+  const variants = [{ sku: "AMINA-LAV-OS", size: "One size fits all", name: "Amina Tie-Back", colour: "Lavender", price: 420, image: "", available: true, stock: 6 }];
+  const page = await harness({ sku: "AMINA-LAV", productSlug: "amina-tie-back-lavender" }, variants);
+  try {
+    const old = { id: "old-lavender::one-size", name: "Amina Tie-Back - Lavender", colour: "Lavender", size: "One size fits all", price: 420, quantity: 4 };
+    page.window.localStorage.setItem("moving-modesty-cart-v1", JSON.stringify([old, { ...old, id: "AMINA-LAV-OS", sku: "AMINA-LAV-OS", quantity: 1 }]));
+    await page.add();
+    const cart = JSON.parse(page.window.localStorage.getItem("moving-modesty-cart-v1"));
+    assert.equal(cart.length, 1); assert.equal(cart[0].id, "AMINA-LAV-OS"); assert.equal(cart[0].quantity, 6);
+    await page.add();
+    assert.equal(JSON.parse(page.window.localStorage.getItem("moving-modesty-cart-v1"))[0].quantity, 6);
+    assert.match(page.window.document.body.textContent, /already added the available quantity/);
+  } finally { await page.close(); }
+});
+
 test("Hawa keeps sold-out Large selectable, disables purchasing, then restores Small", async () => {
   const variants = [
     { sku: "HAWA-GRY-S", size: "Small", available: true, stock: null, name: "Hawa Tri-Instant", colour: "Grey", price: 450, image: "" },

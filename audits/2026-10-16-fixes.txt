@@ -1,0 +1,80 @@
+MOVING MODESTY — APPROVED WEBSITE AUDIT FIXES
+16 October 2026
+
+Scope: the six fixes explicitly requested after the website audit.
+Live Framer release: 812b27618.
+
+1. About Us mobile clipping
+   Made the story body and supporting paragraph fill their bounded parent,
+   with zero minimum width and automatic height. Preserved the desktop reading
+   width, fonts, content and section order. Verified readable live text at
+   320 and 390 px; tablet/desktop width checks also completed.
+
+2. Admin Products mobile list
+   Small-screen rows now use a thumbnail + flexible text column, with the Edit
+   action on a separate full row. At 390 px, the title has about 192 px of usable
+   width instead of less than 1 px; both product rows are about 201 px tall
+   instead of over 1,050 px. Desktop layout is retained.
+
+3. Free-delivery copy
+   Corrected all nine Products CMS records from R1,500 to R1,200. The popup now
+   explicitly says "Free delivery on orders of R1,200 or more."
+   Both Neon catalogue draft/published documents and their CMS fingerprints
+   were updated transactionally with exact old-version guards. Both products
+   are revision 4/published revision 4, idle. No stock or price changed.
+   Verified the popup and a customer-facing Delivery & returns accordion live.
+
+4. Product Preview stock
+   Shared variantAvailable() includes uncounted stock (stockVerified:false),
+   while still respecting the colour/size availability switches and confirmed
+   zero stock. Live Hawa Preview enables seven size/colour choices and disables
+   only Grey Large, labelled "Out of stock". No product edit was saved during
+   the preview check. Regenerated the embedded Framer admin from shared source.
+
+5. Legacy cart merging
+   Added shared canonical SKU normalization, mechanically bundled into the
+   purchase, cart and checkout-summary single-file Framer components. Legacy
+   entries merge with current entries without losing quantity; different sizes
+   and colours stay separate. Unknown/invalid lines remain visible for existing
+   validation instead of being silently discarded. Add checks aggregate stock
+   and the ten-per-variant limit. Tests cover mixed legacy/current identities,
+   idempotence, unknown products, quantity preservation and aggregate limits.
+   Live test: original Lavender quantity four + one Add produced one line at
+   quantity five/R2,100. Decreased back to the original quantity four/R1,680.
+   No checkout order, email, payment or courier booking was created.
+
+6. Button-label contrast
+   Primary storefront actions now use the darker existing olive family:
+   #536047 with #EAE6E3 labels, approximately 5.40:1 contrast. Updated explicit
+   canvas overrides, generated checkout navigation, contact/newsletter actions,
+   product preview and shared native Button variants. Admin main actions also
+   use the darker fill. Decorative sage accents and the overall layout remain.
+   Computed live Add, Join and Send colours were checked, not just defaults.
+
+VERIFICATION
+- 248 automated tests passed, zero failures/cancellations/skips.
+- Strict local Framer TypeScript and scoped ESLint checks passed.
+- All seven changed code files passed strict Framer-side type checking.
+- Next.js 16.3.8 production build passed in the isolated release candidate.
+  A first attempt encountered an existing OneDrive build-cache permission lock;
+  a fresh output directory was used. Test fixture typing was corrected before
+  the successful full build. No weakened checks or ignored build errors.
+- Live Framer source read-back matches the seven local component files.
+- Framer publish preflight reported no errors or warnings.
+- CMS remains two collections; no extra collection/product/page was created.
+- Automatic Bob Go synchronization remains hard-disabled; no credentials,
+  courier channel, scheduler or webhook subscription was activated.
+- Existing unrelated untracked prototype work was not included in the changes.
+
+SCREENSHOTS (workspace-relative)
+.tmp/audit-fixes-20261016/about-mobile.png
+.tmp/audit-fixes-20261016/admin-products-mobile.png
+.tmp/audit-fixes-20261016/delivery-copy-mobile.png
+.tmp/audit-fixes-20261016/delivery-popup-mobile.png
+.tmp/audit-fixes-20261016/cart-restored.png
+
+BOUNDARIES
+These fixes do not establish bank settlement, inbox delivery or a courier
+shipment lifecycle. Those still need the separately approved end-to-end tests
+described in the original audit. The older admin service-alert incident was
+not part of these six requested fixes and was not silently dismissed.

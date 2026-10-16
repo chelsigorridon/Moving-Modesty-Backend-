@@ -105,7 +105,7 @@ function readCart(): CartItem[] {
         const saved = window.localStorage.getItem(CART_KEY)
         if (!saved) return []
         const parsed = JSON.parse(saved)
-        return Array.isArray(parsed) ? parsed : []
+        return Array.isArray(parsed) ? normalizeStorefrontCart(parsed.filter(item => item && typeof item.id === "string")) : []
     } catch {
         return []
     }
@@ -138,7 +138,7 @@ export default function ProductPurchase(props: Props) {
         buttonLabel = "Add to cart",
         surfaceColor = "#EAE6E3",
         textColor = "#332B25",
-        buttonColor = "#738063",
+        buttonColor = "#536047",
         buttonTextColor = "#EAE6E3",
         borderColor = "rgba(51, 43, 37, 0.24)",
         style,
@@ -234,18 +234,20 @@ export default function ProductPurchase(props: Props) {
             setVariants(data.variants)
             live = data.variants.find((variant: AvailableVariant) => variant.size === selectedSize)
             if (!live?.available) throw new Error("This size is out of stock.")
-            const quantity = readCart().find(item => item.sku === live!.sku)?.quantity || 0
+            const quantity = readCart().filter(item => canonicalCartSku(item) === live!.sku.trim().toUpperCase())
+                .reduce((total, item) => total + item.quantity, 0)
+            if (quantity + 1 > 10) throw new Error("Choose no more than 10 of this item.")
             if (live.stock !== null && quantity + 1 > live.stock) throw new Error("You have already added the available quantity.")
         } catch (error) { setMessage(error instanceof Error ? error.message : "Please try again."); setAdding(false); return }
         const numericPrice = live.price
         const colour = live.colour
         const imageSource = live.image || getImageSource(image)
-        const stableSku = live.sku
+        const stableSku = live.sku.trim().toUpperCase()
         const liveName = live.name
         const livePriceLabel = `R ${numericPrice.toFixed(2)}`
         const id = stableSku || [productSlug || productName, selectedSize].join("::").toLowerCase()
         const current = readCart()
-        const existingIndex = current.findIndex((item) => item.id === id)
+        const existingIndex = current.findIndex((item) => canonicalCartSku(item) === stableSku)
         let next: CartItem[]
 
         if (existingIndex >= 0) {
@@ -253,6 +255,7 @@ export default function ProductPurchase(props: Props) {
                 index === existingIndex
                     ? {
                         ...item,
+                        id,
                         sku: stableSku || item.sku || "",
                         productSlug: productSlug || item.productSlug || "",
                         name: liveName,
@@ -437,7 +440,54 @@ addPropertyControls(ProductPurchase, {
     buttonLabel: { type: ControlType.String, title: "Button", defaultValue: "Add to cart" },
     surfaceColor: { type: ControlType.Color, title: "Surface", defaultValue: "#EAE6E3" },
     textColor: { type: ControlType.Color, title: "Text", defaultValue: "#332B25" },
-    buttonColor: { type: ControlType.Color, title: "Button fill", defaultValue: "#738063" },
+    buttonColor: { type: ControlType.Color, title: "Button fill", defaultValue: "#536047" },
     buttonTextColor: { type: ControlType.Color, title: "Button text", defaultValue: "#EAE6E3" },
     borderColor: { type: ControlType.Color, title: "Border", defaultValue: "rgba(51, 43, 37, 0.24)" },
 })
+
+// BEGIN GENERATED CART IDENTITY
+// Bundled into Framer's single-file components by build-framer-cart.mjs.
+type StorefrontCartLine = {
+  id: string; sku?: string; productSlug?: string; name: string; colour: string;
+  size: string; quantity: number;
+};
+
+function canonicalCartSku(item: StorefrontCartLine): string {
+  if (item.sku?.trim()) return item.sku.trim().toUpperCase();
+  const identity = `${item.productSlug || ""} ${item.name || ""}`.toLowerCase();
+  const colour = String(item.colour || "").trim().toLowerCase();
+  const bases: Record<string, string> = identity.includes("amina")
+    ? { lavender: "AMINA-LAV", lilac: "AMINA-LIL", black: "AMINA-BLK" }
+    : identity.includes("hawa")
+      ? { black: "HAWA-BLK", pink: "HAWA-PNK", "soft pink": "HAWA-PNK", sage: "HAWA-SGE", grey: "HAWA-GRY", gray: "HAWA-GRY" }
+      : {};
+  const size = String(item.size || "").trim().toLowerCase();
+  const suffix = size === "small" ? "S" : size === "large" ? "L" : size.includes("one size") ? "OS" : "";
+  return bases[colour] && suffix ? `${bases[colour]}-${suffix}` : "";
+}
+
+function normalizeStorefrontCart<T extends StorefrontCartLine>(items: T[]): T[] {
+  const result: T[] = [];
+  const positions = new Map<string, number>();
+  for (const item of items) {
+    const sku = canonicalCartSku(item);
+    // Leave unidentifiable or invalid lines visible for the existing validation
+    // flow. Never guess an unknown variant or silently discard its quantity.
+    if (!sku || !Number.isSafeInteger(item.quantity) || item.quantity < 1) {
+      result.push({ ...item });
+      continue;
+    }
+    const position = positions.get(sku);
+    if (position !== undefined) {
+      const total = result[position].quantity + item.quantity;
+      if (Number.isSafeInteger(total)) result[position] = { ...result[position], quantity: total };
+      else result.push({ ...item });
+    } else {
+      positions.set(sku, result.length);
+      result.push({ ...item, id: sku, sku });
+    }
+  }
+  return result;
+}
+
+// END GENERATED CART IDENTITY

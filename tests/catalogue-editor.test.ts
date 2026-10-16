@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addProductSize, catalogueEditorErrors, changeUsualPrice, newProductColour, productAddress,
-  productAvailability, productSizes, renameProductSize, usualProductPrice, withProductColours,
+  productAvailability, productSizes, renameProductSize, usualProductPrice, variantAvailable, withProductColours,
 } from "../lib/catalogue-editor.ts";
 
 function product() {
@@ -10,6 +10,14 @@ function product() {
     homepageImage: { url: "", alt: "" }, showOnHomepage: true, homepageOrder: 0,
     colours: [newProductColour(["Small", "Large"], 420), newProductColour(["Small", "Large"], 420)] };
 }
+test("preview availability treats uncounted stock like the live storefront without overriding size switches", () => {
+  const entry = newProductColour(["Small"], 450).variants[0];
+  assert.equal(variantAvailable({ ...entry, stock: 0, stockVerified: false }), true);
+  assert.equal(variantAvailable({ ...entry, stock: 0, stockVerified: true }), false);
+  assert.equal(variantAvailable({ ...entry, stock: 0 }), false);
+  assert.equal(variantAvailable({ ...entry, stock: 8, stockVerified: true }), true);
+  assert.equal(variantAvailable({ ...entry, available: false, stock: 8, stockVerified: false }), false);
+});
 test("page addresses are automatic, bounded and unique, including accented and non-Latin names", () => {
   assert.equal(productAddress("Noor Active Hijab"), "noor-active-hijab");
   assert.equal(productAddress("Noor", ["noor", "noor-2"]), "noor-3");

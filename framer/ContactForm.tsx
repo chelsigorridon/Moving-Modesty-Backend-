@@ -18,7 +18,7 @@ interface ContactFormProps {
  */
 export default function ContactForm({
     endpoint = "https://movingmodesty.vercel.app/api/contact",
-    textColor = "#332B25", borderColor = "#B6AEA7", accentColor = "#738063",
+    textColor = "#332B25", borderColor = "#B6AEA7", accentColor = "#536047",
     buttonTextColor = "#EAE6E3", style,
 }: ContactFormProps) {
     const isStatic = useIsStaticRenderer()
@@ -93,6 +93,6 @@ addPropertyControls(ContactForm, {
     endpoint: { type: ControlType.String, title: "Endpoint", defaultValue: "https://movingmodesty.vercel.app/api/contact" },
     textColor: { type: ControlType.Color, title: "Text", defaultValue: "#332B25" },
     borderColor: { type: ControlType.Color, title: "Border", defaultValue: "#B6AEA7" },
-    accentColor: { type: ControlType.Color, title: "Accent", defaultValue: "#738063" },
+    accentColor: { type: ControlType.Color, title: "Accent", defaultValue: "#536047" },
     buttonTextColor: { type: ControlType.Color, title: "Button text", defaultValue: "#EAE6E3" },
 })

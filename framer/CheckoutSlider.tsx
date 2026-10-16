@@ -299,11 +299,11 @@ ${ROOT_SELECTOR} > [data-mm-checkout-submit] {
 .mm-checkout-next {
   min-width: 148px;
   color: #fff;
-  background: #738063;
-  border: 1px solid #738063;
+  background: #536047;
+  border: 1px solid #536047;
 }
 .mm-checkout-next:hover {
-  background: #657257;
+  background: #424d39;
 }
 ${ROOT_SELECTOR} [data-mm-fulfilment-option] {
   cursor: pointer !important;

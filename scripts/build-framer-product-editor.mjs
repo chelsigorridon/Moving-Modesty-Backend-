@@ -4,14 +4,15 @@ import ts from "typescript";
 const target = new URL("../framer/AdminPortal.tsx", import.meta.url);
 const begin = "// BEGIN GENERATED PRODUCT EDITOR";
 const end = "// END GENERATED PRODUCT EDITOR";
-let portal = readFileSync(target, "utf8").replace(new RegExp(`\\n${begin}[\\s\\S]*?${end}\\n?`), "");
+const portal = readFileSync(target, "utf8");
+const section = new RegExp(`${begin}[\\s\\S]*?${end}`);
 let editor = readFileSync(new URL("../components/product-catalogue-editor.tsx", import.meta.url), "utf8");
 editor = editor.slice(editor.indexOf("type Draft ="));
 editor = editor.replace("export default function ProductCatalogueEditor", "function LiveCatalogueEditor").replace("catalogueDocumentSchema.parse(current.document)", "current.document");
 let helpers = readFileSync(new URL("../lib/catalogue-editor.ts", import.meta.url), "utf8");
 helpers = helpers.slice(helpers.indexOf("export function productAddress"));
 helpers = helpers.replace(/export /g, "");
-helpers = helpers.replace(/function catalogueEditorErrors[\s\S]*?(?=function productAvailability)/, `function catalogueEditorErrors(document: CatalogueDocument, demo = false): CatalogueEditorErrors {
+helpers = helpers.replace(/function catalogueEditorErrors[\s\S]*?(?=function variantAvailable)/, `function catalogueEditorErrors(document: CatalogueDocument, demo = false): CatalogueEditorErrors {
   void demo;
   const errors: CatalogueEditorErrors = {};
   if (document.name.trim().length < 2) errors.name = "Enter a product name.";
@@ -52,5 +53,6 @@ collect(source);
 for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
   generated = generated.slice(0, replacement.start) + replacement.text + generated.slice(replacement.end);
 }
-writeFileSync(target, `${portal.trimEnd()}\n\n${begin}\n${generated}\n${end}\n`);
+const block = `${begin}\n${generated}\n${end}`;
+writeFileSync(target, section.test(portal) ? portal.replace(section, () => block) : `${portal.trimEnd()}\n\n${block}\n`);
 console.log("Bundled the shared product editor into AdminPortal.tsx.");
