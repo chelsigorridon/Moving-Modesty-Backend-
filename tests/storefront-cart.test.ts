@@ -37,9 +37,9 @@ test("unidentifiable and invalid lines remain visible for validation; quantities
 
 test("all three deployed cart consumers contain the exact generated identity rules", async () => {
   const { readFile } = await import("node:fs/promises");
-  const shared = (await readFile(new URL("../lib/storefront-cart.ts", import.meta.url), "utf8")).replace(/export function /g, "function ").trim();
+  const shared = (await readFile(new URL("../lib/storefront-cart.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n").replace(/export function /g, "function ").trim();
   for (const file of ["ProductPurchase", "CartContents", "CheckoutOrderSummary"]) {
-    const source = await readFile(new URL(`../framer/${file}.tsx`, import.meta.url), "utf8");
+    const source = (await readFile(new URL(`../framer/${file}.tsx`, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
     assert.equal(source.split("// BEGIN GENERATED CART IDENTITY\n")[1]?.split("// END GENERATED CART IDENTITY")[0].trim(), shared);
   }
 });
