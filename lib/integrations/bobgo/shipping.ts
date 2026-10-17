@@ -1,10 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { eq, getTableColumns } from "drizzle-orm";
+import { and, eq, getTableColumns } from "drizzle-orm";
 import { checkoutOrderSchema } from "../../checkout-input";
 import { readOrderCustomer } from "../../checkout-safety";
 import { requireDatabase } from "../../db";
-import { addresses, customers, orders, payments, shipments, orderStatusHistory } from "../../db/schema";
+import { addresses, bobgoOrderSync, customers, orders, payments, shipments, orderStatusHistory } from "../../db/schema";
 import { getBobGoConfiguration } from "./configuration";
 import { resolveCourierPlan, deliveryRatePayload, deliveryShipmentPayload } from "./delivery";
 import { bobGoRequest, getConfiguredBobGoLocation } from "./client";
@@ -29,6 +29,16 @@ async function loadOrder(orderNumber: string) {
   return data;
 }
 type ShippingOrder = Awaited<ReturnType<typeof loadOrder>>;
+async function assertIndependentBookingAllowed(reader: Pick<ReturnType<typeof requireDatabase>, "select">, orderId: string) {
+  // Also protects previously-synced orders if automatic sync is later paused.
+  // Current unsynced orders retain the existing manual portal workflow.
+  const jobs = await reader.select({ status: bobgoOrderSync.status, remoteId: bobgoOrderSync.remoteOrderId, submittedAt: bobgoOrderSync.submittedAt,
+    leaseExpiresAt: bobgoOrderSync.leaseExpiresAt }).from(bobgoOrderSync)
+    .where(and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, getBobGoConfiguration().environment)));
+  if (jobs.some(job => job.remoteId || job.submittedAt || ["synced", "checking", "syncing"].includes(job.status) || (job.leaseExpiresAt && job.leaseExpiresAt.getTime() > Date.now()))) {
+    throw new ShippingConflict("This order is linked to Bob Go or its submission is still being checked. Book against the existing order in Bob Go, then check its linked waybill. Do not create a separate shipment.");
+  }
+}
 function assertCanBook(data: ShippingOrder) {
   const config = getBobGoConfiguration();
   if (!config.enabled || !config.apiTokenConfigured || (!data.order.courierPlan &&
@@ -61,6 +71,7 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
   const parcel = parcelInput.parse(input);
   let data = await loadOrder(orderNumber);
   assertCanBook(data);
+  await assertIndependentBookingAllowed(database(), data.order.id);
   const requestedFingerprint = orderFingerprint(data, parcel);
   const config = getBobGoConfiguration();
   const resolved = data.order.courierPlan ? await resolveCourierPlan(data.order.courierPlan, parcel, { operation: "courier_quote", orderId: data.order.id }) : null;
@@ -88,6 +99,7 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
   await database().transaction(async transaction => {
     const [locked] = await transaction.select(shippingOrderColumns).from(orders).where(eq(orders.id, data.order.id)).for("update");
     const [shipment] = await transaction.select().from(shipments).where(eq(shipments.orderId, locked.id)).for("update");
+    await assertIndependentBookingAllowed(transaction, locked.id);
     assertCanBook({ ...data, order: locked, shipment: shipment || null });
     if (fingerprint(locked) !== fingerprint(data.order)) throw new ShippingConflict("The order changed. Refresh it and get a new quote.");
     const values = { provider: `bobgo-${config.environment}`, weightGrams: parcel.weightGrams, lengthCm: parcel.lengthCm.toFixed(2), widthCm: parcel.widthCm.toFixed(2), heightCm: parcel.heightCm.toFixed(2),
@@ -122,6 +134,7 @@ export async function bookCourierShipment(orderNumber: string, quoteToken: strin
     const [shipment] = await transaction.select().from(shipments).where(eq(shipments.orderId, locked.id)).for("update");
     const current = { ...data, order: locked, shipment: shipment || null };
     assertCanBook(current);
+    await assertIndependentBookingAllowed(transaction, locked.id);
     if (quote.fingerprint !== orderFingerprint(current, shipmentParcel(current))) throw new ShippingConflict("Order or parcel details changed. Get a new courier quote.");
     // Commit a durable lock BEFORE the chargeable POST. Never release it on an unknown outcome.
     await transaction.update(shipments).set({ provider: `bobgo-${quote.environment}`, status: "booking", waybillReference: attemptReference,

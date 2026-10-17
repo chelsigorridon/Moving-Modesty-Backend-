@@ -29,13 +29,13 @@ export function preparedSyncCredentials(config: OrderSyncConfiguration) {
   const domain = new URL(process.env.STORE_URL || "");
   if (domain.protocol !== "https:" || domain.username || domain.password || domain.port
     || domain.pathname !== "/" || domain.search || domain.hash || /(^|\.)(framer\.app|localhost|vercel\.app)$/.test(domain.hostname)
-    || /^\d+\.\d+\.\d+\.\d+$/.test(domain.hostname)) throw new Error("The final store domain is not configured.");
+    || /^\d+\.\d+\.\d+\.\d+$/.test(domain.hostname) || domain.hostname !== channel) throw new Error("The final store domain does not match the Bob Go channel identifier.");
   return { token };
 }
 
 export async function runConfiguredBobGoSync() {
   const config = getOrderSyncConfiguration(), credentials = preparedSyncCredentials(config);
-  if (!credentials) return { enabled: false, ordersChecked: 0, shipmentsChecked: 0, needsAttention: 0 };
+  if (!credentials) return { enabled: false, ordersChecked: 0, waybillLinksChecked: 0, shipmentsChecked: 0, needsAttention: 0 };
   const provider = createBobGoSyncTransport(config, credentials.token);
   return createBobGoSyncRunner(requireDatabase(), provider, config, async (orderId, kind, failed) => {
     const operation = kind === "sync" ? "courier_sync" : "courier_tracking";
@@ -52,4 +52,13 @@ export async function retryConfiguredBobGoSync(orderNumber: string) {
   if (!order) return { status: "ineligible" };
   // Retry only queues the existing job. The background runner performs read-back.
   return createBobGoOrderSyncService(database, createBobGoSyncTransport(config, credentials.token), config).retry(order.id);
+}
+
+export async function checkConfiguredBobGoWaybillLink(orderNumber: string) {
+  const config = getOrderSyncConfiguration(), credentials = preparedSyncCredentials(config);
+  if (!credentials) return { status: "disabled" };
+  const database = requireDatabase();
+  const [order] = await database.select({ id: orders.id }).from(orders).where(eq(orders.orderNumber, orderNumber)).limit(1);
+  if (!order) return { status: "ineligible" };
+  return createBobGoOrderSyncService(database, createBobGoSyncTransport(config, credentials.token), config).refreshWaybillLink(order.id);
 }

@@ -47,6 +47,12 @@ export function createBobGoSyncTransport(config: OrderSyncConfiguration, token: 
       return [...unique.values()];
     },
     async createOrder(payload) { const result = await request("/orders", payload); return object(result).order || result; },
+    async readOrderFulfillments(id: string) {
+      if (!/^[1-9]\d{0,18}$/.test(id)) throw new BobGoSyncTransportError();
+      const result = object(await request(`/order-fulfillments?${new URLSearchParams({ order_id: id })}`));
+      if (!Array.isArray(result.order_fulfillments) || result.order_fulfillments.length > 100) throw new BobGoSyncTransportError();
+      return result;
+    },
     async readShipment(id: string) {
       if (!/^[1-9]\d{0,18}$/.test(id)) throw new BobGoSyncTransportError();
       const rows = list(await request(`/shipments?${new URLSearchParams({ id, limit: "2", offset: "0" })}`), "shipments");

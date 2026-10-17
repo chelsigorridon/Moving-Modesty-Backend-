@@ -14,6 +14,7 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
   const postgres = new PGlite(), db = require("drizzle-orm/pglite").drizzle(postgres), cache = new Map<string, any>();
   const remote = new Map<string, any>(), calls: Array<{ action: string; value: any }> = [];
   const remoteShipments = new Map<string, any>();
+  const remoteFulfillments = new Map<string, any>();
   let mode = "success", clock = Date.now() + 60000, afterLookup: undefined | (() => Promise<void>), remoteShipment: any;
   function load(file: string): any {
     const path = resolve(root, file);
@@ -46,12 +47,13 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
         calls.push({ action: "create", value: payload });
         const job = (await postgres.query<Record<string, any>>("select * from bobgo_order_sync where request_snapshot->>'channel_order_number'=$1", [payload.channel_order_number])).rows[0];
         assert.ok(job.submitted_at && job.lease_token, "Unknown-outcome guard must be committed before create");
-        const result = { ...structuredClone(payload), id: 10000 + remote.size };
+        const result = { ...structuredClone(payload), id: 10000 + remote.size, order_items: payload.order_items.map((item: any, i: number) => ({ ...item, id: 50000 + remote.size * 100 + i })) };
         if (mode !== "timeout-empty") remote.set(payload.channel_order_number, result);
         if (mode.startsWith("timeout")) throw new Error("TEST-only provider timeout");
         return result;
       },
       async readShipment(id: string) { calls.push({ action: "tracking", value: id }); return remoteShipments.get(id) || remoteShipment; },
+      async readOrderFulfillments(id: string) { calls.push({ action: "fulfillments", value: id }); return remoteFulfillments.get(id) || { order_fulfillments: [] }; },
     };
     const service = sync.createBobGoOrderSyncService(db, provider, config, () => clock);
     async function seed(number: string, changes: Record<string, any> = {}) {
@@ -67,12 +69,26 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
     }
     const job = async (id: string) => (await postgres.query<Record<string, any>>("select * from bobgo_order_sync where order_id=$1", [id])).rows[0];
     const createCount = () => calls.filter(call => call.action === "create").length;
+    function existingFulfillment(number: string, shipmentId: number) {
+      const order = remote.get(number), tracking = `TEST-LINK-${shipmentId}`;
+      const fulfillment = { id: shipmentId + 1000, order_id: order.id, channel_order_number: number,
+        method: "shipment", method_id: shipmentId, method_reference: tracking, status: "success",
+        order_items: order.order_items.map((item: any) => ({ ...item, fulfilled_qty: item.qty })) };
+      remoteFulfillments.set(String(order.id), { order_fulfillments: [fulfillment] });
+      remoteShipments.set(String(shipmentId), { id: shipmentId, tracking_reference: tracking, submission_status: "success", status: "pending-collection",
+        provider_slug: "demo", provider_name: "TEST Courier", service_level_code: "ECO", collection_location_type: "door", delivery_location_type: "door",
+        delivery_address: order.delivery_address, delivery_contact_name: `${order.customer_name} ${order.customer_surname}`,
+        delivery_contact_email: order.customer_email, delivery_contact_mobile_number: order.customer_phone,
+        time_created: new Date(clock - 1000).toISOString(), time_modified: new Date(clock).toISOString() });
+      return fulfillment;
+    }
 
     await t.test("disabled enqueue and worker access neither database nor provider", async () => {
       const disabled = sync.createBobGoOrderSyncService(new Proxy({}, { get() { throw new Error("No database access permitted"); } }), provider, { ...config, enabled: false });
       const before = calls.length;
       assert.equal((await disabled.sync(randomUUID())).status, "disabled");
       assert.equal((await disabled.refreshTracking(randomUUID())).status, "disabled");
+      assert.equal((await disabled.refreshWaybillLink(randomUUID())).status, "disabled");
       assert.equal((await sync.enqueuePaidBobGoOrder(null, randomUUID())).reason, "disabled");
       assert.equal(calls.length, before);
     });
@@ -171,6 +187,8 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       assert.equal((await service.refreshTracking(id)).status, "needs_attention");
       remoteShipment.tracking_reference = "TEST-TRACKING";
       assert.equal((await service.refreshTracking(id)).status, "updated");
+      assert.equal((await postgres.query<any>("select count(*) from inventory_movements")).rows[0].count, 0);
+      assert.equal((await postgres.query<any>("select count(*) from email_events")).rows[0].count, 0);
       remoteShipment.status = "in-transit"; remoteShipment.tracking_last_event_time = new Date(clock + 1000).toISOString();
       assert.equal((await service.refreshTracking(id)).status, "unchanged");
       const shipment = (await postgres.query<Record<string, any>>("select * from shipments where order_id=$1", [id])).rows[0];
@@ -189,6 +207,62 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       mode = "success";
       assert.equal((await service.sync(id)).status, "checking"); assert.equal(createCount(), count);
     });
+    await t.test("existing Bob Go waybill links once, updates tracking metadata only and never creates a shipment", async () => {
+      const number = "MM-SYNC-EXISTING-WAYBILL", { id } = await seed(number); mode = "success";
+      assert.equal((await service.sync(id)).status, "synced"); existingFulfillment(number, 9500);
+      const before = (await postgres.query<any>("select * from orders where id=$1", [id])).rows[0];
+      const payment = (await postgres.query<any>("select * from payments where order_id=$1", [id])).rows[0];
+      const count = createCount();
+      assert.equal((await service.refreshWaybillLink(id)).status, "linked");
+      assert.equal((await service.refreshWaybillLink(id)).status, "unchanged");
+      assert.equal(createCount(), count);
+      const shipment = (await postgres.query<any>("select * from shipments where order_id=$1", [id])).rows[0];
+      assert.equal(shipment.provider_shipment_id, "9500"); assert.equal(shipment.tracking_number, "TEST-LINK-9500"); assert.equal(shipment.status, "booked");
+      const after = (await postgres.query<any>("select * from orders where id=$1", [id])).rows[0];
+      assert.equal(after.tracking_number, "TEST-LINK-9500"); assert.equal(after.courier_name, "TEST Courier");
+      for (const key of ["tracking_number", "tracking_url", "courier_name", "updated_at"]) { delete before[key]; delete after[key]; }
+      assert.deepEqual(after, before);
+      assert.deepEqual((await postgres.query<any>("select * from payments where order_id=$1", [id])).rows[0], payment);
+      assert.equal((await postgres.query<any>("select count(*) from order_status_history where order_id=$1", [id])).rows[0].count, 1);
+      assert.equal((await job(id)).waybill_link_error_code, null);
+      assert.equal((await service.refreshTracking(id)).status, "updated");
+    });
+    await t.test("incomplete, split and conflicting fulfilments cannot replace or invent a waybill", async () => {
+      const number = "MM-SYNC-LINK-INCOMPLETE", { id } = await seed(number);
+      await service.sync(id); assert.equal((await service.refreshWaybillLink(id)).status, "not_booked");
+      const fulfillment = existingFulfillment(number, 9501), remoteId = String(remote.get(number).id);
+      remoteFulfillments.set(remoteId, { order_fulfillments: [{ ...fulfillment, order_items: [] }] });
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await job(id)).waybill_link_error_code, "fulfillment_mismatch");
+      remoteFulfillments.set(remoteId, { order_fulfillments: [fulfillment, fulfillment] });
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await job(id)).waybill_link_error_code, "fulfillment_multiple");
+      remoteFulfillments.set(remoteId, { order_fulfillments: [fulfillment] });
+      await db.insert(schema.shipments).values({ orderId: id, provider: "bobgo-sandbox", status: "booked", providerShipmentId: "99501", trackingNumber: "TEST-PRESERVE" });
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await job(id)).waybill_link_error_code, "fulfillment_conflict");
+      assert.equal((await postgres.query<any>("select provider_shipment_id from shipments where order_id=$1", [id])).rows[0].provider_shipment_id, "99501");
+    });
+    await t.test("a waybill already owned by another order cannot be adopted, even with a matching provider response", async () => {
+      const number = "MM-SYNC-LINK-OWNERSHIP", { id } = await seed(number), other = await seed("MM-SYNC-LINK-OTHER");
+      await service.sync(id); existingFulfillment(number, 9502);
+      await db.insert(schema.shipments).values({ orderId: other.id, provider: "bobgo-sandbox", status: "booked", providerShipmentId: "9502", trackingNumber: "TEST-LINK-9502" });
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await job(id)).waybill_link_error_code, "fulfillment_conflict");
+      assert.equal((await postgres.query<any>("select count(*) from shipments where order_id=$1", [id])).rows[0].count, 0);
+      await assert.rejects(db.insert(schema.shipments).values({ orderId: id, provider: "bobgo-sandbox", providerShipmentId: "9502" }), "Database uniqueness is the final concurrent-link safeguard");
+    });
+    await t.test("delivery edits during read-back and raw provider failures cannot cause a stale link", async () => {
+      const number = "MM-SYNC-LINK-EDIT", { id, addressId } = await seed(number);
+      await service.sync(id); existingFulfillment(number, 9503);
+      mode = "lookup-outage";
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await job(id)).waybill_link_error_code, "fulfillment_lookup_failed");
+      assert.doesNotMatch(JSON.stringify(await job(id)), /SECRET TEST ERROR/); mode = "success";
+      afterLookup = async () => { await postgres.query("update addresses set line_1='30 Changed Road' where id=$1", [addressId]); };
+      assert.equal((await service.refreshWaybillLink(id)).status, "needs_attention");
+      assert.equal((await postgres.query<any>("select count(*) from shipments where order_id=$1", [id])).rows[0].count, 0);
+    });
     await t.test("the bounded runner processes only due channel jobs and known shipments, not historical paid orders", async () => {
       await postgres.query("update bobgo_order_sync set status='needs_attention'");
       const queued = await seed("MM-SYNC-RUNNER-QUEUED"), historical = await seed("MM-SYNC-RUNNER-HISTORY");
@@ -204,6 +278,7 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       assert.equal((await disabled()).enabled, false);
     });
     await t.test("tracking polling is bounded and fair, ignores completed shipments and does not alter fulfilment", async () => {
+      await postgres.query("update shipments set courier_checked_at=$1 where provider_shipment_id like '95%'", [new Date(clock)]);
       const ids: string[] = [];
       for (let i = 0; i < 3; i++) {
         const { id } = await seed(`MM-SYNC-POLL-${i}`); ids.push(id);
@@ -213,6 +288,26 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       const { createBobGoSyncRunner } = load("lib/integrations/bobgo/order-sync-runner.ts"), run = createBobGoSyncRunner(db, provider, config, async () => {}, () => clock);
       assert.equal((await run()).shipmentsChecked, 2); assert.equal((await run()).shipmentsChecked, 1); assert.equal((await run()).shipmentsChecked, 0);
       for (const id of ids) assert.equal((await postgres.query<any>("select status from orders where id=$1", [id])).rows[0].status, "ready");
+    });
+    await t.test("waybill discovery is bounded, fair and never scans historical or unsynced orders", async () => {
+      await postgres.query("update bobgo_order_sync set waybill_link_checked_at=$1", [new Date(clock)]);
+      const linkedIds: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const number = `MM-SYNC-DISCOVER-${i}`, { id } = await seed(number); linkedIds.push(id);
+        await service.sync(id); existingFulfillment(number, 9600 + i);
+      }
+      const historical = await seed("MM-SYNC-DISCOVER-HISTORY"), count = createCount();
+      const { createBobGoSyncRunner } = load("lib/integrations/bobgo/order-sync-runner.ts"), run = createBobGoSyncRunner(db, provider, config, async () => {}, () => clock);
+      assert.equal((await run()).waybillLinksChecked, 2); assert.equal((await run()).waybillLinksChecked, 1); assert.equal((await run()).waybillLinksChecked, 0);
+      for (const id of linkedIds) assert.equal((await postgres.query<any>("select status from shipments where order_id=$1", [id])).rows[0].status, "booked");
+      assert.equal(await job(historical.id), undefined); assert.equal(createCount(), count);
+    });
+    await t.test("ineligible synced orders reserve a check time without reading Bob Go, avoiding queue starvation", async () => {
+      const { id } = await seed("MM-SYNC-LINK-INELIGIBLE"); await service.sync(id);
+      await postgres.query("update orders set status='cancelled' where id=$1", [id]);
+      const before = calls.length;
+      assert.equal((await service.refreshWaybillLink(id)).status, "ineligible"); assert.equal(calls.length, before);
+      assert.equal((await job(id)).waybill_link_checked_at.getTime(), clock);
     });
     await t.test("verified weight configuration is audited, optimistic and independent of stock, payments and sync activation", async () => {
       const first = await seed("MM-SYNC-WEIGHTS-FIRST"), second = await seed("MM-SYNC-WEIGHTS-SECOND"), count = calls.length;

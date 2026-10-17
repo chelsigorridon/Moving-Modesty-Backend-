@@ -80,6 +80,16 @@ test("delivery editing and all courier routes preserve payments, quotes and book
       return id;
     }
     const orderId = await seed("MM-DELIVERY-TEST");
+    await t.test("mirrored or uncertain Bob Go orders cannot book a separate portal shipment, even with an older approved quote", async () => {
+      const number = "MM-DELIVERY-LINKED-GUARD", id = await seed(number);
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan }, "owner@example.invalid");
+      const quotes = await shipping.getCourierQuotes(number, parcel, false), count = calls.length;
+      await database.insert(schema.bobgoOrderSync).values({ orderId: id, environment: "production", channelRef: "store.example.invalid", status: "checking", submittedAt: new Date() });
+      await assert.rejects(shipping.getCourierQuotes(number, parcel, false), /existing order in Bob Go/);
+      await assert.rejects(shipping.bookCourierShipment(number, quotes.rates[0].quoteToken), /existing order in Bob Go/);
+      assert.equal(calls.length, count, "No quote or shipment POST reaches the provider");
+      calls.length = 0; // Keep the pre-existing no-network assertions isolated.
+    });
     await t.test("delivery changes immediately flag an existing Bob Go order without clearing its remote reference or guard", async () => {
       const id = await seed("MM-DELIVERY-SYNCED"), submittedAt = new Date();
       await database.insert(schema.bobgoOrderSync).values({ orderId: id, environment: "sandbox", channelRef: "TEST", status: "synced", remoteOrderId: "7000", submittedAt });

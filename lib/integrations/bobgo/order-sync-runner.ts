@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { requireDatabase } from "../../db";
 import { bobgoOrderSync, orders, shipments } from "../../db/schema";
 import { createBobGoOrderSyncService, type BobGoOrderSyncProvider } from "./order-sync";
@@ -11,7 +11,7 @@ export function createBobGoSyncRunner(database: Database, provider: BobGoOrderSy
   report: Report = async () => {}, clock: () => number = Date.now) {
   const service = createBobGoOrderSyncService(database, provider, config, clock);
   return async function run() {
-    const result = { enabled: config.enabled, ordersChecked: 0, shipmentsChecked: 0, needsAttention: 0 };
+    const result = { enabled: config.enabled, ordersChecked: 0, waybillLinksChecked: 0, shipmentsChecked: 0, needsAttention: 0 };
     if (!config.enabled) return result;
     const started = clock(), now = new Date(started);
     // Only the payment outbox is processed; never bulk-import historical orders.
@@ -28,6 +28,24 @@ export function createBobGoSyncRunner(database: Database, provider: BobGoOrderSy
       } catch { result.needsAttention++; await report(job.orderId, "sync", true); }
     }
     const cutoff = new Date(clock() - 5 * 60000);
+    // Discover only fulfilled copies of this channel's already-synced orders.
+    // No account-wide shipment scan, historical order import or booking call.
+    const unlinked = await database.select({ orderId: bobgoOrderSync.orderId }).from(bobgoOrderSync)
+      .leftJoin(shipments, eq(shipments.orderId, bobgoOrderSync.orderId))
+      .where(and(eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef),
+        eq(bobgoOrderSync.status, "synced"), isNotNull(bobgoOrderSync.remoteOrderId),
+        or(isNull(bobgoOrderSync.waybillLinkCheckedAt), lte(bobgoOrderSync.waybillLinkCheckedAt, cutoff)),
+        or(isNull(shipments.id), inArray(shipments.status, ["not_ready", "ready_to_book"]))))
+      .orderBy(sql`${bobgoOrderSync.waybillLinkCheckedAt} asc nulls first`, asc(bobgoOrderSync.syncedAt)).limit(2);
+    for (const item of unlinked) {
+      // Four bounded provider reads may take 32 seconds. Reserve that budget
+      // within a conservative 60-second invocation, including tracking.
+      if (clock() - started > 10000) break;
+      try { const outcome = await service.refreshWaybillLink(item.orderId); result.waybillLinksChecked++;
+        const failed = outcome.status === "needs_attention"; if (failed) result.needsAttention++;
+        await report(item.orderId, "sync", failed);
+      } catch { result.needsAttention++; await report(item.orderId, "sync", true); }
+    }
     const due = await database.select({ orderId: shipments.orderId }).from(shipments)
       .where(and(eq(shipments.provider, `bobgo-${config.environment}`), eq(shipments.status, "booked"),
         or(isNull(shipments.courierCheckedAt), lte(shipments.courierCheckedAt, cutoff)),

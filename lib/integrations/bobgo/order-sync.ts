@@ -2,11 +2,12 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "../../db";
-import { addresses, bobgoOrderSync, customers, orderItems, orders, payments, productVariants, shipments } from "../../db/schema";
+import { addresses, bobgoOrderSync, customers, orderItems, orders, payments, productVariants, shipments, orderStatusHistory } from "../../db/schema";
 import { readOrderCustomer } from "../../checkout-safety";
 import { fingerprint, record, textValue } from "./protocol";
 import { buildBobGoOrderPayload, getOrderSyncConfiguration, matchRemoteOrder, stableOrderPayload, OrderSyncInputError,
   type BobGoOrderPayload, type BobGoOrderSource, type OrderSyncConfiguration, type OrderSyncErrorCode } from "./order-sync-policy";
+import { existingWaybillReference, verifiedExistingWaybill, WaybillLinkError, type WaybillLinkErrorCode } from "./waybill-link-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -20,6 +21,7 @@ export interface BobGoOrderSyncProvider {
   findOrders(orderNumber: string): Promise<unknown[]>;
   createOrder(payload: BobGoOrderPayload): Promise<unknown>;
   readShipment(id: string): Promise<unknown>;
+  readOrderFulfillments(id: string): Promise<unknown>;
 }
 
 async function eligibleOrder(tx: Reader, orderId: string, config: OrderSyncConfiguration) {
@@ -188,6 +190,77 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
       return { status: "updated" };
     });
   }
+
+  async function recordLinkCheck(orderId: string, remoteId: string, code?: WaybillLinkErrorCode | null) {
+    return database.transaction(async tx => {
+      const job = await lock(tx, orderId);
+      if (!job || job.status !== "synced" || job.remoteOrderId !== remoteId) return;
+      await tx.update(bobgoOrderSync).set({ waybillLinkCheckedAt: now(), ...(code !== undefined ? { waybillLinkErrorCode: code } : {}), updatedAt: now() }).where(eq(bobgoOrderSync.id, job.id));
+    });
+  }
+
+  // Read existing fulfilments only. This never creates/attaches/cancels anything
+  // in Bob Go. It is behind the same hard-off gate as the prepared sync runner.
+  async function refreshWaybillLink(orderId: string) {
+    if (!config.enabled) return { status: "disabled" };
+    const [job] = await database.select().from(bobgoOrderSync).where(scope(orderId)).limit(1);
+    if (!job || job.status !== "synced" || !job.remoteOrderId) return { status: "ineligible" };
+    // Reserve a check time before network access, including for now-ineligible
+    // jobs, so an outage/cancelled order cannot starve later channel jobs.
+    await recordLinkCheck(orderId, job.remoteOrderId);
+    if (!job.requestSnapshot || !(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
+    const remoteId = job.remoteOrderId, expected = job.requestSnapshot;
+    try {
+      if (payloadFingerprint(buildBobGoOrderPayload(await sourceFor(database, orderId))) !== payloadFingerprint(expected)) throw new WaybillLinkError("fulfillment_conflict");
+      const matches = await provider.findOrders(expected.channel_order_number);
+      if (matches.length !== 1 || matchRemoteOrder(matches[0], expected) !== remoteId) throw new WaybillLinkError();
+      const reference = existingWaybillReference(await provider.readOrderFulfillments(remoteId), matches[0], expected);
+      if (!reference) { await recordLinkCheck(orderId, remoteId, null); return { status: "not_booked" }; }
+      const candidate = verifiedExistingWaybill(await provider.readShipment(reference.shipmentId), reference, expected, clock());
+      const result = await database.transaction(async tx => {
+        const currentJob = await lock(tx, orderId), order = await eligibleOrder(tx, orderId, config);
+        if (!order || !currentJob || currentJob.status !== "synced" || currentJob.remoteOrderId !== remoteId
+          || payloadFingerprint(currentJob.requestSnapshot) !== payloadFingerprint(expected)
+          || payloadFingerprint(buildBobGoOrderPayload(await sourceFor(tx, orderId))) !== payloadFingerprint(expected)) throw new WaybillLinkError("fulfillment_conflict");
+        const [current] = await tx.select().from(shipments).where(eq(shipments.orderId, orderId)).for("update");
+        const plan = order.courierPlan;
+        if ((order.trackingNumber && order.trackingNumber !== candidate.trackingNumber)
+          || (current && (["cancelled"].includes(current.status)
+          || (current.providerShipmentId && (current.provider !== `bobgo-${config.environment}` || current.providerShipmentId !== candidate.shipmentId))
+          || (current.trackingNumber && current.trackingNumber !== candidate.trackingNumber)
+          || (current.status === "booking" && !current.providerShipmentId)
+          || (current.status === "booked" && !current.providerShipmentId)))
+          || (current?.bookingSnapshot && (current.bookingSnapshot.providerSlug !== candidate.providerSlug || current.bookingSnapshot.serviceCode !== candidate.serviceCode))
+          || (plan && (plan.collection.kind !== candidate.collectionKind || plan.delivery.kind !== candidate.deliveryKind))) throw new WaybillLinkError("fulfillment_conflict");
+        const [other] = await tx.select({ orderId: shipments.orderId }).from(shipments)
+          .where(and(eq(shipments.provider, `bobgo-${config.environment}`), eq(shipments.providerShipmentId, candidate.shipmentId))).limit(1);
+        if (other && other.orderId !== orderId) throw new WaybillLinkError("fulfillment_conflict");
+        const unchanged = current?.status === "booked" && current.providerShipmentId === candidate.shipmentId && current.trackingNumber === candidate.trackingNumber
+          && order.trackingNumber === candidate.trackingNumber && order.trackingUrl === "https://track.bobgo.co.za/";
+        if (!unchanged) {
+          const values = { provider: `bobgo-${config.environment}`, status: "booked" as const, providerShipmentId: candidate.shipmentId,
+            trackingNumber: candidate.trackingNumber, waybillReference: candidate.trackingNumber, trackingUrl: "https://track.bobgo.co.za/",
+            serviceLevelCode: candidate.serviceCode, bookedAt: current?.bookedAt || candidate.bookedAt, lastError: null, updatedAt: now() };
+          if (current) await tx.update(shipments).set(values).where(eq(shipments.id, current.id));
+          else await tx.insert(shipments).values({ orderId, senderLocationName: "Booked in Bob Go", ...values });
+          // Only tracking metadata changes. Never payment, stock, fulfilment or email.
+          await tx.update(orders).set({ courierName: candidate.providerName, trackingNumber: candidate.trackingNumber,
+            trackingUrl: "https://track.bobgo.co.za/", updatedAt: now() }).where(eq(orders.id, orderId));
+          await tx.insert(orderStatusHistory).values({ orderId, fromStatus: order.status, toStatus: order.status,
+            note: "Existing Bob Go waybill linked after verified order, full fulfilment and shipment read-back. No new shipment booked." });
+        }
+        await tx.update(bobgoOrderSync).set({ waybillLinkCheckedAt: now(), waybillLinkErrorCode: null, updatedAt: now() }).where(eq(bobgoOrderSync.id, currentJob.id));
+        return { status: unchanged ? "unchanged" : "linked" };
+      });
+      return result;
+    } catch (error) {
+      // A uniqueness race rolls the whole link transaction back. No existing
+      // waybill is overwritten, and raw provider/SQL errors are never persisted.
+      const code = error instanceof WaybillLinkError ? error.code : "fulfillment_lookup_failed";
+      await recordLinkCheck(orderId, remoteId, code);
+      return { status: "needs_attention" };
+    }
+  }
   async function retry(orderId: string) {
     if (!config.enabled) return { status: "disabled" };
     return database.transaction(async tx => {
@@ -202,7 +275,7 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
       return { status: "queued" };
     });
   }
-  return { sync, refreshTracking, retry };
+  return { sync, refreshTracking, refreshWaybillLink, retry };
 }
 
 export type BobGoOrderSyncRow = SyncRow;

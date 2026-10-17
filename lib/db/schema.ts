@@ -230,7 +230,8 @@ export const shipments = pgTable("shipments", {
   courierStatusAt: timestamp("courier_status_at", { withTimezone: true }),
   courierCheckedAt: timestamp("courier_checked_at", { withTimezone: true }),
   ...timestamps,
-}, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId)]);
+}, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId),
+  uniqueIndex("shipments_provider_remote_idx").on(table.provider, table.providerShipmentId)]);
 
 // Only authenticated owner routes read these private collection details.
 export const courierSettings = pgTable("courier_settings", {
@@ -269,6 +270,8 @@ export const bobgoOrderSync = pgTable("bobgo_order_sync", {
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
   lastErrorCode: text("last_error_code"),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  waybillLinkCheckedAt: timestamp("waybill_link_checked_at", { withTimezone: true }),
+  waybillLinkErrorCode: text("waybill_link_error_code"),
   ...timestamps,
 }, table => [
   uniqueIndex("bobgo_order_sync_order_channel_idx").on(table.orderId, table.environment, table.channelRef),

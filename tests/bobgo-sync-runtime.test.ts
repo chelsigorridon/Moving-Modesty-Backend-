@@ -33,6 +33,7 @@ test("order transport reconciles active and archived copies, restricts destinati
     assert.equal(options.headers["bobgo-channel-identifier"], config.channelRef, "the sales-channel identifier must accompany every key-authenticated request");
     if (mode === "failure") return new Response("PRIVATE ADDRESS SECRET API KEY", { status: 403 });
     if (mode === "unknown") return Response.json({ data: "unrecognised" });
+    if (parsed.pathname.endsWith("/order-fulfillments")) return Response.json({ order_fulfillments: [] });
     if (parsed.pathname.endsWith("/shipments")) return Response.json({ shipments: [{ id: 88, tracking_reference: "TEST" }] });
     return Response.json({ orders: [{ id: 77, channel_order_number: mode === "wrong" ? "OTHER" : "MM-TEST-SYNC", channel_ref_id: "TEST-CHANNEL" }] });
   };
@@ -40,9 +41,13 @@ test("order transport reconciles active and archived copies, restricts destinati
   assert.equal((await provider.findOrders("MM-TEST-SYNC")).length, 1, "same active/archived ID is deduplicated");
   assert.equal(calls.length, 2); assert.match(calls[1].url, /archived=true/);
   assert.equal((await provider.readShipment("88")).id, 88);
+  assert.equal((await provider.readOrderFulfillments("77")).order_fulfillments.length, 0);
+  assert.match(calls.at(-1).url, /\/order-fulfillments\?order_id=77$/);
   const before = calls.length; await assert.rejects(provider.findOrders("../bad?token=private")); assert.equal(calls.length, before);
+  await assert.rejects(provider.readOrderFulfillments("MM-TEST-SYNC")); assert.equal(calls.length, before);
   mode = "wrong"; await assert.rejects(provider.findOrders("MM-TEST-SYNC"));
   mode = "unknown"; await assert.rejects(provider.findOrders("MM-TEST-SYNC"));
+  await assert.rejects(provider.readOrderFulfillments("77"));
   mode = "failure";
   await assert.rejects(provider.findOrders("MM-TEST-SYNC"), (error: any) => error.status === 403 && !/PRIVATE|SECRET|TOKEN/.test(error.message));
   assert.throws(() => createBobGoSyncTransport({ ...config, enabled: false }, "TEST-ONLY-TOKEN", fetcher));
@@ -72,7 +77,7 @@ test("prepared runtime stays disabled even with credentials; auth and domain/dep
   let touched = 0;
   const forbidden = () => { touched++; throw new Error("Must not touch live services"); };
   const policy = { getOrderSyncConfiguration: () => ({ enabled: false, environment: "sandbox", channelRef: "not-activated" }) };
-  const env: Record<string, string> = { CRON_SECRET: "TEST-SECRET-".repeat(5), BOBGO_ORDER_SYNC_API_TOKEN: "TEST-ONLY-TOKEN", BOBGO_ORDER_SYNC_CHANNEL_REF: "TEST-CHANNEL", STORE_URL: "https://store.example.invalid", VERCEL_ENV: "production" };
+  const env: Record<string, string> = { CRON_SECRET: "TEST-SECRET-".repeat(5), BOBGO_ORDER_SYNC_API_TOKEN: "TEST-ONLY-TOKEN", BOBGO_ORDER_SYNC_CHANNEL_REF: "store.example.invalid", STORE_URL: "https://store.example.invalid", VERCEL_ENV: "production" };
   const runtime = load("../lib/integrations/bobgo/order-sync-runtime.ts", {
     "../../db": { requireDatabase: forbidden }, "../../monitoring": { reportFailure: forbidden, resolveFailures: forbidden },
     "./configuration": { getBobGoConfiguration: () => ({ environment: "sandbox" }) }, "./order-sync-policy": policy,
@@ -81,13 +86,31 @@ test("prepared runtime stays disabled even with credentials; auth and domain/dep
   }, env);
   assert.equal((await runtime.runConfiguredBobGoSync()).enabled, false);
   assert.equal((await runtime.retryConfiguredBobGoSync("MM-TEST")).status, "disabled"); assert.equal(touched, 0);
+  assert.equal((await runtime.checkConfiguredBobGoWaybillLink("MM-TEST")).status, "disabled"); assert.equal(touched, 0);
   const good = new Request("https://example.invalid/api/internal/bobgo-sync", { headers: { authorization: `Bearer ${env.CRON_SECRET}` } });
   assert.equal(runtime.isSyncRunnerAuthorized(good), true); assert.equal(runtime.isSyncRunnerAuthorized(new Request(good.url)), false);
   assert.equal(runtime.isSyncRunnerAuthorized(good, "short"), false);
-  const config = { enabled: true, environment: "sandbox", channelRef: "TEST-CHANNEL" };
+  const config = { enabled: true, environment: "sandbox", channelRef: "store.example.invalid" };
   assert.ok(runtime.preparedSyncCredentials(config));
   env.STORE_URL = "https://temporary.framer.app"; assert.throws(() => runtime.preparedSyncCredentials(config));
+  env.STORE_URL = "https://another.example.invalid"; assert.throws(() => runtime.preparedSyncCredentials(config));
   env.STORE_URL = "https://store.example.invalid"; env.VERCEL_ENV = "preview"; assert.throws(() => runtime.preparedSyncCredentials(config));
+});
+
+test("waybill-link checks require an admin and confirmation, preserve the disabled gate and sanitize failures", async () => {
+  let authenticated = false, called = 0, fail = false;
+  const route = load("../app/api/admin/orders/[orderNumber]/bobgo-sync/route.ts", {
+    "@/lib/api-response": { apiJson: (body: any, init: any) => Response.json(body, init), apiOptions: () => new Response(null, { status: 204 }) },
+    "@/lib/auth": { getRequestAdmin: async () => authenticated ? { email: "owner@example.invalid" } : null },
+    "@/lib/integrations/bobgo/order-sync-runtime": { checkConfiguredBobGoWaybillLink: async () => { called++; if (fail) throw new Error("PRIVATE SECRET"); return { status: "disabled" }; },
+      retryConfiguredBobGoSync: () => { throw new Error("Link checks must never enqueue an order"); } },
+  });
+  const request = (confirm = true) => new Request("https://example.invalid/api/admin/orders/MM-TEST/bobgo-sync", { method: "POST", body: JSON.stringify({ action: "check_waybill", confirm }) });
+  const context = { params: Promise.resolve({ orderNumber: "MM-TEST" }) };
+  assert.equal((await route.POST(request(), context)).status, 401); assert.equal(called, 0);
+  authenticated = true; assert.equal((await route.POST(request(false), context)).status, 400); assert.equal(called, 0);
+  assert.equal((await route.POST(request(), context)).status, 503); assert.equal(called, 1);
+  fail = true; const response = await route.POST(request(), context); assert.equal(response.status, 503); assert.doesNotMatch(await response.text(), /PRIVATE|SECRET/);
 });
 
 test("runner endpoint rejects unauthenticated calls before processing and reports disabled as unavailable, not success", async () => {

@@ -109,9 +109,17 @@ export function matchRemoteOrder(remote: unknown, expected: BobGoOrderPayload): 
   return JSON.stringify(remoteItems) === JSON.stringify(expectedItems) ? id : null;
 }
 
-export function orderSyncView(row?: { status: string; lastErrorCode: string | null; remoteOrderId: string | null }, enabled = false) {
-  const status = !enabled ? "Not enabled" : !row ? "Waiting to sync" : ({ queued: "Waiting to sync", syncing: "Syncing", retry: "Needs attention", checking: "Needs checking", needs_attention: "Needs attention", synced: "Synced with Bob Go" } as Record<string, string>)[row.status] || "Needs attention";
+const waybillLinkMessages: Record<string, string> = {
+  fulfillment_lookup_failed: "The existing Bob Go waybill could not be checked. No new shipment was booked.",
+  fulfillment_mismatch: "The Bob Go fulfilment or waybill does not match safely. Support must check it; do not book another.",
+  fulfillment_multiple: "Bob Go reports multiple or split fulfilments. Support must reconcile them; no waybill was replaced.",
+  fulfillment_conflict: "Delivery details or an existing waybill conflict with Bob Go. Support must check both records before another booking.",
+};
+export function orderSyncView(row?: { status: string; lastErrorCode: string | null; remoteOrderId: string | null; waybillLinkErrorCode?: string | null }, enabled = false) {
+  const status = !enabled ? "Not enabled" : !row ? "Waiting to sync" : row.waybillLinkErrorCode ? "Needs attention" : ({ queued: "Waiting to sync", syncing: "Syncing", retry: "Needs attention", checking: "Needs checking", needs_attention: "Needs attention", synced: "Synced with Bob Go" } as Record<string, string>)[row.status] || "Needs attention";
   return { status, message: !enabled ? "Order synchronisation is not activated. Payment and manual courier booking are separate."
-    : row?.lastErrorCode ? orderSyncMessages[row.lastErrorCode as OrderSyncErrorCode] || orderSyncMessages.invalid_order : undefined,
+    : row?.lastErrorCode ? orderSyncMessages[row.lastErrorCode as OrderSyncErrorCode] || orderSyncMessages.invalid_order
+    : row?.waybillLinkErrorCode ? waybillLinkMessages[row.waybillLinkErrorCode] || waybillLinkMessages.fulfillment_mismatch
+    : row?.remoteOrderId ? "Book this linked order in Bob Go. Its existing waybill will be checked and linked back; do not book a separate shipment in the portal." : undefined,
     remoteOrderId: enabled ? row?.remoteOrderId || undefined : undefined };
 }
