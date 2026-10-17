@@ -2,6 +2,7 @@ import {
     startTransition,
     useCallback,
     useEffect,
+    useId,
     useMemo,
     useRef,
     useState,
@@ -651,6 +652,9 @@ function DeliverySettings({ open, close, connection, check, checking, disabled, 
 function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl: string; liveEnabled: boolean; backendConfigured: boolean }) {
     const [email, setEmail] = useState("")
     const [password, setPassword] = useState("")
+    const [showPassword, setShowPassword] = useState(false)
+    const passwordInputId = useId()
+    const passwordInput = useRef<HTMLInputElement>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState("")
     useEffect(() => {
@@ -666,6 +670,7 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
         startTransition(() => {
             setLoading(true)
             setError("")
+            setShowPassword(false)
         })
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/login`, {
@@ -707,17 +712,43 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
                         required
                     />
                 </label>
-                <label className="mm-admin__field">
-                    <span>Password</span>
-                    <input
-                        type="password"
-                        autoComplete="current-password"
-                        value={password}
-                        onChange={(event) => setPassword(event.target.value)}
-                        placeholder="Password"
-                        required
-                    />
-                </label>
+                <div className="mm-admin__field">
+                    <label htmlFor={passwordInputId}>Password</label>
+                    <div className="mm-admin__password-field">
+                        <input
+                            id={passwordInputId}
+                            ref={passwordInput}
+                            type={showPassword ? "text" : "password"}
+                            autoComplete="current-password"
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            spellCheck={false}
+                            value={password}
+                            onChange={(event) => setPassword(event.target.value)}
+                            placeholder="Password"
+                            required
+                        />
+                        <button
+                            className="mm-admin__password-toggle"
+                            type="button"
+                            aria-label={showPassword ? "Hide password" : "Show password"}
+                            aria-controls={passwordInputId}
+                            aria-pressed={showPassword}
+                            title={showPassword ? "Hide password" : "Show password"}
+                            onClick={() => {
+                                // Preserve browser-filled text before changing the input type.
+                                if (passwordInput.current) setPassword(passwordInput.current.value)
+                                setShowPassword(current => !current)
+                            }}
+                        >
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                                <circle cx="12" cy="12" r="3" />
+                                {showPassword ? <path d="m3 3 18 18" /> : null}
+                            </svg>
+                        </button>
+                    </div>
+                </div>
                 {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
                 <button className="mm-admin__button" type="submit" disabled={loading}>
                     {loading ? "Signing in…" : "Sign in"}
@@ -1443,6 +1474,12 @@ const styles = `
 .mm-admin__lead { margin: 0 0 2px; letter-spacing: .08em; text-transform: uppercase; }
 .mm-admin__field { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .mm-admin__field input, .mm-admin__field select { width: 100%; height: 48px; text-transform: none; }
+.mm-admin__password-field { position: relative; width: 100%; }
+.mm-admin__password-field input { padding-right: 60px; }
+.mm-admin__password-toggle { position: absolute; top: 2px; right: 4px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--mm-ink); cursor: pointer; }
+.mm-admin__password-toggle:hover { background: color-mix(in srgb, var(--mm-ink) 6%, transparent); }
+.mm-admin__password-toggle:focus-visible { outline: 2px solid var(--mm-sage); outline-offset: -2px; }
+.mm-admin__password-field input::-ms-reveal, .mm-admin__password-field input::-ms-clear { display: none; }
 .mm-admin__field textarea { width: 100%; resize: vertical; text-transform: none; }
 .mm-admin__error { margin: 0; color: #8A342C; font-size: 13px; }
 .mm-admin__helper { margin: 0; color: var(--mm-muted); font-size: 13px; }
