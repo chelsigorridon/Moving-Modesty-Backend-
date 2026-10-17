@@ -14,12 +14,14 @@ function list(value: unknown, key: "orders" | "shipments") {
   return rows as Record<string, unknown>[];
 }
 export function createBobGoSyncTransport(config: OrderSyncConfiguration, token: string, fetcher: typeof fetch = fetch): BobGoOrderSyncProvider {
-  if (!config.enabled || !config.channelRef || config.channelRef === "not-activated" || !token.trim() || /[\s\r\n]/.test(token) || token.startsWith("PASTE_")) throw new BobGoSyncTransportError();
+  if (!config.enabled || !config.channelRef || config.channelRef === "not-activated" || /[\s\r\n]/.test(config.channelRef) || !token.trim() || /[\s\r\n]/.test(token) || token.startsWith("PASTE_")) throw new BobGoSyncTransportError();
   const base = config.environment === "production" ? "https://api.bobgo.co.za/v2" : "https://api.sandbox.bobgo.co.za/v2";
   async function request(path: string, payload?: BobGoOrderPayload) {
     try {
       const response = await fetcher(`${base}${path}`, { method: payload ? "POST" : "GET", redirect: "error", cache: "no-store",
-        headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...(payload ? { "Content-Type": "application/json" } : {}) },
+        // A sales-channel key authenticates together with its store identifier.
+        // Bearer-only requests can return 401 even when the key is valid.
+        headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "bobgo-channel-identifier": config.channelRef, ...(payload ? { "Content-Type": "application/json" } : {}) },
         signal: AbortSignal.timeout(8000), ...(payload ? { body: JSON.stringify(payload) } : {}) });
       if (!response.ok) { await response.body?.cancel(); throw new BobGoSyncTransportError(response.status); }
       if (Number(response.headers.get("content-length")) > 1_000_000) { await response.body?.cancel(); throw new BobGoSyncTransportError(); }

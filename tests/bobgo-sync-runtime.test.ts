@@ -30,6 +30,7 @@ test("order transport reconciles active and archived copies, restricts destinati
     calls.push({ url, options }); const parsed = new URL(url);
     assert.equal(parsed.origin, "https://api.sandbox.bobgo.co.za"); assert.equal(options.redirect, "error");
     assert.equal(options.headers.Authorization, "Bearer TEST-ONLY-TOKEN");
+    assert.equal(options.headers["bobgo-channel-identifier"], config.channelRef, "the sales-channel identifier must accompany every key-authenticated request");
     if (mode === "failure") return new Response("PRIVATE ADDRESS SECRET API KEY", { status: 403 });
     if (mode === "unknown") return Response.json({ data: "unrecognised" });
     if (parsed.pathname.endsWith("/shipments")) return Response.json({ shipments: [{ id: 88, tracking_reference: "TEST" }] });
@@ -46,7 +47,25 @@ test("order transport reconciles active and archived copies, restricts destinati
   await assert.rejects(provider.findOrders("MM-TEST-SYNC"), (error: any) => error.status === 403 && !/PRIVATE|SECRET|TOKEN/.test(error.message));
   assert.throws(() => createBobGoSyncTransport({ ...config, enabled: false }, "TEST-ONLY-TOKEN", fetcher));
   assert.throws(() => createBobGoSyncTransport(config, "bad\r\ntoken", fetcher));
+  assert.throws(() => createBobGoSyncTransport({ ...config, channelRef: "store.example\r\nInjected: value" }, "TEST-ONLY-TOKEN", fetcher));
   assert.ok(calls.every(call => call.options.method === "GET"), "lookup never posts or books anything");
+});
+
+test("sales-channel authentication includes the identifier on order creation without changing the sync gate", async () => {
+  const { createBobGoSyncTransport } = load("../lib/integrations/bobgo/order-sync-transport.ts");
+  const calls: any[] = [];
+  const provider = createBobGoSyncTransport({ enabled: true, environment: "production", channelRef: "store.example.invalid" }, "TEST-ONLY-TOKEN", async (url: string, options: any) => {
+    calls.push({ url, options });
+    return Response.json({ order: { id: 99 } });
+  });
+  const result = await provider.createOrder({ channel_order_number: "MM-TEST-HEADERS" });
+  assert.equal(result.id, 99);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.bobgo.co.za/v2/orders");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers.Authorization, "Bearer TEST-ONLY-TOKEN");
+  assert.equal(calls[0].options.headers["bobgo-channel-identifier"], "store.example.invalid");
+  assert.equal(calls[0].options.headers["Content-Type"], "application/json");
 });
 
 test("prepared runtime stays disabled even with credentials; auth and domain/deployment checks fail closed", async () => {
