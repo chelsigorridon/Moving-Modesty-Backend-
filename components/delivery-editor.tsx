@@ -10,18 +10,21 @@ type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierE
   collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean };
 
 type DeliveryPointResult = PickupPoint & { description: string; type: string };
-type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string };
+type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string;
+  waybillChange?: { action: "cancel_waybill" | "check_cancellation" | "prepare_replacement"; trackingNumber: string };
+  previousWaybills?: Array<{ trackingNumber: string; courierName: string; status: string; replacedAt: string }> };
 interface DeliveryEditorProps {
   details: DeliveryEditorDetails;
   disabled?: boolean;
   save: (payload: Record<string, unknown>) => Promise<void>;
   searchPoints: (query: string) => Promise<{ points: DeliveryPointResult[]; limited?: boolean }>;
   onEditingChange?: (editing: boolean) => void;
+  changeWaybill?: (payload: Record<string, unknown>) => Promise<void>;
 }
 const emptyCourierAddress: CourierAddress = { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" };
 const deliveryProvinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"];
 
-export default function DeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange }: DeliveryEditorProps) {
+export default function DeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill }: DeliveryEditorProps) {
   const [editing, setEditing] = useState(false);
   const [editSide, setEditSide] = useState<"collection" | "delivery">("delivery");
   const [saving, setSaving] = useState(false);
@@ -32,6 +35,20 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   const [note, setNote] = useState(details.privateNote);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [waybillConfirmation, setWaybillConfirmation] = useState("");
+  const waybillScope = `${details.revision}:${details.waybillChange?.trackingNumber}:${details.waybillChange?.action}`;
+  async function submitWaybillChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!details.waybillChange || !changeWaybill || saving || disabled) return;
+    if (details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope) return;
+    setSaving(true); setError(""); setMessage("");
+    try {
+      await changeWaybill({ action: details.waybillChange.action, expectedRevision: details.revision,
+        expectedWaybill: details.waybillChange.trackingNumber, confirm: true });
+      setWaybillConfirmation(""); onEditingChange?.(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
+    finally { setSaving(false); }
+  }
   const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
     delivery: details.draftPlan.delivery.kind === "door" ? details.draftPlan.delivery.address : emptyCourierAddress });
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
@@ -96,11 +113,27 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
     {!editing && details.canEdit && details.plan ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit("delivery")}>Edit courier instructions</button> : null}
     {!details.canEdit ? <div className="mm-admin__notice"><p>{details.blockedReason}</p>
-      {details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
+      {details.waybillChange && changeWaybill ? <form className="mm-delivery__waybill-change" onSubmit={submitWaybillChange}>
+        <strong>{details.waybillChange.action === "prepare_replacement" ? "Previous waybill cancelled" : details.waybillChange.action === "check_cancellation" ? "Cancellation needs confirmation" : "Need to change the address or courier?"}</strong>
+        <p>Waybill: <strong>{details.waybillChange.trackingNumber}</strong></p>
+        {details.waybillChange.action === "cancel_waybill" ? <p>Cancel this waybill before changing delivery. This does not cancel the customer’s order or refund their payment. A replacement is a separate courier booking and may cost again.</p>
+          : details.waybillChange.action === "check_cancellation" ? <p>Delivery stays locked until Bob Go confirms cancellation. Checking only reads its status; it will not send another cancellation or book a courier. If it remains unconfirmed, check with Bob Go.</p>
+          : <p>We will recheck Bob Go, save this waybill in history and unlock delivery setup. You can then edit the address, compare fresh courier quotes and approve a replacement. Nothing is booked automatically.</p>}
+        {details.waybillChange.action !== "check_cancellation" ? <label className="mm-delivery__check"><input type="checkbox" required
+          checked={waybillConfirmation === waybillScope} disabled={disabled || saving}
+          onChange={event => setWaybillConfirmation(event.target.checked ? waybillScope : "")} />I have not handed this parcel to the courier or dropped it off, and I want to change this delivery.</label> : null}
+        <button type="submit" className="mm-admin__secondary-button" disabled={disabled || saving || details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope}>
+          {saving ? "Checking Bob Go…" : details.waybillChange.action === "cancel_waybill" ? "Cancel waybill to change delivery" : details.waybillChange.action === "check_cancellation" ? "Check cancellation status" : "Prepare replacement delivery"}
+        </button>
+      </form> : details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
         <p>Address or courier changes must be confirmed by Bob Go or the courier. Their documented API does not provide booked-waybill editing. A courier change may require cancellation and a new paid booking.</p>
         <p>Do not create a second shipment while the first is active. Editing a private note below does not change the waybill.</p>
-        <a href="https://app.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
+        <a href="https://my.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
       </details> : null}</div> : null}
+    {details.previousWaybills?.length ? <details className="mm-delivery__history"><summary>Previous waybills ({details.previousWaybills.length})</summary>
+      <p className="mm-admin__helper">Cancelled bookings kept for reference. Do not use these labels for the replacement parcel.</p>
+      <ul>{details.previousWaybills.map(old => <li key={`${old.trackingNumber}:${old.replacedAt}`}><strong>{old.trackingNumber}</strong> · {old.courierName} · {old.status}</li>)}</ul>
+    </details> : null}
     {(editing || !details.plan) && details.canEdit ? <form onSubmit={saveDelivery} onChange={event => {
       const target: EventTarget = event.target;
       const name = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement ? target.name : "";
@@ -198,5 +231,6 @@ const deliveryEditorCss = `
 .mm-delivery__point-results button[aria-pressed=true]{border:2px solid var(--mm-sage,#7d896d);background:var(--mm-soft,#e8e9e2)}.mm-delivery__point-results span{font-size:13px}
 .mm-delivery__selected-point{padding:12px;background:var(--mm-soft,#e8e9e2);border-radius:8px;font-size:14px}.mm-delivery__private{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}
 .mm-delivery__private summary{cursor:pointer}.mm-delivery__private form{display:grid;gap:12px;margin-top:12px}.mm-delivery__private button{justify-self:start}
+.mm-delivery__waybill-change{display:grid;gap:14px;margin-top:16px;padding-top:16px;border-top:1px solid var(--mm-border,#a69e95)}.mm-delivery__waybill-change p{margin:0}.mm-delivery__waybill-change button{min-height:44px;white-space:normal;text-align:left;justify-self:start;max-width:100%}.mm-delivery__history{margin:18px 0}.mm-delivery__history li{margin:10px 0}
 @media(max-width:600px){.mm-admin__delivery-editor{padding:14px}.mm-delivery__grid{grid-template-columns:1fr}.mm-delivery__actions>button{width:100%}}
 `;

@@ -12,6 +12,7 @@ import {
   orderRefunds,
   orders as ordersTable,
   orderStatusHistory,
+  orderDeliveryHistory,
   payments,
   products as productsTable,
   productVariants,
@@ -30,6 +31,7 @@ import { getOperationalIssues } from "./monitoring";
 import { incidentAction, notificationDeliveryMessage } from "./monitoring-policy";
 import { deliveryEditBlocker, type CourierEndpoint, type CourierPlan } from "./delivery-input";
 import { getOrderSyncConfiguration, orderSyncView } from "./integrations/bobgo/order-sync-policy";
+import { cancellationRequested, handedOverStatuses, previousWaybills } from "./integrations/bobgo/waybill-change-policy";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -130,7 +132,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
   }
 
   const syncConfiguration = getOrderSyncConfiguration();
-  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows, senderSettings, syncRows] = await Promise.all([
+  const bobGo = getBobGoConfiguration();
+  const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows, senderSettings, syncRows, deliveryHistory] = await Promise.all([
     db
       .select({
         id: ordersTable.id,
@@ -239,11 +242,10 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
     db.select({ orderId: inventoryMovements.orderId, variantId: inventoryMovements.variantId,
       type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements),
     db.select().from(courierSettings).where(eq(courierSettings.id, "sender")).limit(1),
-    syncConfiguration.enabled ? db.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.environment, syncConfiguration.environment), eq(bobgoOrderSync.channelRef, syncConfiguration.channelRef)))
-      : Promise.resolve([] as Array<typeof bobgoOrderSync.$inferSelect>),
+    db.select().from(bobgoOrderSync).where(eq(bobgoOrderSync.environment, bobGo.environment)),
+    db.select().from(orderDeliveryHistory).orderBy(desc(orderDeliveryHistory.createdAt)),
   ]);
 
-  const bobGo = getBobGoConfiguration();
   const shipmentByOrder = new Map(shipmentRows.map((shipment) => [shipment.orderId, shipment]));
 
   const itemsByOrder = new Map<string, AdminOrder["items"]>();
@@ -295,6 +297,17 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
             province: (order.province || "Western Cape") as import("./delivery-input").CourierAddress["province"], postalCode: order.postalCode || "" } },
         collectionInstructions: "", deliveryInstructions: order.deliveryNotes || "", customerApprovedPickup: false };
       const editBlocker = deliveryEditBlocker(order, shipment);
+      const history = deliveryHistory.filter(row => row.orderId === order.id);
+      const cancellationPending = cancellationRequested(history, shipment);
+      const linkedOrder = syncRows.some(row => row.orderId === order.id && (row.remoteOrderId || row.submittedAt
+        || ["synced", "checking", "syncing"].includes(row.status) || row.leaseExpiresAt && row.leaseExpiresAt.getTime() > Date.now()));
+      const canChangeWaybill = bobGo.enabled && bobGo.apiTokenConfigured && !linkedOrder && order.paymentStatus === "paid"
+        && ["new", "confirmed", "processing", "ready"].includes(order.status) && order.originalPaymentStatus === "paid"
+        && Boolean(order.providerPaymentId && order.paymentVerifiedAt) && Number(order.total) === Number(order.paidAmount)
+        && !(bobGo.environment === "production" && paymentEnvironmentFromProvider(order.paymentProvider) === "sandbox")
+        && shipment?.shipmentProvider === `bobgo-${bobGo.environment}` && /^[1-9]\d{0,18}$/.test(shipment.providerShipmentId || "") && Boolean(shipment.trackingNumber)
+        && !handedOverStatuses.has(shipment.courierStatus || "")
+        && ["booking", "booked", "cancelled"].includes(shipment.status);
       const orderReturnRows = returnRows.filter(row => row.orderId === order.id);
       const orderRefundRows = refundRows.filter(row => row.orderId === order.id);
       const refundedTotal = orderRefundRows.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100;
@@ -362,7 +375,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         status: statusLabels[order.status] ?? "New",
         paymentStatus: paymentLabels[order.paymentStatus] ?? "Pending payment",
         deliveryMethod: deliveryLabels[order.deliveryMethod],
-        shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+        shipmentStatus: cancellationPending && shipment?.status !== "cancelled" ? "Booking" : shipment ? shipmentStatusLabels[shipment.status] : undefined,
         shipmentTrackingNumber: shipment?.trackingNumber,
       }),
       address: formatAddress([
@@ -374,7 +387,12 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         order.postalCode,
       ]),
       deliveryDetails: order.deliveryMethod === "courier" ? { revision: order.deliveryRevision, plan: order.courierPlan, draftPlan,
-        privateNote: order.privateNote || "", canEdit: !editBlocker, blockedReason: editBlocker || undefined } : undefined,
+        privateNote: order.privateNote || "", canEdit: !editBlocker, blockedReason: editBlocker || undefined,
+        previousWaybills: previousWaybills(history),
+        waybillChange: canChangeWaybill && shipment?.trackingNumber ? {
+          trackingNumber: shipment.trackingNumber,
+          action: shipment.courierStatus === "cancelled" ? "prepare_replacement" as const : cancellationPending ? "check_cancellation" as const : "cancel_waybill" as const,
+        } : undefined } : undefined,
       bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled) : undefined,
       items: itemsByOrder.get(order.id) ?? [],
       actionNeeded: [
@@ -568,13 +586,15 @@ export async function updateOrderStatus(orderNumber: string, nextStatus: OrderSt
       paymentStatus: ordersTable.paymentStatus, deliveryMethod: ordersTable.deliveryMethod }).from(ordersTable)
       .where(and(eq(ordersTable.orderNumber, orderNumber), isNull(ordersTable.archivedAt))).limit(1).for("update");
     if (!existing) return false;
-    const [shipment] = await transaction.select({ status: shipments.status, trackingNumber: shipments.trackingNumber }).from(shipments)
+    const [shipment] = await transaction.select().from(shipments)
       .where(eq(shipments.orderId, existing.id)).limit(1).for("update");
+    const history = shipment?.providerShipmentId ? await transaction.select().from(orderDeliveryHistory).where(eq(orderDeliveryHistory.orderId, existing.id)) : [];
+    const cancellationPending = cancellationRequested(history, shipment);
     assertOrderTransition({
       status: statusLabels[existing.status],
       paymentStatus: paymentLabels[existing.paymentStatus],
       deliveryMethod: deliveryLabels[existing.deliveryMethod],
-      shipmentStatus: shipment ? shipmentStatusLabels[shipment.status] : undefined,
+      shipmentStatus: cancellationPending && shipment?.status !== "cancelled" ? "Booking" : shipment ? shipmentStatusLabels[shipment.status] : undefined,
       shipmentTrackingNumber: shipment?.trackingNumber,
     }, nextStatus);
     await transaction

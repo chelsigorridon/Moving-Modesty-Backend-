@@ -280,9 +280,42 @@ test("booked delivery exposes private notes and an honest provider amendment han
   const editor = dom.window.document.querySelector('[aria-label="Delivery setup and notes"]')!;
   assert.ok(editor.querySelector('textarea[name="privateNote"]'));
   assert.equal(editor.querySelector('textarea')?.textContent, "Private TEST note");
-  assert.equal(editor.querySelector('a[href="https://app.bobgo.co.za/"]')?.textContent, "Open Bob Go to arrange the change");
+  assert.equal(editor.querySelector('a[href="https://my.bobgo.co.za/"]')?.textContent, "Open Bob Go to arrange the change");
   assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Edit delivery|Set up delivery/);
   assert.match(editor.textContent || "", /does not change the waybill/);
+  dom.window.close();
+});
+
+test("before-handover waybill changes are explicit, confirmed, and cannot masquerade as an address edit", () => {
+  for (const action of ["cancel_waybill", "check_cancellation", "prepare_replacement"] as const) {
+    const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Ready",
+      deliveryDetails: { revision: 4, plan: deliveryPlan, draftPlan: deliveryPlan, privateNote: "", canEdit: false,
+        blockedReason: action === "prepare_replacement" ? "This waybill is cancelled." : "This waybill is booked.",
+        waybillChange: { action, trackingNumber: "TEST-WAYBILL" } },
+      shipping: { status: action === "prepare_replacement" ? "Cancelled" : "Booked", environment: "production", blockers: [] } }));
+    const editor = dom.window.document.querySelector('[aria-label="Delivery setup and notes"]')!;
+    const form = editor.querySelector(".mm-delivery__waybill-change")!;
+    const button = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+    assert.ok(button);
+    assert.equal(button.disabled, action !== "check_cancellation");
+    assert.equal(Boolean(form.querySelector('input[type="checkbox"][required]')), action !== "check_cancellation");
+    assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Change customer delivery|Change collection/);
+    if (action === "check_cancellation") assert.doesNotMatch(dom.window.document.body.textContent || "", /Prepare printable waybill|Download the waybill, attach/);
+    dom.window.close();
+  }
+});
+
+test("previous waybills are reference-only and remain separate from current delivery setup", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Ready",
+    deliveryDetails: { revision: 5, plan: deliveryPlan, draftPlan: deliveryPlan, privateNote: "", canEdit: true,
+      previousWaybills: [{ trackingNumber: "OLD-CANCELLED", courierName: "Old courier", status: "Cancelled", replacedAt: "2026-10-17T08:00:00.000Z" }] },
+    shipping: { status: "Not ready", environment: "production", blockers: [] } }));
+  const history = dom.window.document.querySelector(".mm-delivery__history")!;
+  assert.equal(history.hasAttribute("open"), false);
+  assert.match(history.textContent || "", /OLD-CANCELLED/);
+  assert.equal(history.querySelector('a,button'), null);
+  assert.match(history.textContent || "", /Do not use these labels/);
+  assert.match(dom.window.document.body.textContent || "", /Change customer delivery/);
   dom.window.close();
 });
 

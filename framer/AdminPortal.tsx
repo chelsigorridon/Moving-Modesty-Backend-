@@ -144,7 +144,7 @@ interface ShippingResult {
     packages?: SavedParcelPackage[]
     limited?: boolean
 }
-type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill" | "save_delivery" | "pickup_points" | "packages", payload?: Record<string, unknown>) => Promise<ShippingResult>
+type ShippingRequest = (order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill" | "save_delivery" | "pickup_points" | "packages" | "cancel_waybill" | "check_cancellation" | "prepare_replacement", payload?: Record<string, unknown>) => Promise<ShippingResult>
 type AftersalesRequest = (order: AdminOrder, payload: Record<string, unknown>) => Promise<void>
 type Confirmation = { title: string; description: string; run: () => void }
 const courierMoney = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 })
@@ -350,12 +350,13 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
     }
 
-    async function requestShipping(order: AdminOrder, action: "quote" | "book" | "refresh" | "waybill" | "save_delivery" | "pickup_points" | "packages", payload: Record<string, unknown> = {}): Promise<ShippingResult> {
+    async function requestShipping(order: AdminOrder, action: Parameters<ShippingRequest>[1], payload: Record<string, unknown> = {}): Promise<ShippingResult> {
         if (mutationPending.current || !liveEnabled) throw new Error("Wait for the current action to finish, then try again.")
         mutationPending.current = true
         startTransition(() => { setLoading(true); setNotice("") })
         try {
-            const endpoint = action === "book" ? "book-shipment" : action === "save_delivery" ? "delivery" : "shipment"
+            const changingWaybill = ["cancel_waybill", "check_cancellation", "prepare_replacement"].includes(action)
+            const endpoint = action === "book" ? "book-shipment" : action === "save_delivery" ? "delivery" : changingWaybill ? "shipment-change" : "shipment"
             const lookup = action === "pickup_points" || action === "packages"
             const url = action === "packages" ? `${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/packages`
                 : action === "pickup_points" ? `${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/pickup-points?q=${encodeURIComponent(String(payload.query || ""))}`
@@ -373,11 +374,11 @@ export default function AdminPortal(props: AdminPortalProps) {
             startTransition(() => {
                 if (data.order) setSnapshot((current) => ({ ...current, orders: current.orders.map(item => item.id === order.id ? data.order : item) }))
                 if (data.message || data.warning) setNotice(data.warning || data.message)
-                if (action === "save_delivery" && !data.order) setRefresh(current => current + 1)
+                if ((action === "save_delivery" || changingWaybill) && !data.order) setRefresh(current => current + 1)
             })
             return data as ShippingResult
         } catch (error) {
-            if (action === "book") setRefresh(current => current + 1)
+            if (action === "book" || ["cancel_waybill", "check_cancellation", "prepare_replacement"].includes(action)) setRefresh(current => current + 1)
             const failure = error instanceof Error ? error : new Error("Bob Go request failed.")
             startTransition(() => setNotice(failure.message))
             throw failure
@@ -1204,6 +1205,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const [error, setError] = useState("")
     const pending = shipping.status === "Booking"
     const booked = shipping.status === "Booked"
+    const cancellationPending = order.deliveryDetails?.waybillChange?.action === "check_cancellation"
     const liveBookingForTest = connection?.environment === "production" && order.payment?.environment === "sandbox"
     const canQuote = !editingDelivery && !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && (connection.configured || order.deliveryDetails?.plan))
     const rate = quote?.rates?.[quoteIndex]
@@ -1241,6 +1243,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
         {order.bobGoSync ? <EmbeddedOrderSyncStatus value={order.bobGoSync} /> : null}
         {order.deliveryDetails ? <EmbeddedDeliveryEditor details={order.deliveryDetails} disabled={loading}
             onEditingChange={editing => { setEditingDelivery(editing); setQuote(null); setMeasured(false) }}
+            changeWaybill={async payload => { setQuote(null); setMeasured(false); setWaybill(""); await requestShipping(order, payload.action as Parameters<ShippingRequest>[1], payload) }}
             save={async payload => { await requestShipping(order, "save_delivery", payload) }}
             searchPoints={async query => { const result = await requestShipping(order, "pickup_points", { query }); return { points: result.points || [], limited: result.limited } }} /> : null}
         {shipping.trackingNumber ? <p>Waybill / tracking: <strong>{shipping.trackingNumber}</strong></p> : null}
@@ -1248,8 +1251,8 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
         {shipping.courierStatus ? <p>Latest courier status: <strong>{shipping.courierStatus.replaceAll("-", " ")}</strong><span className="mm-admin__helper"> · This is the courier’s report; the order’s fulfilment status is managed separately.</span></p> : null}
         {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
         {pending ? <p>Booking is awaiting confirmation. Check its status; do not book another shipment or create a duplicate in Bob Go.</p> : null}
-        {booked ? <p>{order.status === "Dispatched" || order.status === "Delivered" ? "This order has been handed over. Use the tracking number to check its progress; email results are shown below." : "Download the waybill, attach it to the parcel and hand it over using the booked collection method. Only then mark the order Dispatched to submit the customer's tracking email."}</p> : null}
-        {(pending || booked) ? <div className="mm-admin__actions mm-admin__courier-actions">
+        {booked && !cancellationPending ? <p>{order.status === "Dispatched" || order.status === "Delivered" ? "This order has been handed over. Use the tracking number to check its progress; email results are shown below." : "Download the waybill, attach it to the parcel and hand it over using the booked collection method. Only then mark the order Dispatched to submit the customer's tracking email."}</p> : null}
+        {(pending || booked) && !cancellationPending ? <div className="mm-admin__actions mm-admin__courier-actions">
             <button type="button" className="mm-admin__secondary-button" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button>
             {booked && !waybill ? <button type="button" className="mm-admin__button" disabled={loading} onClick={() => { void run("waybill") }}>Prepare printable waybill</button> : null}
             {waybill ? <a className="mm-admin__button" href={waybill} target="_blank" rel="noopener noreferrer">Print waybill</a> : null}
@@ -1270,7 +1273,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
                 <button type="button" className="mm-admin__button" disabled={loading} onClick={book}>Book waybill</button>
             </div> : null}
         </> : null}
-        {editingDelivery ? <p>Save or cancel delivery editing before getting a fresh courier quote.</p> : !canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
+        {editingDelivery ? <p>Save or cancel delivery editing before getting a fresh courier quote.</p> : shipping.status === "Cancelled" ? <p>This cancelled waybill cannot be reused. Prepare a replacement above before changing delivery or getting new quotes.</p> : !canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
         {!booked && !pending && shipping.blockers.length ? <details className="mm-admin__technical"><summary>What is still needed?</summary><ul className="mm-admin__blockers">{shipping.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></details> : null}
         {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
     </Detail>
@@ -2158,18 +2161,21 @@ type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierE
   collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean };
 
 type DeliveryPointResult = PickupPoint & { description: string; type: string };
-type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string };
+type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string;
+  waybillChange?: { action: "cancel_waybill" | "check_cancellation" | "prepare_replacement"; trackingNumber: string };
+  previousWaybills?: Array<{ trackingNumber: string; courierName: string; status: string; replacedAt: string }> };
 interface DeliveryEditorProps {
   details: DeliveryEditorDetails;
   disabled?: boolean;
   save: (payload: Record<string, unknown>) => Promise<void>;
   searchPoints: (query: string) => Promise<{ points: DeliveryPointResult[]; limited?: boolean }>;
   onEditingChange?: (editing: boolean) => void;
+  changeWaybill?: (payload: Record<string, unknown>) => Promise<void>;
 }
 const emptyCourierAddress: CourierAddress = { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" };
 const deliveryProvinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"];
 
-function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange }: DeliveryEditorProps) {
+function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill }: DeliveryEditorProps) {
   const [editing, setEditing] = useState(false);
   const [editSide, setEditSide] = useState<"collection" | "delivery">("delivery");
   const [saving, setSaving] = useState(false);
@@ -2180,6 +2186,20 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
   const [note, setNote] = useState(details.privateNote);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [waybillConfirmation, setWaybillConfirmation] = useState("");
+  const waybillScope = `${details.revision}:${details.waybillChange?.trackingNumber}:${details.waybillChange?.action}`;
+  async function submitWaybillChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!details.waybillChange || !changeWaybill || saving || disabled) return;
+    if (details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope) return;
+    setSaving(true); setError(""); setMessage("");
+    try {
+      await changeWaybill({ action: details.waybillChange.action, expectedRevision: details.revision,
+        expectedWaybill: details.waybillChange.trackingNumber, confirm: true });
+      setWaybillConfirmation(""); onEditingChange?.(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
+    finally { setSaving(false); }
+  }
   const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
     delivery: details.draftPlan.delivery.kind === "door" ? details.draftPlan.delivery.address : emptyCourierAddress });
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
@@ -2244,11 +2264,27 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
     {!editing && details.canEdit && details.plan ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit("delivery")}>Edit courier instructions</button> : null}
     {!details.canEdit ? <div className="mm-admin__notice"><p>{details.blockedReason}</p>
-      {details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
+      {details.waybillChange && changeWaybill ? <form className="mm-delivery__waybill-change" onSubmit={submitWaybillChange}>
+        <strong>{details.waybillChange.action === "prepare_replacement" ? "Previous waybill cancelled" : details.waybillChange.action === "check_cancellation" ? "Cancellation needs confirmation" : "Need to change the address or courier?"}</strong>
+        <p>Waybill: <strong>{details.waybillChange.trackingNumber}</strong></p>
+        {details.waybillChange.action === "cancel_waybill" ? <p>Cancel this waybill before changing delivery. This does not cancel the customer’s order or refund their payment. A replacement is a separate courier booking and may cost again.</p>
+          : details.waybillChange.action === "check_cancellation" ? <p>Delivery stays locked until Bob Go confirms cancellation. Checking only reads its status; it will not send another cancellation or book a courier. If it remains unconfirmed, check with Bob Go.</p>
+          : <p>We will recheck Bob Go, save this waybill in history and unlock delivery setup. You can then edit the address, compare fresh courier quotes and approve a replacement. Nothing is booked automatically.</p>}
+        {details.waybillChange.action !== "check_cancellation" ? <label className="mm-delivery__check"><input type="checkbox" required
+          checked={waybillConfirmation === waybillScope} disabled={disabled || saving}
+          onChange={event => setWaybillConfirmation(event.target.checked ? waybillScope : "")} />I have not handed this parcel to the courier or dropped it off, and I want to change this delivery.</label> : null}
+        <button type="submit" className="mm-admin__secondary-button" disabled={disabled || saving || details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope}>
+          {saving ? "Checking Bob Go…" : details.waybillChange.action === "cancel_waybill" ? "Cancel waybill to change delivery" : details.waybillChange.action === "check_cancellation" ? "Check cancellation status" : "Prepare replacement delivery"}
+        </button>
+      </form> : details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
         <p>Address or courier changes must be confirmed by Bob Go or the courier. Their documented API does not provide booked-waybill editing. A courier change may require cancellation and a new paid booking.</p>
         <p>Do not create a second shipment while the first is active. Editing a private note below does not change the waybill.</p>
-        <a href="https://app.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
+        <a href="https://my.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
       </details> : null}</div> : null}
+    {details.previousWaybills?.length ? <details className="mm-delivery__history"><summary>Previous waybills ({details.previousWaybills.length})</summary>
+      <p className="mm-admin__helper">Cancelled bookings kept for reference. Do not use these labels for the replacement parcel.</p>
+      <ul>{details.previousWaybills.map(old => <li key={`${old.trackingNumber}:${old.replacedAt}`}><strong>{old.trackingNumber}</strong> · {old.courierName} · {old.status}</li>)}</ul>
+    </details> : null}
     {(editing || !details.plan) && details.canEdit ? <form onSubmit={saveDelivery} onChange={event => {
       const target: EventTarget = event.target;
       const name = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement ? target.name : "";
@@ -2346,6 +2382,7 @@ const deliveryEditorCss = `
 .mm-delivery__point-results button[aria-pressed=true]{border:2px solid var(--mm-sage,#7d896d);background:var(--mm-soft,#e8e9e2)}.mm-delivery__point-results span{font-size:13px}
 .mm-delivery__selected-point{padding:12px;background:var(--mm-soft,#e8e9e2);border-radius:8px;font-size:14px}.mm-delivery__private{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}
 .mm-delivery__private summary{cursor:pointer}.mm-delivery__private form{display:grid;gap:12px;margin-top:12px}.mm-delivery__private button{justify-self:start}
+.mm-delivery__waybill-change{display:grid;gap:14px;margin-top:16px;padding-top:16px;border-top:1px solid var(--mm-border,#a69e95)}.mm-delivery__waybill-change p{margin:0}.mm-delivery__waybill-change button{min-height:44px;white-space:normal;text-align:left;justify-self:start;max-width:100%}.mm-delivery__history{margin:18px 0}.mm-delivery__history li{margin:10px 0}
 @media(max-width:600px){.mm-admin__delivery-editor{padding:14px}.mm-delivery__grid{grid-template-columns:1fr}.mm-delivery__actions>button{width:100%}}
 `;
 // END_MM_DELIVERY_EDITOR

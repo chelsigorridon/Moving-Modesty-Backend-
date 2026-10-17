@@ -7,6 +7,7 @@ import ParcelEditor from "./parcel-editor";
 import ShippingWeightSettings from "./shipping-weight-settings";
 import { getOrderSyncConfiguration, orderSyncView } from "@/lib/integrations/bobgo/order-sync-policy";
 import { deliveryEditInput } from "@/lib/delivery-input";
+import { waybillChangeInput } from "@/lib/integrations/bobgo/waybill-change-policy";
 
 type Details = ComponentProps<typeof DeliveryEditor>["details"];
 const contact = { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" };
@@ -25,11 +26,15 @@ export default function DeliveryReview() {
   const [details, setDetails] = useState<Details>({ revision: 0, plan: null, draftPlan: examplePlan, privateNote: "", canEdit: true });
   const [booked, setBooked] = useState(false), [quoted, setQuoted] = useState(false), [choice, setChoice] = useState("0");
   const [editingDelivery, setEditingDelivery] = useState(false);
+  const [waybillStage, setWaybillStage] = useState<"cancel_waybill" | "check_cancellation" | "prepare_replacement">("cancel_waybill");
+  const [waybillNotice, setWaybillNotice] = useState("");
   const [parcel, setParcel] = useState({ weightGrams: "", lengthCm: "", widthCm: "", heightCm: "" });
   const [measured, setMeasured] = useState(false);
   const [weights, setWeights] = useState([{ id: "demo-weight", product: "DEMO scarf — not a real stock item", colour: "Example", size: "Example size", grams: null as number | null }]);
   const viewDetails: Details = booked ? { ...details, plan: details.plan || examplePlan, draftPlan: details.plan || examplePlan, canEdit: false,
-    blockedReason: "This waybill is booked or may still be processing. Changes must be confirmed in Bob Go; editing this order locally cannot amend the courier booking." } : details;
+    waybillChange: { action: waybillStage, trackingNumber: "DEMO-NOT-A-REAL-WAYBILL" },
+    blockedReason: waybillStage === "prepare_replacement" ? "This waybill is cancelled. Prepare replacement delivery to edit the address or choose a new courier."
+      : "This waybill is booked. Confirm cancellation before changing delivery." } : details;
   const selectedPointProvider = details.plan?.collection.kind === "pickup_point" ? details.plan.collection.point.providerSlug
     : details.plan?.delivery.kind === "pickup_point" ? details.plan.delivery.point.providerSlug : undefined;
   const rates = selectedPointProvider ? [{ name: `Example courier ${selectedPointProvider} · Pickup-point service`, amount: 89 }]
@@ -44,8 +49,8 @@ export default function DeliveryReview() {
     <div className="mm-delivery__actions"><button type="button" className={!booked ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={!booked}
       onClick={() => { setBooked(false); setQuoted(false); setEditingDelivery(false); }}>Before booking</button>
       <button type="button" className={booked ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={booked}
-        onClick={() => { setBooked(true); setQuoted(false); setEditingDelivery(false); }}>View already-booked example</button></div>
-    <section className="mm-delivery-review__order"><h2>TEST order · Paid · {booked ? "Waybill booked" : "Ready for courier"}</h2>
+        onClick={() => { setBooked(true); setWaybillStage("cancel_waybill"); setWaybillNotice(""); setQuoted(false); setEditingDelivery(false); }}>View already-booked example</button></div>
+    <section className="mm-delivery-review__order"><h2>TEST order · Paid · {booked ? waybillStage === "prepare_replacement" ? "Waybill cancelled" : waybillStage === "check_cancellation" ? "Cancellation pending" : "Waybill booked" : "Ready for courier"}</h2>
       <p>Products: R450 · Delivery paid by customer: R99 · Order total: R549</p>
       <p className="mm-admin__helper">The courier cost is separate. Changing the delivery setup does not change the customer’s paid total.</p>
       {booked ? <><p>Example tracking reference: DEMO-NOT-A-REAL-WAYBILL</p><p>Booked courier: <strong>Example Courier B · Express</strong> · DEMO ONLY</p></> : null}
@@ -58,7 +63,19 @@ export default function DeliveryReview() {
         setDetails(current => ({ ...current, revision: current.revision + 1,
           ...(input.action === "delivery" ? { plan: input.plan, draftPlan: input.plan } : { privateNote: input.note }) }));
         setQuoted(false);
+      }} changeWaybill={async payload => {
+        const input = waybillChangeInput.parse(payload);
+        if (input.expectedRevision !== details.revision) throw new Error("Refresh the demo before continuing.");
+        if (input.action === "cancel_waybill") { setWaybillStage("check_cancellation"); setWaybillNotice("DEMO: cancellation requested. Check cancellation status before editing."); }
+        else if (input.action === "check_cancellation") { setWaybillStage("prepare_replacement"); setWaybillNotice("DEMO: Bob Go cancellation confirmed. You can prepare a replacement."); }
+        else {
+          setDetails(current => ({ ...current, revision: current.revision + 1, canEdit: true, plan: current.plan || examplePlan, draftPlan: current.plan || examplePlan,
+            previousWaybills: [...(current.previousWaybills || []), { trackingNumber: "DEMO-NOT-A-REAL-WAYBILL", courierName: "Example Courier B", status: "Cancelled", replacedAt: new Date().toISOString() }] }));
+          setBooked(false); setMeasured(false); setQuoted(false); setParcel({ weightGrams: "", lengthCm: "", widthCm: "", heightCm: "" });
+          setWaybillNotice("DEMO: old waybill kept in history. Edit the address, reconfirm packed measurements and compare fresh courier quotes. No real change was made.");
+        }
       }} searchPoints={async query => ({ points: examplePoints.filter(point => `${point.name} ${point.description}`.toLowerCase().includes(query.trim().toLowerCase())) })} />
+      {waybillNotice ? <p className="mm-admin__notice" role="status">{waybillNotice}</p> : null}
       {!booked && details.plan && !editingDelivery ? <section className="mm-delivery-review__quotes">
         <ParcelEditor value={parcel} change={value => { setParcel(value); setMeasured(false); setQuoted(false); }} loadPackages={async () => [
           { id: "example-flyer", name: "DEMO flyer — check your real package", lengthCm: 40, widthCm: 32, heightCm: 6 },

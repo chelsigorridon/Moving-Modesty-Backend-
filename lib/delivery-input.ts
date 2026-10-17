@@ -56,7 +56,8 @@ export type DeliveryEditInput = z.infer<typeof deliveryEditInput>;
 
 export function deliveryEditBlocker(order: { status: string; paymentStatus: string; deliveryMethod: string }, shipment?: { status: string; providerShipmentId?: string | null } | null) {
   if (order.deliveryMethod !== "courier") return "This order is not a courier delivery. Its paid delivery method has not been changed.";
-  if (shipment && (["booking", "booked", "cancelled"].includes(shipment.status) || shipment.providerShipmentId)) return "This waybill is booked or may still be processing. Changes must be confirmed in Bob Go; editing this order locally cannot amend the courier booking.";
+  if (shipment?.status === "cancelled") return "This waybill is cancelled. Check its cancellation with Bob Go, then prepare a replacement delivery before editing the address or choosing another courier.";
+  if (shipment && (["booking", "booked"].includes(shipment.status) || shipment.providerShipmentId)) return "This waybill is booked or may still be processing. Changes must be confirmed in Bob Go; editing this order locally cannot amend the courier booking.";
   if (!["new", "confirmed", "processing", "ready"].includes(order.status)) return "Delivery details cannot be changed at this order's current stage.";
   if (order.paymentStatus !== "paid") return "Wait for verified payment before changing the delivery setup.";
   return null;
