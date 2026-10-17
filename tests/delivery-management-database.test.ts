@@ -32,7 +32,7 @@ test("delivery editing and all courier routes preserve payments, quotes and book
       const id = new URL(`https://example.invalid${path}`).searchParams.get("location_id");
       return [{ id: Number(id || 1156), provider_slug: "ie", active: true, type: id === "2000" ? "counter" : "locker", name: `Verified point ${id}`, address }];
     }
-    if (path === "/rates") return { provider_rate_requests: [
+    if (path === "/rates") return { id: 123456, provider_rate_requests: [
       { provider_slug: "ie", provider_name: "Internet Express", status: "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 99 }] },
       { provider_slug: "tgc", provider_name: "TEST Other Courier", status: "success", responses: [{ status: "success", service_level_code: "OVN", rate_amount: 115 }] },
     ] };
@@ -129,6 +129,11 @@ test("delivery editing and all courier routes preserve payments, quotes and book
       assert.equal(booked.booked, true);
       const booking = calls.filter(call => call.path === "/shipments");
       assert.equal(booking.length, 1); assert.equal(booking[0].body.provider_slug, "tgc");
+      assert.equal(booking[0].body.selected_rate_request_id, 123456);
+      assert.equal(booking[0].body.collection_contact_name, "TEST");
+      assert.equal(booking[0].body.collection_contact_surname, "Contact");
+      assert.equal(booking[0].body.delivery_contact_name, "TEST");
+      assert.equal(booking[0].body.delivery_contact_surname, "Contact");
       assert.equal(booking[0].body.instructions_delivery, "Changed before booking");
       assert.equal(booking[0].body.collection_pickup_point_location_id, undefined);
       await assert.rejects(shipping.bookCourierShipment("MM-DELIVERY-TEST", quote.rates[1].quoteToken), /already exists/);

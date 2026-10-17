@@ -16,8 +16,9 @@ test("door-to-door plans are not restricted to a pickup-point courier", () => {
   assert.equal(parsed.collection.kind === "door" && parsed.collection.address.province, "Western Cape");
   assert.match(courierRouteLabel(parsed), /Courier collects from sender.*Customer's door/);
   assert.deepEqual(bobGoDoorAddress({ ...address, province: "Western Cape", line2: "Unit 2", company: "" }), {
-    company: "", street_address: "10 Test Street, Unit 2", local_area: "Test Suburb", city: "Cape Town", zone: "Western Cape", country: "ZA", code: "7800",
+    type: "residential", company: "", street_address: "10 Test Street, Unit 2", local_area: "Test Suburb", city: "Cape Town", zone: "Western Cape", country: "ZA", code: "7800",
   });
+  assert.equal(bobGoDoorAddress({ ...address, province: "Western Cape", line2: "", company: "TEST Shop" }).type, "business");
 });
 
 test("all four door and pickup-point combinations are validated", () => {

@@ -229,9 +229,27 @@ export const shipments = pgTable("shipments", {
   courierStatus: text("courier_status"),
   courierStatusAt: timestamp("courier_status_at", { withTimezone: true }),
   courierCheckedAt: timestamp("courier_checked_at", { withTimezone: true }),
+  courierChargedAmount: numeric("courier_charged_amount", { precision: 12, scale: 2 }),
   ...timestamps,
 }, (table) => [uniqueIndex("shipments_order_idx").on(table.orderId),
   uniqueIndex("shipments_provider_remote_idx").on(table.provider, table.providerShipmentId)]);
+
+// Signed delivery notifications are durably queued before acknowledgement.
+// Store identifiers only, not provider payloads containing customer PII.
+export const bobgoDeliveryEvents = pgTable("bobgo_delivery_events", {
+  id: text("id").primaryKey(),
+  shipmentId: uuid("shipment_id").notNull().references(() => shipments.id, { onDelete: "cascade" }),
+  environment: text("environment").notNull(),
+  topic: text("topic").notNull(),
+  status: text("status").default("queued").notNull(),
+  attempts: integer("attempts").default(0).notNull(),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+  lastErrorCode: text("last_error_code"),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  ...timestamps,
+});
 
 // Only authenticated owner routes read these private collection details.
 export const courierSettings = pgTable("courier_settings", {

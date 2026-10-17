@@ -10,6 +10,7 @@ export const parcelInput = z.object({
 });
 export type PackedParcel = z.infer<typeof parcelInput>;
 export type BobGoAddress = {
+  type?: string;
   company: string; street_address: string; local_area: string; city: string;
   zone: string; country: string; code: string;
 };
@@ -19,13 +20,24 @@ export type CourierBookingSnapshot = {
   collection: ResolvedCourierEndpoint; delivery: ResolvedCourierEndpoint;
   collectionInstructions: string; deliveryInstructions: string;
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
+  rateRequestId?: number;
 };
 export type ApprovedQuote = CourierRate & {
   version: 1 | 2; orderNumber: string; fingerprint: string; expires: number;
   environment: "sandbox" | "production"; parcel: PackedParcel;
   collectionAddress: BobGoAddress; declaredValue: number;
   deliverySnapshot?: CourierBookingSnapshot;
+  rateRequestId?: number;
 };
+export function rateRequestId(value: unknown): number {
+  const id = record(value).id;
+  if (!Number.isSafeInteger(id) || Number(id) <= 0) throw new Error("Bob Go did not return a valid quote reference. Get a new quote before booking.");
+  return Number(id);
+}
+export function contactName(value: string) {
+  const [name, ...surname] = value.trim().split(/\s+/);
+  return { name, surname: surname.join(" ") };
+}
 export function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -87,7 +99,7 @@ export function parseLocation(value: unknown, id: string, provider: string, chec
   let address = record(location.address);
   if (typeof location.address === "string") {
     const parts = location.address.split(",").map(part => part.trim()).filter(Boolean);
-    if (parts.length < 6 || parts.at(-1) !== "ZA") throw new Error("Bob Go did not return a complete South African pickup-point address.");
+    if (parts.length < 6 || !["za", "south africa"].includes(parts.at(-1)!.toLowerCase())) throw new Error("Bob Go did not return a complete South African pickup-point address.");
     const country = parts.pop(); const zone = parts.pop(); const code = parts.pop();
     const city = parts.pop(); const local_area = parts.pop();
     address = { company: textValue(location.name), street_address: parts.join(", "), local_area, city, zone, country, code };
@@ -95,7 +107,7 @@ export function parseLocation(value: unknown, id: string, provider: string, chec
   const normalized = {
     company: textValue(address.company), street_address: textValue(address.street_address),
     local_area: textValue(address.local_area), city: textValue(address.city), zone: textValue(address.zone),
-    country: textValue(address.country), code: textValue(address.code),
+    country: ["za", "south africa"].includes(textValue(address.country).trim().toLowerCase()) ? "ZA" : textValue(address.country), code: textValue(address.code),
   };
   if (!normalized.street_address || !normalized.city || !normalized.zone || !/^\d{4}$/.test(normalized.code) || normalized.country !== "ZA") throw new Error("Bob Go did not return a complete drop-off address. Please check the pickup point setup.");
   return { name: textValue(location.name), address: normalized };

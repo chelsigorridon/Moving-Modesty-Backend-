@@ -1,11 +1,13 @@
 import type { NextConfig } from "next";
 
 const framerAdminUrl = (process.env.FRAMER_ADMIN_URL ?? "https://holistic-brand-492217.framer.app").replace(/\/$/, "");
+const localBuildId = process.env.MM_LOCAL_BUILD_ID;
 
 const nextConfig: NextConfig = {
   // Isolated local verification avoids OneDrive locks on an existing build.
   // Normal development and Vercel builds keep the default output directory.
-  distDir: process.env.MM_DISCOUNT_REVIEW_BUILD === "true" ? ".tmp/discount-review-build" : ".next",
+  distDir: localBuildId && /^[a-z0-9-]{1,64}$/.test(localBuildId) ? `.tmp/local-build-${localBuildId}`
+    : process.env.MM_DISCOUNT_REVIEW_BUILD === "true" ? ".tmp/discount-review-build" : ".next",
   poweredByHeader: false,
   headers() {
     return [{ source: "/:path*", headers: [

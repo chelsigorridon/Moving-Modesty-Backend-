@@ -113,6 +113,13 @@
       "when": 1792225800000,
       "tag": "0015_bobgo_waybill_link",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1792240200000,
+      "tag": "0016_bobgo_direct_delivery",
+      "breakpoints": true
     }
   ]
 }

@@ -75,6 +75,6 @@ export function planProvider(plan: CourierPlan): string | undefined {
     : plan.delivery.kind === "pickup_point" ? plan.delivery.point.providerSlug : undefined;
 }
 export function bobGoDoorAddress(address: CourierAddress) {
-  return { company: address.company, street_address: [address.line1, address.line2].filter(Boolean).join(", "),
+  return { type: address.company ? "business" : "residential", company: address.company, street_address: [address.line1, address.line2].filter(Boolean).join(", "),
     local_area: address.suburb, city: address.city, zone: address.province, country: "ZA", code: address.postalCode };
 }
