@@ -17,7 +17,7 @@ export async function POST(request: Request, context: RouteContext<"/api/admin/o
   try {
     const body = await request.json().catch(() => null);
     if (typeof body?.quoteToken !== "string" || body.confirm !== true) return apiJson({ error: "Approve a fresh courier quote before booking." }, { status: 400 });
-    const result = await bookCourierShipment(orderNumber, body.quoteToken);
+    const result = await bookCourierShipment(orderNumber, body.quoteToken, typeof body.testCostApproval === "string" ? body.testCostApproval : "");
     const snapshot = await getAdminSnapshot();
     return apiJson({ ...result, order: snapshot.orders.find(item => item.id === orderNumber) });
   } catch (error) {

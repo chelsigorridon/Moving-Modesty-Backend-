@@ -11,6 +11,7 @@ import { bobGoRequest, getConfiguredBobGoLocation } from "./client";
 import { reportFailure, resolveFailures } from "../../monitoring";
 import { contactName, fingerprint, parcelInput, parcelPayload, parseLocation, parseRates, rateRequestId, record, records, signQuote, submissionIsBooked, textValue, verifyQuote, type ApprovedQuote, type PackedParcel } from "./protocol";
 import { createDirectShipmentTracking } from "./tracking";
+import { assertCourierTestCanQuote, assertCourierTestBookingApproval, reserveCourierTestAttempt } from "../../live-courier-test";
 
 export class ShippingConflict extends Error {}
 const database = () => requireDatabase();
@@ -42,11 +43,14 @@ async function assertIndependentBookingAllowed(reader: Pick<ReturnType<typeof re
     throw new ShippingConflict("This order is linked to Bob Go or its submission is still being checked. Book against the existing order in Bob Go, then check its linked waybill. Do not create a separate shipment.");
   }
 }
-function assertCanBook(data: ShippingOrder) {
+async function assertCanBook(data: ShippingOrder, reader: Pick<ReturnType<typeof requireDatabase>, "select"> = database()) {
   const config = getBobGoConfiguration();
   if (!config.enabled || !config.apiTokenConfigured || (!data.order.courierPlan &&
     (!config.pickupPointLocationId || !config.pickupPointProviderSlug || !config.senderEmail || !config.senderPhone))) throw new ShippingConflict("Bob Go setup is incomplete or booking is disabled.");
-  if (config.environment === "production" && data.paymentProvider === "payfast-sandbox") throw new ShippingConflict("Test payments cannot create live courier bookings. Use a sandbox courier account for test orders.");
+  if (config.environment === "production" && data.paymentProvider === "payfast-sandbox") {
+    try { await assertCourierTestCanQuote(reader, data.order); }
+    catch { throw new ShippingConflict("Test payments cannot create live courier bookings. Only the separately authorised owner TEST can compare live quotes."); }
+  }
   if (data.order.deliveryMethod !== "courier" || data.order.paymentStatus !== "paid" || data.order.status !== "ready") throw new ShippingConflict("Only paid delivery orders marked ready for courier can be booked.");
   if (data.order.archivedAt || data.verifiedPaymentStatus !== "paid" || !data.paymentVerifiedAt || !data.paymentReference
     || Number(data.paymentAmount) !== Number(data.order.total)) throw new ShippingConflict("A verified payment matching this active order is required before courier booking.");
@@ -75,7 +79,7 @@ function deliveryAddress(data: ShippingOrder) {
 export async function getCourierQuotes(orderNumber: string, input: unknown, additionalCover: boolean) {
   const parcel = parcelInput.parse(input);
   let data = await loadOrder(orderNumber);
-  assertCanBook(data);
+  await assertCanBook(data);
   await assertIndependentBookingAllowed(database(), data.order.id);
   const requestedFingerprint = orderFingerprint(data, parcel);
   const config = getBobGoConfiguration();
@@ -107,7 +111,7 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
     const [locked] = await transaction.select(shippingOrderColumns).from(orders).where(eq(orders.id, data.order.id)).for("update");
     const [shipment] = await transaction.select().from(shipments).where(eq(shipments.orderId, locked.id)).for("update");
     await assertIndependentBookingAllowed(transaction, locked.id);
-    assertCanBook({ ...data, order: locked, shipment: shipment || null });
+    await assertCanBook({ ...data, order: locked, shipment: shipment || null }, transaction);
     if (fingerprint(locked) !== fingerprint(data.order)) throw new ShippingConflict("The order changed. Refresh it and get a new quote.");
     const values = { provider: `bobgo-${config.environment}`, weightGrams: parcel.weightGrams, lengthCm: parcel.lengthCm.toFixed(2), widthCm: parcel.widthCm.toFixed(2), heightCm: parcel.heightCm.toFixed(2),
       pickupPointLocationId: resolved ? resolved.collection.point?.id || null : config.pickupPointLocationId,
@@ -115,7 +119,7 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
     await transaction.insert(shipments).values({ orderId: locked.id, ...values }).onConflictDoUpdate({ target: shipments.orderId, set: values });
   });
   data = await loadOrder(orderNumber);
-  assertCanBook(data);
+  await assertCanBook(data);
   const savedParcel = shipmentParcel(data);
   if (fingerprint(savedParcel) !== fingerprint(parcel)) throw new ShippingConflict("Parcel details changed in another session. Get a new quote.");
   // Never pair rates/route snapshots from an earlier order with a newer order's
@@ -128,25 +132,31 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
       ...(resolved ? { deliverySnapshot: { collection: resolved.collection, delivery: resolved.delivery,
         collectionInstructions: resolved.plan.collectionInstructions, deliveryInstructions: resolved.plan.deliveryInstructions, rateRequestId: selectedRateRequestId, ...rate } } : {}) }, secret()) })) };
 }
-export async function bookCourierShipment(orderNumber: string, quoteToken: string) {
+export async function bookCourierShipment(orderNumber: string, quoteToken: string, testCostApproval = "") {
   let quote: ApprovedQuote;
   try { quote = verifyQuote(quoteToken, secret()); }
   catch (error) { throw new ShippingConflict(error instanceof Error ? error.message : "Get a fresh courier quote."); }
   if (!Number.isSafeInteger(quote.rateRequestId) || Number(quote.rateRequestId) <= 0) throw new ShippingConflict("Get a fresh courier quote before booking.");
   const data = await loadOrder(orderNumber);
-  assertCanBook(data);
+  await assertCanBook(data);
+  const liveTest = quote.environment === "production" && data.paymentProvider === "payfast-sandbox";
+  if (liveTest) {
+    try { await assertCourierTestBookingApproval(database(), data.order, quoteToken, testCostApproval); }
+    catch (error) { throw new ShippingConflict(error instanceof Error ? error.message : "Approve the exact real TEST courier cost first."); }
+  }
   if (quote.orderNumber !== orderNumber || quote.environment !== getBobGoConfiguration().environment || quote.fingerprint !== orderFingerprint(data, shipmentParcel(data))) throw new ShippingConflict("Order or parcel details changed. Get a new courier quote.");
   const attemptReference = `MM${randomUUID().replaceAll("-", "").slice(0, 20)}`;
   await database().transaction(async transaction => {
     const [locked] = await transaction.select(shippingOrderColumns).from(orders).where(eq(orders.id, data.order.id)).for("update");
     const [shipment] = await transaction.select().from(shipments).where(eq(shipments.orderId, locked.id)).for("update");
     const current = { ...data, order: locked, shipment: shipment || null };
-    assertCanBook(current);
+    await assertCanBook(current, transaction);
     await assertIndependentBookingAllowed(transaction, locked.id);
     if (quote.fingerprint !== orderFingerprint(current, shipmentParcel(current))) throw new ShippingConflict("Order or parcel details changed. Get a new courier quote.");
+    if (liveTest) await reserveCourierTestAttempt(transaction, locked, quoteToken, testCostApproval, attemptReference);
     // Commit a durable lock BEFORE the chargeable POST. Never release it on an unknown outcome.
     await transaction.update(shipments).set({ provider: `bobgo-${quote.environment}`, status: "booking", waybillReference: attemptReference,
-      serviceLevelCode: quote.serviceCode, bookingSnapshot: quote.deliverySnapshot || null,
+      serviceLevelCode: quote.serviceCode, bookingSnapshot: quote.deliverySnapshot ? { ...quote.deliverySnapshot, ...(liveTest ? { testAttemptReference: attemptReference } : {}) } : null,
       lastError: "Booking submitted. If the response is delayed, check Bob Go before any retry.", updatedAt: new Date() }).where(eq(shipments.orderId, locked.id));
     await transaction.insert(orderStatusHistory).values({ orderId: locked.id, fromStatus: locked.status, toStatus: locked.status,
       note: `Manual Bob Go booking approved: ${quote.providerName} ${quote.serviceCode}, quoted R${quote.amount.toFixed(2)}, declared value R${quote.declaredValue.toFixed(2)}, reference ${attemptReference}.` });

@@ -11,6 +11,7 @@ import { checkoutPricing } from "@/lib/discounts";
 import { DiscountValidationError } from "@/lib/discount-input";
 import { requirePayFastConfiguration } from "./configuration";
 import { createPayFastSignature, type PayFastField } from "./signature";
+import { isLiveCourierTestNumber } from "../../live-courier-test";
 
 export const payFastCheckoutSchema = z.object({
   orderNumber: z.string().trim().min(6).max(80),
@@ -98,6 +99,7 @@ export async function recordPayFastCheckoutFailure(input: PayFastCheckoutInput, 
 }
 
 export async function createPayFastCheckout(input: PayFastCheckoutInput, requestUrl: string) {
+  if (isLiveCourierTestNumber(input.orderNumber)) throw new PayFastCheckoutError("Use the private owner TEST payment page, not customer checkout.", 409);
   const configuration = requirePayFastConfiguration();
   const database = requireDatabase();
   return database.transaction(async (transaction) => {

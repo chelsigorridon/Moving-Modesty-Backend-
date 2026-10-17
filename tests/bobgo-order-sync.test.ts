@@ -13,8 +13,8 @@ test("the review release cannot activate order sync through environment flags", 
   const code = readFileSync(new URL("../lib/integrations/bobgo/order-sync.ts", import.meta.url), "utf8");
   assert.doesNotMatch(code, /\bfetch\(|bobGoRequest\(|getBobGoApiToken/);
   const payment = readFileSync(new URL("../lib/integrations/payfast/notification.ts", import.meta.url), "utf8");
-  assert.match(payment, /if \(nextStatus === "paid"\) await enqueuePaidBobGoOrder\(transaction, payment.orderId\)/);
-  assert.match(payment, /if \(lockedOrder.paymentStatus === "paid"\) await enqueuePaidBobGoOrder\(transaction, payment.orderId\)/);
+  assert.match(payment, /if \(nextStatus === "paid" && !courierTest\) await enqueuePaidBobGoOrder\(transaction, payment.orderId\)/);
+  assert.match(payment, /if \(lockedOrder.paymentStatus === "paid" && !courierTest\) await enqueuePaidBobGoOrder\(transaction, payment.orderId\)/);
 });
 
 test("order payload normalizes contacts and province, uses measured per-item weights and excludes private data", () => {

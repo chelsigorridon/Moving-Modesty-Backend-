@@ -11,6 +11,7 @@ import { classifyError, errorReasons } from "./monitoring-policy";
 import { requireDatabase } from "./db";
 import { customers, emailEvents, orderItems, orderRefunds, orders } from "./db/schema";
 import type { Order, OrderStatus } from "./store-data";
+import { isLiveCourierTestNumber } from "./live-courier-test";
 
 const apiKey = process.env.RESEND_API_KEY;
 const resend = apiKey ? new Resend(apiKey) : null;
@@ -179,6 +180,7 @@ export async function sendPaidOrderEmails(orderId: string, onlyRecipient?: "cust
     .where(eq(orders.id, orderId))
     .limit(1);
   if (!order) throw new Error("The paid order could not be found for its email notification.");
+  if (isLiveCourierTestNumber(order.orderNumber)) return { skipped: true as const, reason: "Private courier TEST: customer and owner order emails are disabled" };
   Object.assign(order, readOrderCustomer(order.customerSnapshot, order));
   if (order.paymentStatus !== "paid") return { skipped: true as const, reason: "Payment is not confirmed" };
 
@@ -267,6 +269,7 @@ export async function resendPaidOrderEmails(orderNumber: string) {
 }
 
 export async function sendOrderStatusEmail(order: Order, status: OrderStatus) {
+  if (isLiveCourierTestNumber(order.id)) return { skipped: true as const, reason: "Private courier TEST: order emails are disabled" };
   if (!shouldNotifyOrderStatus(order.deliveryMethod, status)) return { skipped: true as const, reason: "Internal preparation step" };
   const tracking = status === "Dispatched" ? dispatchTracking(order) : null;
   const trackingHtml = tracking

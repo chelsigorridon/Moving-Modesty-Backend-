@@ -16,6 +16,7 @@ import { type CheckoutCatalogueItem } from "./checkout-catalogue";
 import { resolveLiveCheckoutItem } from "./catalogue-storefront";
 import { checkoutPricing } from "./discounts";
 import { resolveVerifiedPackage } from "./shipping/packages";
+import { isLiveCourierTestNumber } from "./live-courier-test";
 
 export { checkoutOrderSchema, type CheckoutOrderInput } from "./checkout-input";
 
@@ -72,6 +73,7 @@ export async function upsertCheckoutOrder(input: CheckoutOrderInput, database = 
         deliveryMethod: orders.deliveryMethod, total: orders.total, archivedAt: orders.archivedAt,
         discountSnapshot: orders.discountSnapshot, discountAmount: orders.discountAmount })
       .from(orders).where(eq(orders.checkoutToken, input.checkoutToken)).for("update").limit(1);
+    if (existingOrder && isLiveCourierTestNumber(existingOrder.orderNumber)) throw new CheckoutConflictError("The private courier TEST cannot be edited through customer checkout.");
     if (existingOrder) assertCheckoutEditable(existingOrder);
     const [attempt] = existingOrder ? await transaction.select({ id: payments.id, providerStatus: payments.providerStatus }).from(payments).where(eq(payments.orderId, existingOrder.id)).limit(1) : [];
     const quote = await checkoutPricing(input.discountCode, lines.map(line => ({ sku: line.product.sku, productId: line.product.productId, lineTotal: line.lineTotal })),

@@ -13,6 +13,7 @@ import {
   signaturesMatch,
 } from "./signature";
 import { isPayFastSourceIp, requestSourceIp } from "./source";
+import { assertCourierTestIdentity, isLiveCourierTestNumber, requireCourierTestPayFastConfiguration, testOrderByNumber } from "../../live-courier-test";
 
 export class PayFastNotificationError extends Error {
   constructor(
@@ -88,9 +89,10 @@ export async function recordPayFastNotificationFailure(error: PayFastNotificatio
 }
 
 export async function processPayFastNotification(request: Request, rawBody: string) {
-  const configuration = requirePayFastConfiguration();
   const params = new URLSearchParams(rawBody);
   const merchantPaymentId = params.get("m_payment_id")?.trim() ?? "";
+  const courierTest = isLiveCourierTestNumber(merchantPaymentId) ? await testOrderByNumber(merchantPaymentId) : null;
+  const configuration = courierTest ? requireCourierTestPayFastConfiguration() : requirePayFastConfiguration();
   const receivedSignature = params.get("signature") ?? "";
   const expectedSignature = createPayFastNotificationSignature(params, configuration.passphrase);
   if (!receivedSignature || !signaturesMatch(receivedSignature, expectedSignature)) {
@@ -131,6 +133,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
   }
 
   const database = requireDatabase();
+  if (courierTest) await assertCourierTestIdentity(database, courierTest);
   const [payment] = await database
     .select({
       id: payments.id,
@@ -150,6 +153,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
   if (!payment) {
     throw new PayFastNotificationError("Unknown payment reference.", 404, "reference", merchantPaymentId);
   }
+  if (courierTest && payment.provider !== "payfast-sandbox") throw new PayFastNotificationError("The TEST payment environment does not match.", 400, "environment", merchantPaymentId);
   if (["payfast-production", "payfast-sandbox"].includes(payment.provider) && payment.provider !== `payfast-${configuration.environment}`) {
     throw new PayFastNotificationError("The payment environment does not match this checkout.", 400, "environment", merchantPaymentId);
   }
@@ -189,19 +193,24 @@ export async function processPayFastNotification(request: Request, rawBody: stri
   return database.transaction(async (transaction) => {
     const [lockedOrder] = await transaction.select({ status: orders.status, paymentStatus: orders.paymentStatus, total: orders.total })
       .from(orders).where(eq(orders.id, payment.orderId)).for("update").limit(1);
-    const [lockedPayment] = await transaction.select({ status: payments.status, amount: payments.amount, providerPaymentId: payments.providerPaymentId })
+    const [lockedPayment] = await transaction.select({ status: payments.status, amount: payments.amount, providerPaymentId: payments.providerPaymentId, provider: payments.provider })
       .from(payments).where(eq(payments.id, payment.id)).limit(1);
     if (!lockedOrder || !lockedPayment || cents(lockedOrder.total, merchantPaymentId) !== cents(lockedPayment.amount, merchantPaymentId)
       || cents(params.get("amount_gross"), merchantPaymentId) !== cents(lockedPayment.amount, merchantPaymentId)) {
       throw new PayFastNotificationError("The payment amount does not match the order.", 400, "amount", merchantPaymentId);
+    }
+    if (courierTest) {
+      const [currentTest] = await transaction.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1);
+      if (!currentTest || lockedPayment.provider !== "payfast-sandbox") throw new PayFastNotificationError("The TEST payment environment changed.", 400, "environment", merchantPaymentId);
+      await assertCourierTestIdentity(transaction, currentTest);
     }
     if (isPaymentFinal(lockedOrder.paymentStatus) || isPaymentFinal(lockedPayment.status)) {
       if (lockedPayment.providerPaymentId && lockedPayment.providerPaymentId !== providerPaymentId) {
         throw new PayFastNotificationError("The PayFast transaction reference does not match.", 400, "transaction reference", merchantPaymentId);
       }
       // Delayed FAILED/PENDING callbacks can never undo a verified payment.
-      if (lockedOrder.paymentStatus === "paid") await enqueuePaidBobGoOrder(transaction, payment.orderId);
-      return { duplicate: true, paymentStatus: lockedOrder.paymentStatus, orderId: payment.orderId };
+      if (lockedOrder.paymentStatus === "paid" && !courierTest) await enqueuePaidBobGoOrder(transaction, payment.orderId);
+      return { duplicate: true, paymentStatus: lockedOrder.paymentStatus, orderId: payment.orderId, courierTest: Boolean(courierTest) };
     }
     await transaction
       .update(payments)
@@ -226,7 +235,7 @@ export async function processPayFastNotification(request: Request, rawBody: stri
       .where(eq(orders.id, payment.orderId));
 
     if (nextStatus === "paid" && lockedOrder.status === "new") {
-      await deductPaidStock(transaction, payment.orderId);
+      if (!courierTest) await deductPaidStock(transaction, payment.orderId);
       const [confirmed] = await transaction
         .update(orders)
         .set({ status: "confirmed", updatedAt: verifiedAt })
@@ -237,11 +246,11 @@ export async function processPayFastNotification(request: Request, rawBody: stri
           orderId: payment.orderId,
           fromStatus: "new",
           toStatus: "confirmed",
-          note: "Payment confirmed by a verified PayFast notification.",
+          note: courierTest ? "TEST ONLY: verified PayFast SANDBOX notification. No real payment, stock allocation or customer email." : "Payment confirmed by a verified PayFast notification.",
         });
       }
     }
-    if (nextStatus === "paid") await enqueuePaidBobGoOrder(transaction, payment.orderId);
-    return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId };
+    if (nextStatus === "paid" && !courierTest) await enqueuePaidBobGoOrder(transaction, payment.orderId);
+    return { duplicate: false, paymentStatus: nextStatus, orderId: payment.orderId, courierTest: Boolean(courierTest) };
   });
 }

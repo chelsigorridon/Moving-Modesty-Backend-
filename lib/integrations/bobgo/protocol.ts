@@ -21,6 +21,7 @@ export type CourierBookingSnapshot = {
   collectionInstructions: string; deliveryInstructions: string;
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
   rateRequestId?: number;
+  testAttemptReference?: string;
 };
 export type ApprovedQuote = CourierRate & {
   version: 1 | 2; orderNumber: string; fingerprint: string; expires: number;

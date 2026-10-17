@@ -6,6 +6,7 @@ import { getBobGoConfiguration } from "./configuration";
 import { bobGoRequest } from "./client";
 import { cancellationRequested, canCancelProviderShipment, handedOverStatuses, waybillChangeInput } from "./waybill-change-policy";
 import { shipmentList, verifiedShipment } from "./tracking-policy";
+import { assertCourierTestCanCancel } from "../../live-courier-test";
 
 export class WaybillChangeConflict extends Error {}
 type Database = ReturnType<typeof requireDatabase>;
@@ -30,8 +31,12 @@ export function createWaybillChanges(database: Database, config: { enabled: bool
     }
     if (handedOverStatuses.has(shipment.courierStatus || "")) throw new WaybillChangeConflict("Courier tracking reports this parcel has been handed over. Arrange changes with Bob Go.");
     const [payment] = await reader.select().from(payments).where(eq(payments.orderId, order.id)).limit(1);
-    if (!payment || payment.status !== "paid" || !payment.verifiedAt || !payment.providerPaymentId || Number(payment.amount) !== Number(order.total)
-      || config.environment === "production" && payment.provider === "payfast-sandbox") throw new WaybillChangeConflict("A matching verified payment in the correct environment is required.");
+    if (!payment || payment.status !== "paid" || !payment.verifiedAt || !payment.providerPaymentId || Number(payment.amount) !== Number(order.total)) throw new WaybillChangeConflict("A matching verified payment in the correct environment is required.");
+    if (config.environment === "production" && payment.provider === "payfast-sandbox") {
+      try { await assertCourierTestCanCancel(reader, order, shipment); }
+      catch { throw new WaybillChangeConflict("A matching verified payment in the correct environment is required."); }
+      if (input.action === "prepare_replacement") throw new WaybillChangeConflict("The single live TEST waybill can be cancelled and archived, but cannot create a replacement booking.");
+    }
     const jobs = await reader.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.orderId, order.id), eq(bobgoOrderSync.environment, config.environment)));
     if (jobs.some(job => job.remoteOrderId || job.submittedAt || ["synced", "checking", "syncing"].includes(job.status)
       || job.leaseExpiresAt && job.leaseExpiresAt.getTime() > clock())) throw new WaybillChangeConflict("This order is linked to a Bob Go sales-channel order. Arrange its change in Bob Go; do not create a separate shipment.");

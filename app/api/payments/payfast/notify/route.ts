@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   }
   await resolveFailures("payment_notify", result.orderId);
 
-  if (result.paymentStatus === "paid") {
+  if (result.paymentStatus === "paid" && !result.courierTest) {
     try {
       await sendPaidOrderEmails(result.orderId);
     } catch (error) {
