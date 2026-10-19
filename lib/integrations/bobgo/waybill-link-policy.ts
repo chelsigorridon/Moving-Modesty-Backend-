@@ -1,6 +1,7 @@
 import { record, textValue } from "./protocol.ts";
 import { matchRemoteOrder, type BobGoOrderPayload } from "./order-sync-policy.ts";
 import { courierContactInput } from "../../delivery-input.ts";
+import { bobGoAddressesMatch } from "./address-policy.ts";
 
 export type WaybillLinkErrorCode = "fulfillment_lookup_failed" | "fulfillment_mismatch" | "fulfillment_multiple" | "fulfillment_conflict";
 export class WaybillLinkError extends Error {
@@ -19,12 +20,14 @@ export function existingWaybillReference(value: unknown, remoteOrder: unknown, e
   if (!remoteId) throw new WaybillLinkError();
   const body = record(value), entries = body.order_fulfillments;
   if (!Array.isArray(entries) || entries.length > 100 || body.has_more === true
-    || body.next_page || (body.total !== undefined && Number(body.total) !== entries.length)) throw new WaybillLinkError();
+    || body.next_page || (body.total !== undefined && Number(body.total) !== entries.length)
+    || (body.count !== undefined && Number(body.count) !== entries.length)) throw new WaybillLinkError();
   if (!entries.length) return null;
   if (entries.length !== 1) throw new WaybillLinkError("fulfillment_multiple");
   const entry = record(entries[0]), fulfillment = entry.order_fulfillment === undefined ? entry : record(entry.order_fulfillment);
   if (id(fulfillment.order_id) !== remoteId || fulfillment.method !== "shipment" || fulfillment.status !== "success"
     || (fulfillment.channel_order_number !== undefined && fulfillment.channel_order_number !== expected.channel_order_number)
+    || (fulfillment.type !== undefined && fulfillment.type !== "original")
     || fulfillment.is_return === true || fulfillment.return_id || fulfillment.return_order_id) throw new WaybillLinkError();
   const shipmentId = id(fulfillment.method_id), trackingNumber = textValue(fulfillment.method_reference);
   if (!shipmentId || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(trackingNumber)) throw new WaybillLinkError();
@@ -61,15 +64,13 @@ export function verifiedExistingWaybill(value: unknown, reference: { shipmentId:
     || !/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(providerSlug) || providerName.length > 160
     || (row.provider_slug && provider.slug && row.provider_slug !== provider.slug)
     || !/^[A-Za-z0-9_-]{1,80}$/.test(textValue(row.service_level_code))
-    || !["pending-collection", "collected", "at-hub", "in-transit", "at-destination-hub", "out-for-delivery", "delivered", "delivery-exception"].includes(textValue(row.status))
-    || normal(row.delivery_contact_name) !== normal(`${expected.customer_name} ${expected.customer_surname}`)
+    || !["pending-collection", "awaiting-dropoff", "collected", "at-hub", "in-transit", "at-destination-hub", "out-for-delivery", "ready-for-pickup", "delivered", "finalised", "delivery-exception"].includes(textValue(row.status))
+    || normal([row.delivery_contact_name, row.delivery_contact_surname].filter(Boolean).join(" ")) !== normal(`${expected.customer_name} ${expected.customer_surname}`)
     || normal(row.delivery_contact_email) !== normal(expected.customer_email)
     || courierContactInput.shape.phone.safeParse(row.delivery_contact_mobile_number).data !== expected.customer_phone
     || row.is_return === true || row.return_order_id
     || !Number.isFinite(created.getTime()) || created.getTime() > now + 300000) throw new WaybillLinkError();
-  for (const key of ["street_address", "local_area", "city", "country", "code", "zone"] as const) {
-    if (normal(address[key]) !== normal(expected.delivery_address[key])) throw new WaybillLinkError();
-  }
+  if (!bobGoAddressesMatch(address, expected.delivery_address)) throw new WaybillLinkError();
   return { ...reference, providerSlug, providerName, serviceCode: textValue(row.service_level_code), bookedAt: created,
     collectionKind: row.collection_location_type === "door" ? "door" : "pickup_point",
     deliveryKind: row.delivery_location_type === "door" ? "door" : "pickup_point" };

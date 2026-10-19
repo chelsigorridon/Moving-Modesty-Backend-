@@ -12,6 +12,8 @@ import { reportFailure, resolveFailures } from "../../monitoring";
 import { contactName, fingerprint, parcelInput, parcelPayload, parseLocation, parseRates, rateRequestId, record, records, signQuote, submissionIsBooked, textValue, verifyQuote, type ApprovedQuote, type PackedParcel } from "./protocol";
 import { createDirectShipmentTracking } from "./tracking";
 import { assertCourierTestCanQuote, assertCourierTestBookingApproval, reserveCourierTestAttempt } from "../../live-courier-test";
+import { configuredLinkedBooking } from "./linked-booking-runtime";
+import { LinkedBookingConflict } from "./linked-booking-policy";
 
 export class ShippingConflict extends Error {}
 const database = () => requireDatabase();
@@ -33,6 +35,15 @@ async function loadOrder(orderNumber: string) {
   return data;
 }
 type ShippingOrder = Awaited<ReturnType<typeof loadOrder>>;
+async function hasSubmittedChannelOrder(orderId: string) {
+  const jobs = await database().select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, getBobGoConfiguration().environment)));
+  return jobs.some(job => job.remoteOrderId || job.submittedAt || ["synced", "checking", "syncing"].includes(job.status)
+    || job.leaseExpiresAt && job.leaseExpiresAt.getTime() > Date.now());
+}
+async function linkedAction<T>(action: () => Promise<T>): Promise<T> {
+  try { return await action(); }
+  catch (error) { if (error instanceof LinkedBookingConflict) throw new ShippingConflict(error.message); throw error; }
+}
 async function assertIndependentBookingAllowed(reader: Pick<ReturnType<typeof requireDatabase>, "select">, orderId: string) {
   // Also protects previously-synced orders if automatic sync is later paused.
   // Current unsynced orders retain the existing manual portal workflow.
@@ -80,6 +91,7 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
   const parcel = parcelInput.parse(input);
   let data = await loadOrder(orderNumber);
   await assertCanBook(data);
+  if (await hasSubmittedChannelOrder(data.order.id)) return linkedAction(() => configuredLinkedBooking().quotes(orderNumber, parcel, additionalCover));
   await assertIndependentBookingAllowed(database(), data.order.id);
   const requestedFingerprint = orderFingerprint(data, parcel);
   const config = getBobGoConfiguration();
@@ -136,6 +148,7 @@ export async function bookCourierShipment(orderNumber: string, quoteToken: strin
   let quote: ApprovedQuote;
   try { quote = verifyQuote(quoteToken, secret()); }
   catch (error) { throw new ShippingConflict(error instanceof Error ? error.message : "Get a fresh courier quote."); }
+  if (quote.version === 3) return linkedAction(() => configuredLinkedBooking().book(orderNumber, quoteToken));
   if (!Number.isSafeInteger(quote.rateRequestId) || Number(quote.rateRequestId) <= 0) throw new ShippingConflict("Get a fresh courier quote before booking.");
   const data = await loadOrder(orderNumber);
   await assertCanBook(data);
@@ -217,6 +230,7 @@ export async function refreshCourierShipment(orderNumber: string) {
   const shipment = data.shipment;
   if (!shipment || !["booking", "booked"].includes(shipment.status)) throw new ShippingConflict("There is no submitted shipment to check.");
   assertShipmentEnvironment(shipment);
+  if (shipment.bookingSnapshot?.linkedOrder && shipment.status === "booking") return linkedAction(() => configuredLinkedBooking().reconcile(orderNumber));
   try {
     return await createDirectShipmentTracking(database(), getBobGoConfiguration().environment,
       path => bobGoRequest(path, undefined, { operation: "courier_refresh", orderId: data.order.id })).refresh(shipment.id);

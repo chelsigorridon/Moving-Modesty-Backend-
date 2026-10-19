@@ -22,9 +22,10 @@ export type CourierBookingSnapshot = {
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
   rateRequestId?: number;
   testAttemptReference?: string;
+  linkedOrder?: { remoteOrderId: string; channelRef: string; requestFingerprint: string; remoteFingerprint: string; collectionAddressBookId: string };
 };
 export type ApprovedQuote = CourierRate & {
-  version: 1 | 2; orderNumber: string; fingerprint: string; expires: number;
+  version: 1 | 2 | 3; orderNumber: string; fingerprint: string; expires: number;
   environment: "sandbox" | "production"; parcel: PackedParcel;
   collectionAddress: BobGoAddress; declaredValue: number;
   deliverySnapshot?: CourierBookingSnapshot;
@@ -62,8 +63,9 @@ export function verifyQuote(token: string, secret: string, now = Date.now()): Ap
   const expected = createHmac("sha256", secret).update(`bobgo-quote:${payload}`).digest("base64url");
   if (supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) throw new Error("Invalid courier quote. Get a new quote.");
   const quote = JSON.parse(Buffer.from(payload, "base64url").toString()) as ApprovedQuote;
-  if (![1, 2].includes(quote.version) || !Number.isFinite(quote.expires) || quote.expires <= now) throw new Error("The courier quote expired. Get a new quote.");
-  if (quote.version === 2 && (!quote.deliverySnapshot || !quote.deliverySnapshot.collection || !quote.deliverySnapshot.delivery)) throw new Error("Invalid delivery details. Get a new quote.");
+  if (![1, 2, 3].includes(quote.version) || !Number.isFinite(quote.expires) || quote.expires <= now) throw new Error("The courier quote expired. Get a new quote.");
+  if (quote.version >= 2 && (!quote.deliverySnapshot || !quote.deliverySnapshot.collection || !quote.deliverySnapshot.delivery)) throw new Error("Invalid delivery details. Get a new quote.");
+  if (quote.version === 3 && !quote.deliverySnapshot?.linkedOrder) throw new Error("Invalid linked order. Get a new quote.");
   return quote;
 }
 export function parseRates(value: unknown, providerSlug?: string): CourierRate[] {

@@ -31,6 +31,7 @@ import { getOperationalIssues } from "./monitoring";
 import { incidentAction, notificationDeliveryMessage } from "./monitoring-policy";
 import { deliveryEditBlocker, type CourierEndpoint, type CourierPlan } from "./delivery-input";
 import { getOrderSyncConfiguration, orderSyncView } from "./integrations/bobgo/order-sync-policy";
+import { getLinkedBookingConfiguration } from "./integrations/bobgo/linked-booking-policy";
 import { cancellationRequested, handedOverStatuses, previousWaybills } from "./integrations/bobgo/waybill-change-policy";
 
 export type { AdminOrder } from "./admin-types";
@@ -333,6 +334,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       if (!customer.phone || !customer.email) blockers.push("Customer phone and email are required.");
       if (order.status !== "ready") blockers.push("Mark the packed order ready for courier first.");
       if (shipment && (["booking", "booked", "cancelled"].includes(shipment.status) || shipment.providerShipmentId)) blockers.push("A shipment already exists or may still be processing. Do not book a duplicate.");
+      if (linkedOrder && !getLinkedBookingConfiguration().enabled) blockers.push("Linked portal booking is not activated. Do not create a separate shipment for an existing Bob Go order.");
 
       return {
       id: order.orderNumber,
@@ -393,7 +395,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
           trackingNumber: shipment.trackingNumber,
           action: shipment.courierStatus === "cancelled" ? "prepare_replacement" as const : cancellationPending ? "check_cancellation" as const : "cancel_waybill" as const,
         } : undefined } : undefined,
-      bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled) : undefined,
+      bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled, getLinkedBookingConfiguration().enabled) : undefined,
       items: itemsByOrder.get(order.id) ?? [],
       actionNeeded: [
         ...(notificationRows.some(event => event.orderId === order.id && event.status === "failed") ? [{ message: "An email notification needs attention. Open Email notifications below to see what to do." }] : []),

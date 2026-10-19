@@ -53,7 +53,7 @@ export async function enqueuePaidBobGoOrder(tx: Reader, orderId: string, config 
   return { queued: true };
 }
 
-async function sourceFor(tx: Reader, orderId: string): Promise<BobGoOrderSource> {
+export async function sourceFor(tx: Reader, orderId: string): Promise<BobGoOrderSource> {
   const [data] = await tx.select({ order: orders, customer: customers, address: addresses }).from(orders)
     .leftJoin(customers, eq(orders.customerId, customers.id)).leftJoin(addresses, eq(orders.deliveryAddressId, addresses.id))
     .where(eq(orders.id, orderId)).limit(1);

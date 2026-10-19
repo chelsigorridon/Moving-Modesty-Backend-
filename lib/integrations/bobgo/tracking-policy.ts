@@ -30,7 +30,10 @@ export function verifiedShipment(value: unknown, local: ShipmentIdentity, orderN
   if (!local.trackingNumber && (!local.waybillReference || remote.custom_tracking_reference !== local.waybillReference
     || record(remote.meta).custom_order_number !== orderNumber)) throw new ShipmentReadbackError();
   const customOrder = record(remote.meta).custom_order_number;
-  if (customOrder !== undefined && customOrder !== orderNumber) throw new ShipmentReadbackError();
+  // Linked bookings were independently verified through the full remote order
+  // fulfilment. Their known shipment ID + tracking pair is authoritative; the
+  // standalone custom_order_number display field is not their association.
+  if (!local.bookingSnapshot?.linkedOrder && customOrder !== undefined && customOrder !== orderNumber) throw new ShipmentReadbackError();
   if (local.trackingNumber && tracking !== local.trackingNumber) throw new ShipmentReadbackError();
   if (local.serviceLevelCode && remote.service_level_code !== local.serviceLevelCode) throw new ShipmentReadbackError();
   if (local.bookingSnapshot && remote.provider_slug !== local.bookingSnapshot.providerSlug) throw new ShipmentReadbackError();
