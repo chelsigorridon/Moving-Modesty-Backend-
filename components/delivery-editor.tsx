@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 type CourierAddress = { company: string; line1: string; line2: string; suburb: string; city: string; province: string; postalCode: string };
 type CourierContact = { name: string; email: string; phone: string };
 type PickupPoint = { id: string; providerSlug: string; name: string };
@@ -36,17 +36,19 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [waybillConfirmation, setWaybillConfirmation] = useState("");
+  const [changeError, setChangeError] = useState("");
+  const hintId = useId();
   const waybillScope = `${details.revision}:${details.waybillChange?.trackingNumber}:${details.waybillChange?.action}`;
   async function submitWaybillChange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!details.waybillChange || !changeWaybill || saving || disabled) return;
     if (details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope) return;
-    setSaving(true); setError(""); setMessage("");
+    setSaving(true); setChangeError(""); setMessage("");
     try {
       await changeWaybill({ action: details.waybillChange.action, expectedRevision: details.revision,
         expectedWaybill: details.waybillChange.trackingNumber, confirm: true });
       setWaybillConfirmation(""); onEditingChange?.(false);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
+    } catch (caught) { setChangeError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
     finally { setSaving(false); }
   }
   const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
@@ -102,30 +104,41 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   function edit(side: "collection" | "delivery") {
     setPlan(structuredClone(details.draftPlan)); setEditSide(side); setError(""); setConfirmed(false); setEditing(true); onEditingChange?.(true);
   }
+  const action = details.waybillChange?.action;
+  const changeForm = details.waybillChange && changeWaybill ? <form className="mm-delivery__waybill-change" onSubmit={submitWaybillChange} aria-busy={saving}>
+    <strong>{action === "prepare_replacement" ? "Waybill cancelled — set up a replacement" : action === "check_cancellation" ? "Waiting for cancellation confirmation" : "Cancel this waybill to change delivery"}</strong>
+    <p className="mm-admin__helper">Waybill: <strong>{details.waybillChange.trackingNumber}</strong></p>
+    <p>{action === "cancel_waybill" ? "Cancel the old waybill first. The customer's order and payment stay unchanged; a new courier booking may cost again."
+      : action === "check_cancellation" ? "Delivery stays locked until Bob Go confirms cancellation. Checking does not repeat the cancellation or book a courier."
+      : "Unlock delivery setup, then edit the address, check the parcel and compare new courier quotes. This does not book or charge for a replacement."}</p>
+    {action !== "check_cancellation" ? <label className="mm-delivery__check"><input type="checkbox" required
+      checked={waybillConfirmation === waybillScope} disabled={disabled || saving}
+      onChange={event => setWaybillConfirmation(event.target.checked ? waybillScope : "")} />This parcel has not been handed to a courier or dropped off.</label> : null}
+    <p id={`${hintId}-waybill`} className="mm-admin__helper mm-delivery__action-hint" role="status">{saving ? "Checking Bob Go. Please wait."
+      : disabled ? "Wait for the current action to finish."
+      : action !== "check_cancellation" && waybillConfirmation !== waybillScope ? "Tick the confirmation above to continue."
+      : action === "cancel_waybill" ? "This requests cancellation of this waybill only."
+      : action === "check_cancellation" ? "You can safely check again; no new booking will be made." : "Ready to unlock replacement setup. You will approve any new courier cost separately."}</p>
+    <button type="submit" className={action === "cancel_waybill" ? "mm-admin__secondary-button mm-delivery__danger-button" : "mm-admin__button mm-delivery__primary-action"}
+      aria-describedby={`${hintId}-waybill`} disabled={disabled || saving || action !== "check_cancellation" && waybillConfirmation !== waybillScope}>
+      {saving ? "Checking Bob Go…" : action === "cancel_waybill" ? "Cancel this waybill" : action === "check_cancellation" ? "Check cancellation" : "Prepare replacement"}
+    </button>
+    {changeError ? <p role="alert" className="mm-admin__error">{changeError}</p> : null}
+  </form> : null;
   return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
     <style>{deliveryEditorCss}</style>
-    <div className="mm-delivery__heading"><strong>1. Check delivery details</strong><span className="mm-admin__helper">{details.plan ? "Confirmed" : "Check before continuing"}</span></div>
+    <div className="mm-delivery__heading"><strong>{details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong><span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span></div>
+    {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
-      <p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p>
+      <details className="mm-delivery__contact"><summary>Contact details</summary><p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p></details>
       {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Change customer delivery"}</button> : null}
     </div>)}</div>
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
     {!editing && details.canEdit && details.plan ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit("delivery")}>Edit courier instructions</button> : null}
-    {!details.canEdit ? <div className="mm-admin__notice"><p>{details.blockedReason}</p>
-      {details.waybillChange && changeWaybill ? <form className="mm-delivery__waybill-change" onSubmit={submitWaybillChange}>
-        <strong>{details.waybillChange.action === "prepare_replacement" ? "Previous waybill cancelled" : details.waybillChange.action === "check_cancellation" ? "Cancellation needs confirmation" : "Need to change the address or courier?"}</strong>
-        <p>Waybill: <strong>{details.waybillChange.trackingNumber}</strong></p>
-        {details.waybillChange.action === "cancel_waybill" ? <p>Cancel this waybill before changing delivery. This does not cancel the customer’s order or refund their payment. A replacement is a separate courier booking and may cost again.</p>
-          : details.waybillChange.action === "check_cancellation" ? <p>Delivery stays locked until Bob Go confirms cancellation. Checking only reads its status; it will not send another cancellation or book a courier. If it remains unconfirmed, check with Bob Go.</p>
-          : <p>We will recheck Bob Go, save this waybill in history and unlock delivery setup. You can then edit the address, compare fresh courier quotes and approve a replacement. Nothing is booked automatically.</p>}
-        {details.waybillChange.action !== "check_cancellation" ? <label className="mm-delivery__check"><input type="checkbox" required
-          checked={waybillConfirmation === waybillScope} disabled={disabled || saving}
-          onChange={event => setWaybillConfirmation(event.target.checked ? waybillScope : "")} />I have not handed this parcel to the courier or dropped it off, and I want to change this delivery.</label> : null}
-        <button type="submit" className="mm-admin__secondary-button" disabled={disabled || saving || details.waybillChange.action !== "check_cancellation" && waybillConfirmation !== waybillScope}>
-          {saving ? "Checking Bob Go…" : details.waybillChange.action === "cancel_waybill" ? "Cancel waybill to change delivery" : details.waybillChange.action === "check_cancellation" ? "Check cancellation status" : "Prepare replacement delivery"}
-        </button>
-      </form> : details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
+    {!details.canEdit && action === "cancel_waybill" && changeForm ? <details className="mm-delivery__change-options"><summary>Change address or courier</summary>{changeForm}</details> : null}
+    {!details.canEdit && !changeForm ? <div className="mm-admin__notice"><p>{details.blockedReason}</p>
+      {details.blockedReason?.includes("waybill") ? <details><summary>Change an already-booked delivery</summary>
         <p>Address or courier changes must be confirmed by Bob Go or the courier. Their documented API does not provide booked-waybill editing. A courier change may require cancellation and a new paid booking.</p>
         <p>Do not create a second shipment while the first is active. Editing a private note below does not change the waybill.</p>
         <a href="https://my.bobgo.co.za/" target="_blank" rel="noopener noreferrer">Open Bob Go to arrange the change</a>
@@ -158,7 +171,8 @@ export default function DeliveryEditor({ details, disabled = false, save, search
       {editing && editSide === "collection" ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders.</label> : null}
       <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked these addresses and courier contact details.</label>
       {editing ? <p className="mm-admin__helper">Changes need a fresh courier quote. The customer’s paid total stays unchanged.</p> : null}
-      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button" disabled={disabled || saving || !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
+      <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Wait for the current action to finish." : !confirmed ? "Check both addresses and contact details, then tick the confirmation above." : "Ready to save. No courier is booked at this step."}</p>
+      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
         {editing ? <button type="button" className="mm-admin__text-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); }}>Cancel editing</button> : null}</div>
     </fieldset></form> : null}
     <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
@@ -232,5 +246,9 @@ const deliveryEditorCss = `
 .mm-delivery__selected-point{padding:12px;background:var(--mm-soft,#e8e9e2);border-radius:8px;font-size:14px}.mm-delivery__private{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}
 .mm-delivery__private summary{cursor:pointer}.mm-delivery__private form{display:grid;gap:12px;margin-top:12px}.mm-delivery__private button{justify-self:start}
 .mm-delivery__waybill-change{display:grid;gap:14px;margin-top:16px;padding-top:16px;border-top:1px solid var(--mm-border,#a69e95)}.mm-delivery__waybill-change p{margin:0}.mm-delivery__waybill-change button{min-height:44px;white-space:normal;text-align:left;justify-self:start;max-width:100%}.mm-delivery__history{margin:18px 0}.mm-delivery__history li{margin:10px 0}
-@media(max-width:600px){.mm-admin__delivery-editor{padding:14px}.mm-delivery__grid{grid-template-columns:1fr}.mm-delivery__actions>button{width:100%}}
+.mm-delivery__contact summary,.mm-delivery__change-options>summary{min-height:44px;padding:12px 0;cursor:pointer;text-decoration:underline;font-size:13px}.mm-delivery__contact p{overflow-wrap:anywhere}.mm-delivery__change-options{border-top:1px solid var(--mm-border,#a69e95);margin-top:12px}
+.mm-admin .mm-delivery__danger-button{border-color:#7a352b;color:#7a352b;background:transparent;min-height:48px}.mm-admin .mm-delivery__danger-button:disabled{opacity:.6;cursor:not-allowed}
+.mm-admin__delivery-editor .mm-delivery__primary-action:disabled{background:var(--mm-soft,#e3e6de);color:var(--mm-muted,#62594f)!important;border:1px solid var(--mm-border,#a69e95);opacity:1;cursor:not-allowed}
+.mm-delivery__action-hint{margin:0;font-size:13px;line-height:1.5}
+@media(max-width:600px){.mm-admin__delivery-editor{padding:14px}.mm-delivery__grid{grid-template-columns:1fr}.mm-delivery__actions>button,.mm-delivery__waybill-change>button{width:100%;text-align:center}}
 `;

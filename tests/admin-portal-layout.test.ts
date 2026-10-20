@@ -177,7 +177,7 @@ test("paid collection shows one clear next action and no delivery booking panel"
 test("ready paid delivery has a prominent waybill action and separates customer and courier costs", () => {
   const dom = ordersDocument(order({ deliveryMethod: "Courier", deliveryFee: 99, workflow: { nextStatus: null },
     shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [] } }));
-  assert.equal(dom.window.document.querySelector('[aria-label="Next step"] button')?.textContent, "Book waybill");
+  assert.equal(dom.window.document.querySelector('[aria-label="Next step"] button')?.textContent, "Set up delivery");
   assert.match(dom.window.document.body.textContent || "", /Delivery paid by the customer:.*R\s*99/);
   assert.match(dom.window.document.body.textContent || "", /Already included in the order total — not an extra charge/);
   assert.match(dom.window.document.body.textContent || "", /separate Bob Go courier cost appears after you get a quote/);
@@ -299,6 +299,17 @@ test("before-handover waybill changes are explicit, confirmed, and cannot masque
     assert.ok(button);
     assert.equal(button.disabled, action !== "check_cancellation");
     assert.equal(Boolean(form.querySelector('input[type="checkbox"][required]')), action !== "check_cancellation");
+    assert.match(dom.window.document.getElementById(button.getAttribute('aria-describedby')!)?.textContent || "", action === "check_cancellation" ? /safely check again/ : /Tick the confirmation/);
+    if (action === "cancel_waybill") {
+      assert.ok(button.classList.contains("mm-delivery__danger-button"));
+      assert.equal(form.parentElement?.tagName, "DETAILS");
+      assert.equal(form.parentElement?.hasAttribute("open"), false);
+      assert.equal(form.parentElement?.querySelector("summary")?.textContent, "Change address or courier");
+    } else {
+      assert.ok(button.classList.contains("mm-delivery__primary-action"));
+      const summary = editor.querySelector(".mm-delivery__summary")!;
+      assert.ok(form.compareDocumentPosition(summary) & 4, "Recovery action appears before the repeated address summaries");
+    }
     assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Change customer delivery|Change collection/);
     if (action === "check_cancellation") assert.doesNotMatch(dom.window.document.body.textContent || "", /Prepare printable waybill|Download the waybill, attach/);
     dom.window.close();
@@ -325,8 +336,67 @@ test("booked courier and service are shown without confusing account connection 
   const body = dom.window.document.body.textContent || "";
   assert.match(body, /Booked courier: TEST Other Courier · Express/);
   assert.match(body, /Latest courier status: in transit/);
-  assert.match(body, /Bob Go order sync: Not enabled/);
+  assert.match(body, /Sales-channel sync: Not enabled/);
+  const sync = dom.window.document.querySelector('details[aria-label="Bob Go order synchronisation"]')!;
+  assert.equal(sync.hasAttribute("open"), false);
+  assert.match(sync.querySelector("summary")?.textContent || "", /Not enabled/);
   assert.doesNotMatch(body, /Activate sync|Sync now|Repeat payment notification/);
+  dom.window.close();
+});
+
+test("delivery next steps and progress reflect booking and replacement states, not generic booking advice", () => {
+  for (const [shipmentStatus, action, label, current] of [
+    ["Ready to book", undefined, "Continue delivery setup", "Parcel"],
+    ["Booking", undefined, "Check booking status", "Choose courier"],
+    ["Booked", undefined, "Print & track waybill", "Print & track"],
+    ["Booked", "check_cancellation", "Check cancellation", "Check details"],
+    ["Cancelled", "prepare_replacement", "Prepare replacement", "Check details"],
+    ["Cancelled", undefined, "Review cancelled waybill", "Check details"],
+  ] as const) {
+    const dom = ordersDocument(order({ deliveryMethod: "Courier", workflow: { nextStatus: shipmentStatus === "Booked" && !action ? "Dispatched" : null, guidance: "Old generic booking advice" },
+      deliveryDetails: { revision: 2, plan: deliveryPlan, draftPlan: deliveryPlan, privateNote: "", canEdit: shipmentStatus === "Ready to book",
+        ...(action ? { waybillChange: { action, trackingNumber: "TEST-WAYBILL" } } : {}) },
+      shipping: { status: shipmentStatus, environment: "production", blockers: [] } }));
+    const doc = dom.window.document;
+    const next = doc.querySelector('[aria-label="Next step"]')!;
+    assert.equal(next.querySelector("button")?.textContent, label);
+    assert.doesNotMatch(next.textContent || "", /Old generic booking advice/);
+    assert.deepEqual([...doc.querySelectorAll('[aria-label="Delivery steps"] li')].map(node => node.textContent),
+      ["1Check details", "2Parcel", "3Choose courier", "4Print & track"]);
+    assert.equal(doc.querySelector('[aria-label="Delivery steps"] [aria-current="step"]')?.textContent, `${current === "Parcel" ? 2 : current === "Choose courier" ? 3 : current === "Print & track" ? 4 : 1}${current}`);
+    if (action) assert.equal(doc.querySelector('[aria-label="Delivery steps"] [data-complete="true"]'), null, "Paused recovery must not look completed");
+    dom.window.close();
+  }
+});
+
+test("missing confirmed tracking keeps the backend's check-first guidance, including legacy bookings", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", workflow: { nextStatus: null, guidance: "The booking has no confirmed tracking number yet. Check shipment status before dispatching or notifying the customer." },
+    deliveryDetails: { revision: 0, plan: null, draftPlan: deliveryPlan, privateNote: "", canEdit: false },
+    shipping: { status: "Booked", environment: "production", blockers: [] } }));
+  const next = dom.window.document.querySelector('[aria-label="Next step"]')!;
+  assert.equal(next.querySelector("button")?.textContent, "Check shipment status");
+  assert.match(next.textContent || "", /no confirmed tracking number/);
+  assert.doesNotMatch(next.textContent || "", /Mark dispatched only/);
+  assert.equal(dom.window.document.querySelector('[aria-label="Delivery steps"] [aria-current="step"]')?.textContent, "4Print & track");
+  dom.window.close();
+});
+
+test("delivery summaries retain visible addresses while folding contact and technical detail", () => {
+  const dom = ordersDocument(order({ deliveryMethod: "Courier", bobGoSync: { status: "Needs attention", message: "Check the channel connection." },
+    deliveryDetails: { revision: 0, plan: null, draftPlan: deliveryPlan, privateNote: "", canEdit: true },
+    shipping: { status: "Not ready", environment: "production", blockers: [] } }));
+  const doc = dom.window.document;
+  for (const card of doc.querySelectorAll('.mm-delivery__address-card')) {
+    assert.match(card.querySelector("p")?.textContent || "", /Example/);
+    const contact = card.querySelector('details')!;
+    assert.equal(contact.hasAttribute("open"), false);
+    assert.equal(contact.querySelector("summary")?.textContent, "Contact details");
+    assert.match(contact.textContent || "", /example.invalid/);
+  }
+  const confirm = [...doc.querySelectorAll('button')].find(button => button.textContent === "Confirm delivery details")!;
+  assert.equal(confirm.disabled, true);
+  assert.match(doc.getElementById(confirm.getAttribute('aria-describedby')!)?.textContent || "", /Check both addresses/);
+  assert.equal(doc.querySelector('details[aria-label="Bob Go order synchronisation"]')?.hasAttribute("open"), true, "A sync problem must not be silently hidden");
   dom.window.close();
 });
 

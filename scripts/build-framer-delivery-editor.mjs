@@ -3,6 +3,7 @@ const target = new URL("../framer/AdminPortal.tsx", import.meta.url);
 let portal = readFileSync(target, "utf8");
 for (const [name, file, original, embedded] of [
   ["DELIVERY_EDITOR", "delivery-editor.tsx", "DeliveryEditor", "EmbeddedDeliveryEditor"],
+  ["DELIVERY_PROGRESS", "delivery-progress.tsx", "DeliveryProgress", "EmbeddedDeliveryProgress"],
   ["ORDER_SYNC_STATUS", "order-sync-status.tsx", "OrderSyncStatus", "EmbeddedOrderSyncStatus"],
   ["PARCEL_EDITOR", "parcel-editor.tsx", "ParcelEditor", "EmbeddedParcelEditor"],
   ["SHIPPING_WEIGHT_SETTINGS", "shipping-weight-settings.tsx", "ShippingWeightSettings", "EmbeddedShippingWeightSettings"],

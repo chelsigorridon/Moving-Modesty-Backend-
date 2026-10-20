@@ -53,3 +53,11 @@ test("unknown fulfilment and committed shipments are protected", () => {
   }
   assert.equal(getOrderWorkflow({ ...base, status: "Dispatched", deliveryMethod: "Courier" }).canCancel, false);
 });
+
+test("a cancelled waybill points to replacement setup without permitting dispatch", () => {
+  const order = { ...base, deliveryMethod: "Courier" as const, status: "Ready" as const, shipmentStatus: "Cancelled", shipmentTrackingNumber: "OLD-TEST-WAYBILL" };
+  const workflow = getOrderWorkflow(order);
+  assert.match(workflow.guidance, /cancelled.*Prepare replacement.*Do not reuse/);
+  assert.equal(workflow.nextStatus, null);
+  assert.throws(() => assertOrderTransition(order, "Dispatched"), OrderWorkflowConflict);
+});

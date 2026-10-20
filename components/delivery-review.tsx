@@ -1,6 +1,7 @@
 "use client";
-import { useState, type ComponentProps } from "react";
+import { useId, useState, type ComponentProps } from "react";
 import DeliveryEditor from "./delivery-editor";
+import DeliveryProgress from "./delivery-progress";
 import OrderSyncStatus from "./order-sync-status";
 import OrderSyncReview from "./order-sync-review";
 import ParcelEditor from "./parcel-editor";
@@ -39,22 +40,39 @@ export default function DeliveryReview() {
     : details.plan?.delivery.kind === "pickup_point" ? details.plan.delivery.point.providerSlug : undefined;
   const rates = selectedPointProvider ? [{ name: `Example courier ${selectedPointProvider} · Pickup-point service`, amount: 89 }]
     : [{ name: "Example Courier A · Economy", amount: 95 }, { name: "Example Courier B · Express", amount: 115 }, { name: "Example Courier C · Economy", amount: 105 }];
+  const cancellationPending = booked && waybillStage === "check_cancellation";
+  const cancelled = booked && waybillStage === "prepare_replacement";
+  const progressStep = cancelled || cancellationPending || editingDelivery || !viewDetails.plan ? 1 : booked ? 4 : quoted ? 3 : 2;
+  const quoteHintId = useId();
+  const missingMeasurements = Object.values(parcel).some(value => !Number(value));
+  const nextStep = cancelled ? "The old waybill is cancelled. Prepare a replacement below, then check the details and compare fresh courier quotes."
+    : cancellationPending ? "Check the cancellation below. Delivery stays locked until Bob Go confirms it. Do not book another courier yet."
+    : booked ? "Print the waybill and attach it to the parcel. Mark dispatched only after courier collection or drop-off."
+    : editingDelivery ? "Save or cancel delivery editing before getting a fresh courier quote."
+    : !details.plan ? "Check both addresses and courier contacts, then confirm the delivery details below."
+    : quoted ? "Choose a courier and review its cost before booking. Real booking stays disabled in this review."
+    : "Enter the packed parcel measurements, check them and compare courier quotes. Getting quotes does not book a courier.";
+  function showExample(stage?: typeof waybillStage) {
+    setBooked(Boolean(stage)); setWaybillStage(stage || "cancel_waybill"); setWaybillNotice(""); setQuoted(false); setEditingDelivery(false); setMeasured(false);
+  }
   return <main className="mm-admin mm-delivery-review">
     <style>{reviewCss}</style>
     <p className="mm-delivery-review__eyebrow">MOVING MODESTY / PRIVATE DELIVERY REVIEW</p>
     <h1>Delivery setup & courier choices</h1>
     <p className="mm-admin__notice">Review only. Sample customer, addresses, pickup points and rates. Nothing here connects to Neon, Bob Go, PayFast or email. Changes disappear on refresh.</p>
-    <p className="mm-admin__helper">Check delivery details → choose package → compare couriers → approve booking → print waybill.</p>
-    <OrderSyncStatus value={orderSyncView(undefined, getOrderSyncConfiguration().enabled)} />
     <div className="mm-delivery__actions"><button type="button" className={!booked ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={!booked}
-      onClick={() => { setBooked(false); setQuoted(false); setEditingDelivery(false); }}>Before booking</button>
-      <button type="button" className={booked ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={booked}
-        onClick={() => { setBooked(true); setWaybillStage("cancel_waybill"); setWaybillNotice(""); setQuoted(false); setEditingDelivery(false); }}>View already-booked example</button></div>
+      onClick={() => showExample()}>Before booking</button>
+      <button type="button" className={booked && !cancelled && !cancellationPending ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={booked && !cancelled && !cancellationPending}
+        onClick={() => showExample("cancel_waybill")}>View already-booked example</button>
+      <button type="button" className={cancelled ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={cancelled}
+        onClick={() => showExample("prepare_replacement")}>View cancelled example</button></div>
     <section className="mm-delivery-review__order"><h2>TEST order · Paid · {booked ? waybillStage === "prepare_replacement" ? "Waybill cancelled" : waybillStage === "check_cancellation" ? "Cancellation pending" : "Waybill booked" : "Ready for courier"}</h2>
+      <div className="mm-admin__notice" aria-label="Your next step"><strong>Your next step</strong><p>{nextStep}</p></div>
+      <DeliveryProgress current={progressStep} paused={cancelled || cancellationPending} />
       <p>Products: R450 · Delivery paid by customer: R99 · Order total: R549</p>
       <p className="mm-admin__helper">The courier cost is separate. Changing the delivery setup does not change the customer’s paid total.</p>
-      {booked ? <><p>Example tracking reference: DEMO-NOT-A-REAL-WAYBILL</p><p>Booked courier: <strong>Example Courier B · Express</strong> · DEMO ONLY</p></> : null}
-      <DeliveryEditor key={`${booked}:${details.revision}`} details={viewDetails} onEditingChange={editing => { setEditingDelivery(editing); setQuoted(false); setMeasured(false); }} save={async payload => {
+      {booked && !cancelled && !cancellationPending ? <><div className="mm-delivery__actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled aria-describedby="demo-waybill-hint">Prepare printable waybill</button></div><p id="demo-waybill-hint" className="mm-admin__helper">Printing and live tracking are disabled in this sample.</p></> : null}
+      <DeliveryEditor key={`${booked}:${waybillStage}:${details.revision}`} details={viewDetails} onEditingChange={editing => { setEditingDelivery(editing); setQuoted(false); setMeasured(false); }} save={async payload => {
         const parsed = deliveryEditInput.safeParse(payload);
         if (!parsed.success) throw new Error(parsed.error.issues[0]?.message || "Check the delivery details.");
         if (parsed.data.expectedRevision !== details.revision) throw new Error("Refresh the demo before saving.");
@@ -75,6 +93,7 @@ export default function DeliveryReview() {
           setWaybillNotice("DEMO: old waybill kept in history. Edit the address, reconfirm packed measurements and compare fresh courier quotes. No real change was made.");
         }
       }} searchPoints={async query => ({ points: examplePoints.filter(point => `${point.name} ${point.description}`.toLowerCase().includes(query.trim().toLowerCase())) })} />
+      {booked ? <p>Example waybill: <strong>DEMO-NOT-A-REAL-WAYBILL</strong> · Example Courier B · DEMO ONLY</p> : null}
       {waybillNotice ? <p className="mm-admin__notice" role="status">{waybillNotice}</p> : null}
       {!booked && details.plan && !editingDelivery ? <section className="mm-delivery-review__quotes">
         <ParcelEditor value={parcel} change={value => { setParcel(value); setMeasured(false); setQuoted(false); }} loadPackages={async () => [
@@ -82,11 +101,13 @@ export default function DeliveryReview() {
           { id: "example-box", name: "DEMO small box — check your real package", lengthCm: 25, widthCm: 20.5, heightCm: 3.5 },
         ]} />
         <label className="mm-delivery__check"><input type="checkbox" checked={measured} onChange={event => { setMeasured(event.target.checked); setQuoted(false); }} />I have checked the packed dimensions, weight and delivery address.</label>
-        {!quoted ? <button type="button" className="mm-admin__button" disabled={!measured || Object.values(parcel).some(value => !Number(value))} onClick={() => { setQuoted(true); setChoice("0"); }}>Compare example courier quotes</button> : null}
+        {!quoted ? <><p id={quoteHintId} className="mm-admin__helper mm-delivery__action-hint">{missingMeasurements ? "Enter all four packed measurements, then tick the confirmation above." : !measured ? "Tick the measurements confirmation above to compare couriers." : "Ready to compare. Getting quotes does not book or charge for a courier."}</p>
+        <button type="button" className="mm-admin__button mm-delivery__primary-action" aria-describedby={quoteHintId} disabled={!measured || missingMeasurements} onClick={() => { setQuoted(true); setChoice("0"); }}>Compare example courier quotes</button></> : null}
         {quoted ? <><h3>3. Choose courier & book</h3><label className="mm-admin__field">Courier and service<select value={choice} onChange={event => setChoice(event.target.value)}>{rates.map((rate, index) => <option key={rate.name} value={index}>{rate.name} · R{rate.amount}</option>)}</select></label>
         <p>Example courier cost: R{rates[Number(choice)]?.amount}. These are not live prices.</p>
-          <button type="button" className="mm-admin__button" disabled>Real booking disabled in this review</button></> : null}
+          <button type="button" className="mm-admin__button mm-delivery__primary-action" disabled>Real booking disabled in this review</button></> : null}
       </section> : null}
+      <OrderSyncStatus value={orderSyncView(undefined, getOrderSyncConfiguration().enabled)} />
     </section>
     <OrderSyncReview />
     <ShippingWeightSettings request={async changes => {
@@ -104,7 +125,7 @@ body{margin:0;background:#eeeae6}.mm-delivery-review{--mm-border:#a69e95;--mm-su
 .mm-delivery-review :is(button,input,select,textarea){font:inherit}.mm-delivery-review button,.mm-delivery-review a{min-height:44px}.mm-delivery-review button{cursor:pointer}.mm-delivery-review button:disabled{opacity:.5;cursor:not-allowed}
 .mm-delivery-review :is(input,select,textarea){border:1px solid var(--mm-border);background:#fffdf9;color:var(--mm-ink);border-radius:8px;padding:11px 12px}.mm-delivery-review :is(button,input,select,textarea,a,summary):focus-visible{outline:3px solid #667650;outline-offset:3px}
 .mm-delivery-review .mm-admin__field{display:grid;gap:6px;font-size:13px}.mm-delivery-review .mm-admin__field :is(input,select,textarea){width:100%;min-width:0}.mm-delivery-review textarea{resize:vertical}
-.mm-delivery-review :is(.mm-admin__button,.mm-admin__secondary-button){padding:11px 16px;border:1px solid var(--mm-border);border-radius:6px;color:var(--mm-ink);background:transparent}.mm-delivery-review .mm-admin__button{background:#687657;color:white;border-color:#687657}
+.mm-delivery-review :is(.mm-admin__button,.mm-admin__secondary-button){padding:11px 16px;border:1px solid var(--mm-border);border-radius:6px;color:var(--mm-ink);background:transparent}.mm-delivery-review .mm-admin__button{background:#536047;color:white;border-color:#536047}
 .mm-delivery-review .mm-admin__text-button{border:0;background:none;text-decoration:underline;padding:8px;color:var(--mm-ink)}.mm-delivery-review .mm-admin__notice{padding:14px 18px;border-left:3px solid #7d896d;background:#e3e6de;font-size:14px}.mm-delivery-review .mm-admin__helper{font-size:13px;color:#62594f}.mm-delivery-review .mm-admin__error{padding:12px;background:#f1e0da;color:#762b20;border-left:3px solid #8b3e2f}
 @media(max-width:600px){.mm-delivery-review{padding:20px 12px}.mm-delivery-review h1{font-size:23px}.mm-delivery-review__order{padding:16px}.mm-delivery-review>.mm-delivery__actions>button{width:100%}}
 `;

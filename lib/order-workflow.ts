@@ -35,13 +35,14 @@ export function getOrderWorkflow(order: WorkflowOrder): OrderWorkflow {
     ? "Once packed, mark ready and message the customer privately to arrange collection."
     : "Once packed, mark ready for courier handover.", "Ready", order.deliveryMethod === "Collection" ? "Ready for collection" : "Ready for courier");
   if (order.status === "Ready" && order.deliveryMethod === "Collection") return result("Arrange collection privately. Only mark collected after handing the parcel to the customer.", "Collected", "Mark collected");
+  if (order.status === "Ready" && order.deliveryMethod === "Courier" && order.shipmentStatus === "Cancelled") return result("This waybill is cancelled. Prepare replacement delivery below before editing the address or comparing new courier quotes. Do not reuse the cancelled label.");
   if (order.status === "Ready" && order.deliveryMethod === "Courier") return shipmentCommitted && order.shipmentStatus === "Booked"
     ? hasShipmentTracking(order.shipmentTrackingNumber)
-      ? result("Print the booked waybill and attach it to the parcel. Mark dispatched only after courier or locker drop-off; this submits the customer's tracking email.", "Dispatched", "Mark dispatched")
+      ? result("Print the booked waybill and attach it to the parcel. Mark dispatched only after handing it to the collecting courier or dropping it off; this submits the customer's tracking email.", "Dispatched", "Mark dispatched")
       : result("The booking has no confirmed tracking number yet. Check shipment status before dispatching or notifying the customer.")
     : result(order.shipmentStatus === "Booking"
       ? "Bob Go is checking this shipment. Use Check shipment status; do not book another waybill."
-      : "Confirm the packed weight and dimensions below, get a courier quote, then approve the booking. Mark dispatched only after dropping off the parcel.");
+      : "Check the delivery details and packed parcel below, compare courier quotes, then approve the booking. Mark dispatched only after courier collection or drop-off.");
   if (order.status === "Dispatched" && order.deliveryMethod === "Courier") return result("Check the courier tracking. Only mark delivered after delivery is confirmed.", "Delivered", "Mark delivered");
   return result("This order needs review. Contact your website administrator before changing its status.");
 }

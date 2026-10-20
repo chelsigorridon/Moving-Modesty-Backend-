@@ -9,17 +9,18 @@ import React, { act } from "react";
 import { JSDOM } from "jsdom";
 
 const require = createRequire(import.meta.url);
-async function harness(file: string, props: any, check: (doc: Document, button: (text: string) => void) => Promise<void>) {
+async function harness(file: string, props: any, check: (doc: Document, button: (text: string) => void, rerender: (next: any) => Promise<void>) => Promise<void>) {
   const dom = new JSDOM("<div id='root'></div>", { url: "https://example.invalid/review" });
   const names = ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "Event", "IS_REACT_ACT_ENVIRONMENT"];
   const original = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   for (const name of names) Object.defineProperty(globalThis, name, { value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : (dom.window as any)[name], configurable: true });
   const exports: any = {};
   const compiled = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  runInNewContext(compiled, { exports, require, structuredClone, FormData: dom.window.FormData, HTMLInputElement: dom.window.HTMLInputElement, HTMLSelectElement: dom.window.HTMLSelectElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement });
+  runInNewContext(compiled, { exports, require, structuredClone, Error, FormData: dom.window.FormData, HTMLInputElement: dom.window.HTMLInputElement, HTMLSelectElement: dom.window.HTMLSelectElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement });
   const root = require("react-dom/client").createRoot(dom.window.document.getElementById("root"));
   function button(text: string) { const node = [...dom.window.document.querySelectorAll("button")].find(node => node.textContent === text); assert.ok(node, `Missing button ${text}`); node.click(); }
-  try { await act(async () => root.render(React.createElement(exports.default, props))); await check(dom.window.document, button); }
+  async function rerender(next: any) { await act(async () => root.render(React.createElement(exports.default, next))); }
+  try { await rerender(props); await check(dom.window.document, button, rerender); }
   finally { await act(async () => root.unmount()); dom.window.close(); for (const name of names) { const descriptor = original.get(name); if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); } }
 }
 const address = { company: "", line1: "10 Example Street", line2: "Unit A", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
@@ -36,6 +37,47 @@ test("delivery starts with compact address summaries and confirms existing value
     await act(async () => button("Confirm delivery details"));
     assert.equal(saved.length, 1); assert.equal(saved[0].confirmed, true);
     assert.equal(saved[0].plan.collection.address.line1, address.line1); assert.equal(saved[0].plan.delivery.address.line1, "20 Customer Street");
+  });
+});
+
+test("waybill recovery requires current consent, explains its disabled action, and never runs on render", async () => {
+  for (const action of ["cancel_waybill", "prepare_replacement"]) {
+    const calls: any[] = [];
+    const details = { revision: 4, plan, draftPlan: plan, privateNote: "", canEdit: false, waybillChange: { action, trackingNumber: "TEST-WAYBILL" } };
+    const props = { details, save: async () => {}, searchPoints: async () => ({ points: [] }), changeWaybill: async (value: any) => { calls.push(value); } };
+    await harness("../components/delivery-editor.tsx", props, async (doc, button, rerender) => {
+      const label = action === "cancel_waybill" ? "Cancel this waybill" : "Prepare replacement";
+      const submit = () => doc.querySelector('.mm-delivery__waybill-change button') as HTMLButtonElement;
+      assert.equal(calls.length, 0);
+      assert.equal(submit().disabled, true);
+      assert.match(doc.getElementById(submit().getAttribute("aria-describedby")!)?.textContent || "", /Tick the confirmation/);
+      await act(async () => button(label));
+      assert.equal(calls.length, 0, "A disabled button must not submit");
+      await act(async () => (doc.querySelector('.mm-delivery__waybill-change input') as HTMLInputElement).click());
+      assert.equal(submit().disabled, false);
+      await rerender({ ...props, details: { ...details, revision: 5 } });
+      assert.equal(submit().disabled, true, "Consent for an old delivery revision cannot be reused");
+      await act(async () => (doc.querySelector('.mm-delivery__waybill-change input') as HTMLInputElement).click());
+      await act(async () => button(label));
+      assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ action, expectedRevision: 5, expectedWaybill: "TEST-WAYBILL", confirm: true }]);
+      assert.equal(submit().disabled, true, "A completed request consumes the checkbox consent");
+    });
+  }
+});
+
+test("checking a pending cancellation is explicit and surfaces provider errors beside that action", async () => {
+  let checks = 0;
+  await harness("../components/delivery-editor.tsx", {
+    details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: false, waybillChange: { action: "check_cancellation", trackingNumber: "TEST-WAYBILL" } },
+    save: async () => {}, searchPoints: async () => ({ points: [] }), changeWaybill: async () => { checks++; throw new Error("DEMO: cancellation is not confirmed. Check again later."); },
+  }, async (doc, button) => {
+    const form = doc.querySelector('.mm-delivery__waybill-change')!;
+    assert.equal(checks, 0, "Render cannot check or change a real shipment");
+    assert.equal(form.querySelector('input[type="checkbox"]'), null);
+    await act(async () => button("Check cancellation"));
+    assert.equal(checks, 1);
+    assert.match(form.querySelector('[role="alert"]')?.textContent || "", /not confirmed/);
+    assert.equal(doc.querySelector('input[name="delivery.line1"]'), null, "A failed check must not unlock address editing");
   });
 });
 test("editing only one address preserves the other and reads silent autofill from its own form", async () => {
