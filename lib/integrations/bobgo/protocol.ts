@@ -22,7 +22,8 @@ export type CourierBookingSnapshot = {
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
   rateRequestId?: number;
   testAttemptReference?: string;
-  linkedOrder?: { remoteOrderId: string; channelRef: string; requestFingerprint: string; remoteFingerprint: string; collectionAddressBookId: string };
+  linkedOrder?: { remoteOrderId: string; channelRef: string; requestFingerprint: string; remoteFingerprint: string; collectionAddressBookId: string;
+    retiredFingerprint?: string; cancellationConfirmed?: boolean };
 };
 export type ApprovedQuote = CourierRate & {
   version: 1 | 2 | 3; orderNumber: string; fingerprint: string; expires: number;

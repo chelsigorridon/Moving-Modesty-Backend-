@@ -1,6 +1,6 @@
 // GET only. No app imports, database access, sync runner, orders, rates or bookings.
 // Run with a securely populated environment; never print credentials/provider bodies.
-import { inspectLinkedBookingPermissions } from "../lib/integrations/bobgo/permissions.ts";
+import { inspectLinkedBookingPermissions, linkedWaybillChangePermissions } from "../lib/integrations/bobgo/permissions.ts";
 
 const report = { syncInvoked: false, ordersCreated: 0, waybillsCreated: 0, method: "GET" };
 const token = process.env.BOBGO_ORDER_SYNC_API_TOKEN?.trim();
@@ -21,8 +21,11 @@ if (!token || !channel || !["sandbox", "production"].includes(environment)) {
       try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length;
         if (size > 1000000) throw new Error("Oversized response"); chunks.push(value); } }
       finally { await reader.cancel().catch(() => {}); }
-      const result = inspectLinkedBookingPermissions(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const result = inspectLinkedBookingPermissions(body);
+      const cancellation = inspectLinkedBookingPermissions(body, linkedWaybillChangePermissions);
       console.log(JSON.stringify({ ...report, environment, httpStatus: response.status, ...result,
+        cancellation,
         status: result.allowed ? "role_permissions_present_not_booking_acceptance" : result.known ? "required_permissions_missing" : "role_permissions_not_exposed" }));
     }
   } catch { console.log(JSON.stringify({ ...report, environment, status: "permission_lookup_failed" })); process.exitCode = 1; }

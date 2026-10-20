@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { requireDatabase } from "../../db";
-import { bobgoOrderSync, orders, payments, shipments, orderStatusHistory } from "../../db/schema";
+import { bobgoOrderSync, orders, payments, shipments, orderStatusHistory, orderDeliveryHistory } from "../../db/schema";
 import { sourceFor } from "./order-sync";
 import { buildBobGoOrderPayload, type OrderSyncConfiguration } from "./order-sync-policy";
 import { resolveCourierPlan } from "./delivery";
@@ -14,6 +14,7 @@ import type { LinkedBookingProvider } from "./linked-booking-transport";
 import { fingerprint, parcelInput, parseRates, record, signQuote, textValue, verifyQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol";
 import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy";
 import { courierContactInput } from "../../delivery-input";
+import { activeLinkedFulfillments, retiredLinkedFulfillments, retiredFingerprint, verifyRetiredShipments } from "./linked-fulfillment-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Reader = Pick<Database, "select" | "insert" | "update">;
@@ -39,7 +40,11 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
       || !job?.remoteOrderId || !job.requestSnapshot || !(job.status === "synced" || job.status === "needs_attention" && job.lastErrorCode === "delivery_changed")) {
       throw new LinkedBookingConflict("A verified paid Ready order, saved delivery setup and confirmed Bob Go channel order are required.");
     }
-    return { order, job, shipment, expected: buildBobGoOrderPayload(await sourceFor(reader, order.id)) };
+    const history = await reader.select().from(orderDeliveryHistory).where(eq(orderDeliveryHistory.orderId, order.id));
+    const retired = retiredLinkedFulfillments(history, { environment: config.environment, channelRef: config.channelRef, remoteOrderId: job.remoteOrderId });
+    const previous = history.filter(row => row.action === "waybill_replacement_prepared" && record(row.after).linkedCancellation).sort((a, b) => b.revision - a.revision)[0];
+    const previousSnapshot = record(record(previous?.before).shipment).bookingSnapshot as CourierBookingSnapshot | undefined;
+    return { order, job, shipment, retired, previousSnapshot, expected: buildBobGoOrderPayload(await sourceFor(reader, order.id)) };
   }
   type State = Awaited<ReturnType<typeof load>>;
   function canStart(state: State) {
@@ -48,7 +53,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
   }
   function localFingerprint(state: State, parcel: PackedParcel) {
     return fingerprint({ expected: expectedFingerprint(state.expected), revision: state.order.deliveryRevision, plan: state.order.courierPlan,
-      remoteId: state.job.remoteOrderId, channel: config.channelRef, environment: config.environment, parcel });
+      remoteId: state.job.remoteOrderId, channel: config.channelRef, environment: config.environment, parcel, retired: retiredFingerprint(state.retired) });
   }
   function assertSavedParcel(state: State, parcel: PackedParcel) {
     const shipment = state.shipment;
@@ -63,6 +68,11 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
   async function permissions() {
     if (!inspectLinkedBookingPermissions(await provider.readPermissions()).allowed) throw new LinkedBookingConflict("Bob Go has not confirmed all required API permissions for linked booking. No waybill was requested.");
   }
+  async function readActive(state: State, remote: unknown, expected = state.expected) {
+    await verifyRetiredShipments(state.retired, provider.readShipment);
+    return activeLinkedFulfillments(await provider.readOrderFulfillments(state.job.remoteOrderId!),
+      { ...record(remote), delivery_address: expected.delivery_address }, expected, state.retired);
+  }
   async function quotes(number: string, value: unknown, additionalCover: boolean) {
     enabled(); const parcel = parcelInput.parse(value);
     if (additionalCover) throw new LinkedBookingConflict("Additional parcel cover is not enabled for linked bookings.");
@@ -76,10 +86,12 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
       await permissions();
       const before = record(await provider.readOrder(state.job.remoteOrderId!));
       const route = state.order.courierPlan ? { delivery: { ...state.order.courierPlan.delivery, address: state.expected.delivery_address } } as Pick<CourierBookingSnapshot, "delivery"> : undefined;
-      if (!(linkedOrderMatch(before, state.job.requestSnapshot!, route) === state.job.remoteOrderId || linkedOrderMatch(before, state.expected, route) === state.job.remoteOrderId)
-        || ["cancelled", "completed"].includes(textValue(before.status))
+      const priorMatches = linkedOrderMatch(before, state.job.requestSnapshot!, route) === state.job.remoteOrderId
+        || Boolean(state.previousSnapshot && linkedOrderMatch(before, state.job.requestSnapshot!, state.previousSnapshot) === state.job.remoteOrderId);
+      if (!(priorMatches || linkedOrderMatch(before, state.expected, route) === state.job.remoteOrderId)
+        || before.status === "cancelled" || before.status === "completed" && !state.retired.length
         || !Array.isArray(before.order_items) || before.order_items.some(item => Number(record(item).fulfilled_qty || 0) !== 0)) throw new LinkedBookingConflict();
-      assertNoFulfillments(await provider.readOrderFulfillments(state.job.remoteOrderId!));
+      assertNoFulfillments(await readActive(state, before, priorMatches ? state.job.requestSnapshot! : state.expected));
       const resolved = await resolveCourierPlan(state.order.courierPlan!, parcel);
       const snapshot: CourierBookingSnapshot = { collection: resolved.collection, delivery: resolved.delivery,
         collectionInstructions: resolved.plan.collectionInstructions, deliveryInstructions: resolved.plan.deliveryInstructions,
@@ -117,9 +129,9 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
       // A concurrent Bob Go dashboard edit/booking invalidates these quotes.
       remote = record(await provider.readOrder(state.job.remoteOrderId!));
       if (remoteBookingFingerprint(remote) !== remoteHash) throw new LinkedBookingConflict("The Bob Go order changed while comparing couriers. Get a fresh quote.");
-      assertNoFulfillments(await provider.readOrderFulfillments(state.job.remoteOrderId!));
+      assertNoFulfillments(await readActive(state, remote));
       snapshot.linkedOrder = { remoteOrderId: state.job.remoteOrderId!, channelRef: config.channelRef, requestFingerprint: expectedFingerprint(state.expected),
-        remoteFingerprint: remoteHash, collectionAddressBookId: bookId };
+        remoteFingerprint: remoteHash, collectionAddressBookId: bookId, retiredFingerprint: retiredFingerprint(state.retired) };
       await database.transaction(async tx => {
         await lock(tx, state.order.id); const current = await load(tx, number);
         if (current.job.leaseToken !== lease || !current.job.leaseExpiresAt || current.job.leaseExpiresAt.getTime() <= clock()
@@ -130,7 +142,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
           senderLocationName: snapshot.collection.point?.name || snapshot.collection.contact.name, pickupPointLocationId: snapshot.collection.point?.id || null, lastError: null, updatedAt: now() };
         await tx.insert(shipments).values({ orderId: state.order.id, ...values }).onConflictDoUpdate({ target: shipments.orderId, set: values });
         await tx.update(bobgoOrderSync).set({ status: "synced", lastErrorCode: null, requestSnapshot: state.expected,
-          deliveryRevision: state.order.deliveryRevision, leaseToken: null, leaseExpiresAt: null, updatedAt: now() }).where(eq(bobgoOrderSync.id, state.job.id));
+          deliveryRevision: state.order.deliveryRevision, leaseToken: null, leaseExpiresAt: null, waybillLinkErrorCode: null, updatedAt: now() }).where(eq(bobgoOrderSync.id, state.job.id));
       });
       const expires = clock() + 10 * 60000;
       return { environment: config.environment, expires, declaredValue: 0, rates: rates.map(rate => ({ ...rate, quoteToken: signQuote({ ...rate,
@@ -152,7 +164,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
     if (collectionBookId(await provider.readCollections(), quote.deliverySnapshot!.collection) !== linked.collectionAddressBookId) throw new LinkedBookingConflict("The saved Bob Go collection address changed. Get a fresh quote.");
     const remote = await provider.readOrder(linked.remoteOrderId);
     if (remoteBookingFingerprint(remote) !== linked.remoteFingerprint) throw new LinkedBookingConflict("The Bob Go order changed. Get a fresh quote.");
-    assertNoFulfillments(await provider.readOrderFulfillments(linked.remoteOrderId));
+    assertNoFulfillments(await readActive(state, remote));
     const reference = `MM${randomUUID().replaceAll("-", "").slice(0, 20)}`;
     await database.transaction(async tx => {
       await lock(tx, state.order.id); const current = await load(tx, number); canStart(current);
@@ -180,7 +192,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
       || linked.channelRef !== config.channelRef) throw new LinkedBookingConflict();
     const remote = await provider.readOrder(linked.remoteOrderId);
     if (linkedOrderMatch(remote, state.expected, local.bookingSnapshot!) !== linked.remoteOrderId) throw new LinkedBookingConflict();
-    const reference = existingWaybillReference(await provider.readOrderFulfillments(linked.remoteOrderId),
+    const reference = existingWaybillReference(await readActive(state, remote),
       { ...record(remote), delivery_address: state.expected.delivery_address }, state.expected);
     if (!reference) return { booked: false, message: "Linked booking is still unconfirmed. No new booking was requested. Check again later." };
     const raw = record(await provider.readShipment(reference.shipmentId));
@@ -206,6 +218,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
         lastError: null, updatedAt: now() }).where(eq(shipments.id, shipment.id));
       await tx.update(orders).set({ courierName: candidate.providerName, trackingNumber: candidate.trackingNumber,
         trackingUrl: "https://track.bobgo.co.za/", updatedAt: now() }).where(eq(orders.id, state.order.id));
+      await tx.update(bobgoOrderSync).set({ waybillLinkErrorCode: null, waybillLinkCheckedAt: now(), updatedAt: now() }).where(eq(bobgoOrderSync.id, current.job.id));
     });
     return { booked: true, message: "Waybill booked against the existing Bob Go channel order. The same waybill is available in both systems." };
   }

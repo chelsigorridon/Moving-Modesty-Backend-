@@ -54,7 +54,7 @@ export function existingWaybillReference(value: unknown, remoteOrder: unknown, e
 
 // A fulfilment alone is not a confirmed booking: independently read its shipment
 // by ID and require the matching waybill, recipient address and successful submission.
-export function verifiedExistingWaybill(value: unknown, reference: { shipmentId: string; trackingNumber: string }, expected: BobGoOrderPayload, now: number) {
+export function verifiedExistingWaybill(value: unknown, reference: { shipmentId: string; trackingNumber: string }, expected: BobGoOrderPayload, now: number, allowCancelled = false) {
   const row = record(value), address = record(row.delivery_address), provider = record(row.provider);
   const providerSlug = textValue(row.provider_slug || provider.slug), providerName = textValue(provider.name || row.provider_name || providerSlug);
   const created = new Date(textValue(row.time_created));
@@ -64,7 +64,8 @@ export function verifiedExistingWaybill(value: unknown, reference: { shipmentId:
     || !/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(providerSlug) || providerName.length > 160
     || (row.provider_slug && provider.slug && row.provider_slug !== provider.slug)
     || !/^[A-Za-z0-9_-]{1,80}$/.test(textValue(row.service_level_code))
-    || !["pending-collection", "awaiting-dropoff", "collected", "at-hub", "in-transit", "at-destination-hub", "out-for-delivery", "ready-for-pickup", "delivered", "finalised", "delivery-exception"].includes(textValue(row.status))
+    || !(allowCancelled && ["cancelled", "cancelled-by-courier", "failed-collection", "collection-exception"].includes(textValue(row.status)))
+      && !["pending-collection", "awaiting-dropoff", "collected", "at-hub", "in-transit", "at-destination-hub", "out-for-delivery", "ready-for-pickup", "delivered", "finalised", "delivery-exception"].includes(textValue(row.status))
     || normal([row.delivery_contact_name, row.delivery_contact_surname].filter(Boolean).join(" ")) !== normal(`${expected.customer_name} ${expected.customer_surname}`)
     || normal(row.delivery_contact_email) !== normal(expected.customer_email)
     || courierContactInput.shape.phone.safeParse(row.delivery_contact_mobile_number).data !== expected.customer_phone

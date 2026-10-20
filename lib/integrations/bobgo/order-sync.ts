@@ -2,12 +2,13 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { requireDatabase } from "../../db";
-import { addresses, bobgoOrderSync, customers, orderItems, orders, payments, productVariants, shipments, orderStatusHistory } from "../../db/schema";
+import { addresses, bobgoOrderSync, customers, orderItems, orders, payments, productVariants, shipments, orderStatusHistory, orderDeliveryHistory } from "../../db/schema";
 import { readOrderCustomer } from "../../checkout-safety";
 import { fingerprint, record, textValue } from "./protocol";
 import { buildBobGoOrderPayload, getOrderSyncConfiguration, matchRemoteOrder, stableOrderPayload, OrderSyncInputError,
   type BobGoOrderPayload, type BobGoOrderSource, type OrderSyncConfiguration, type OrderSyncErrorCode } from "./order-sync-policy";
 import { existingWaybillReference, verifiedExistingWaybill, WaybillLinkError, type WaybillLinkErrorCode } from "./waybill-link-policy";
+import { activeLinkedFulfillments, retiredLinkedFulfillments, verifyRetiredShipments } from "./linked-fulfillment-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -208,18 +209,23 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
     // Reserve a check time before network access, including for now-ineligible
     // jobs, so an outage/cancelled order cannot starve later channel jobs.
     await recordLinkCheck(orderId, job.remoteOrderId);
-    if (!job.requestSnapshot || !(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
+    const initialOrder = await eligibleOrder(database, orderId, config);
+    if (!job.requestSnapshot || !initialOrder) return { status: "ineligible" };
     const remoteId = job.remoteOrderId, expected = job.requestSnapshot;
     try {
       if (payloadFingerprint(buildBobGoOrderPayload(await sourceFor(database, orderId))) !== payloadFingerprint(expected)) throw new WaybillLinkError("fulfillment_conflict");
       const matches = await provider.findOrders(expected.channel_order_number);
       if (matches.length !== 1 || matchRemoteOrder(matches[0], expected) !== remoteId) throw new WaybillLinkError();
-      const reference = existingWaybillReference(await provider.readOrderFulfillments(remoteId), matches[0], expected);
+      const history = await database.select().from(orderDeliveryHistory).where(eq(orderDeliveryHistory.orderId, orderId));
+      const retired = retiredLinkedFulfillments(history, { environment: config.environment, channelRef: config.channelRef, remoteOrderId: remoteId });
+      await verifyRetiredShipments(retired, provider.readShipment);
+      const active = activeLinkedFulfillments(await provider.readOrderFulfillments(remoteId), matches[0], expected, retired);
+      const reference = existingWaybillReference(active, matches[0], expected);
       if (!reference) { await recordLinkCheck(orderId, remoteId, null); return { status: "not_booked" }; }
       const candidate = verifiedExistingWaybill(await provider.readShipment(reference.shipmentId), reference, expected, clock());
       const result = await database.transaction(async tx => {
         const currentJob = await lock(tx, orderId), order = await eligibleOrder(tx, orderId, config);
-        if (!order || !currentJob || currentJob.status !== "synced" || currentJob.remoteOrderId !== remoteId
+        if (!order || order.deliveryRevision !== initialOrder.deliveryRevision || !currentJob || currentJob.status !== "synced" || currentJob.remoteOrderId !== remoteId
           || payloadFingerprint(currentJob.requestSnapshot) !== payloadFingerprint(expected)
           || payloadFingerprint(buildBobGoOrderPayload(await sourceFor(tx, orderId))) !== payloadFingerprint(expected)) throw new WaybillLinkError("fulfillment_conflict");
         const [current] = await tx.select().from(shipments).where(eq(shipments.orderId, orderId)).for("update");

@@ -7,6 +7,8 @@ import { bobGoRequest } from "./client";
 import { cancellationRequested, canCancelProviderShipment, handedOverStatuses, waybillChangeInput } from "./waybill-change-policy";
 import { shipmentList, verifiedShipment } from "./tracking-policy";
 import { assertCourierTestCanCancel } from "../../live-courier-test";
+import { configuredLinkedWaybillChanges } from "./linked-booking-runtime";
+import { LinkedBookingConflict } from "./linked-booking-policy";
 
 export class WaybillChangeConflict extends Error {}
 type Database = ReturnType<typeof requireDatabase>;
@@ -119,5 +121,12 @@ export function createWaybillChanges(database: Database, config: { enabled: bool
 }
 
 export async function changeOrderWaybill(orderNumber: string, value: unknown, changedBy: string) {
-  return createWaybillChanges(requireDatabase(), getBobGoConfiguration(), (path, body) => bobGoRequest(path, body, { operation: "courier_cancel" })).change(orderNumber, value, changedBy);
+  const database = requireDatabase(), config = getBobGoConfiguration();
+  const [order] = await database.select({ id: orders.id }).from(orders).where(eq(orders.orderNumber, orderNumber)).limit(1);
+  const jobs = order ? await database.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.orderId, order.id), eq(bobgoOrderSync.environment, config.environment))) : [];
+  if (jobs.some(job => job.remoteOrderId || job.submittedAt || ["synced", "checking", "syncing"].includes(job.status))) {
+    try { return await configuredLinkedWaybillChanges().change(orderNumber, value, changedBy); }
+    catch (error) { if (error instanceof LinkedBookingConflict) throw new WaybillChangeConflict(error.message); throw error; }
+  }
+  return createWaybillChanges(database, config, (path, body) => bobGoRequest(path, body, { operation: "courier_cancel" })).change(orderNumber, value, changedBy);
 }

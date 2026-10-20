@@ -38,6 +38,11 @@ test("linked transport targets the order fulfilment API with channel authenticat
   const before = calls.length; fail = true;
   await assert.rejects(transport.createFulfillment({ order_id: 77 }), (error: any) => error.status === 503 && !/PRIVATE|KEY|ADDRESS/.test(error.message));
   assert.equal(calls.length, before + 1);
+  fail = false; await transport.cancelFulfillment("123");
+  assert.equal(calls.at(-1).url, "https://api.sandbox.bobgo.co.za/v2/order-fulfillments/cancel");
+  assert.equal(calls.at(-1).options.method, "POST"); assert.deepEqual(JSON.parse(calls.at(-1).options.body), { id: 123 });
+  const cancelledCalls = calls.length; fail = true;
+  await assert.rejects(transport.cancelFulfillment("123")); assert.equal(calls.length, cancelledCalls + 1, "uncertain cancellation is never retried by transport");
   const count = calls.length; await assert.rejects(transport.readOrder("../wrong")); assert.equal(calls.length, count);
   assert.throws(() => createLinkedBookingTransport({ enabled: false, environment: "sandbox", channelRef: "store.example.invalid" }, "TEST-ONLY-TOKEN"));
 });
@@ -50,6 +55,7 @@ test("runtime remains hard off before credentials, database or provider access",
     "./order-sync-runtime": { preparedSyncCredentials: (config: any) => { assert.equal(config.enabled, false); return null; } },
   });
   assert.throws(() => runtime.configuredLinkedBooking(), /not activated/);
+  assert.throws(() => runtime.configuredLinkedWaybillChanges(), /not activated/);
 });
 
 test("collection matching supports the real address-book fields and never substitutes a different drop-off", () => {

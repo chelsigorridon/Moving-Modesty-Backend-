@@ -33,6 +33,10 @@ export function createLinkedBookingTransport(config: OrderSyncConfiguration, tok
     updateOrder: (payload: Record<string, unknown>) => request("/orders", "PATCH", payload),
     orderRates: (payload: Record<string, unknown>) => request("/orders/rates", "POST", payload),
     createFulfillment: (payload: Record<string, unknown>) => request("/order-fulfillments", "POST", payload),
+    // Bob Go's dashboard cancels the fulfilment by its own ID. This also
+    // releases the order's fulfilled quantities; cancelling only the shipment
+    // would not safely authorise a replacement order fulfilment.
+    cancelFulfillment: (id: string) => request("/order-fulfillments/cancel", "POST", { id: Number(remoteId(id)) }),
   };
 }
 export type LinkedBookingProvider = ReturnType<typeof createLinkedBookingTransport>;

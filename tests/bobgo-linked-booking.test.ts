@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import ts from "typescript";
 import { PGlite } from "@electric-sql/pglite";
-import { inspectLinkedBookingPermissions, linkedBookingPermissions } from "../lib/integrations/bobgo/permissions.ts";
+import { inspectLinkedBookingPermissions, linkedBookingPermissions, linkedWaybillChangePermissions } from "../lib/integrations/bobgo/permissions.ts";
 import { getOrderSyncConfiguration, buildBobGoOrderPayload, matchRemoteOrder } from "../lib/integrations/bobgo/order-sync-policy.ts";
 import { collectionBookId } from "../lib/integrations/bobgo/linked-booking-policy.ts";
 
-const permissionBody = { user: { role_id: 7 }, roles: [{ id: 7, permissions: [...linkedBookingPermissions] }] };
+const permissionBody = { user: { role_id: 7 }, roles: [{ id: 7, permissions: [...linkedBookingPermissions, ...linkedWaybillChangePermissions] }] };
 test("permission inspection uses only the key user's role and never treats a successful GET as write permission", () => {
   assert.equal(inspectLinkedBookingPermissions(permissionBody).allowed, true);
   assert.equal(inspectLinkedBookingPermissions({ ...permissionBody, user: { role_id: 8 } }).known, false);
@@ -25,7 +25,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
   const root = resolve(dirname(fileURLToPath(import.meta.url)), ".."), require = createRequire(import.meta.url);
   const pg = new PGlite(), db = require("drizzle-orm/pglite").drizzle(pg), cache = new Map<string, any>();
   const calls: string[] = [], remote = new Map<string, any>(), fulfillments = new Map<string, any>(), remoteShipments = new Map<string, any>();
-  let mode = "normal", changeDuringRead: (() => Promise<void>) | undefined;
+  let mode = "normal", changeDuringRead: (() => Promise<void>) | undefined, changeDuringShipmentRead: (() => Promise<void>) | undefined;
   const contact = { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" };
   const address = { company: "", line1: "10 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
   const plan = { version: 1, collection: { kind: "door", contact, address }, delivery: { kind: "door", contact: { ...contact, name: "TEST Buyer", email: "buyer@example.invalid" }, address },
@@ -34,7 +34,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
   const providerAddress = { company: "", street_address: address.line1, local_area: address.suburb, city: address.city, zone: "WC", country: "South Africa", code: address.postalCode };
   function load(file: string): any {
     const path = resolve(root, file);
-    if (/lib[\\/]db(?:[\\/]index)?\.ts$/.test(path)) return { requireDatabase: () => { throw new Error("Real database forbidden"); } };
+    if (/lib[\\/]db(?:[\\/]index)?\.ts$/.test(path)) return { requireDatabase: () => db };
     if (/lib[\\/]monitoring\.ts$/.test(path)) return { reportFailure: async () => ({}), resolveFailures: async () => {} };
     if (/lib[\\/]integrations[\\/]bobgo[\\/]client\.ts$/.test(path)) return { bobGoRequest: async (path: string, body: unknown) => {
       assert.equal(body, undefined); assert.match(path, /^\/locations\?/);
@@ -56,7 +56,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
     for (const entry of journal.entries) for (const sql of readFileSync(resolve(root, `drizzle/${entry.tag}.sql`), "utf8").split("--> statement-breakpoint")) if (sql.trim()) await pg.exec(sql);
     const schema = load("lib/db/schema.ts"), { createLinkedBookingService } = load("lib/integrations/bobgo/linked-booking.ts");
     const secret = "TEST-ONLY-SIGNING-NOT-A-LIVE-SECRET", config = { enabled: true, environment: "sandbox", channelRef: "store.example.invalid" };
-    let numberIndex = 0;
+    let numberIndex = 0, shipmentSerial = 9000, fulfillmentSerial = 8000;
     async function seed(selectedPlan = plan) {
       const id = randomUUID(), customerId = randomUUID(), addressId = randomUUID(), productId = randomUUID(), variantId = randomUUID(), number = `MM-LINKED-TEST-${++numberIndex}`;
       const expected = buildBobGoOrderPayload({ orderNumber: number, contact: plan.delivery.contact, address, deliveryFee: 99, subtotal: 450, total: 549, discountAmount: 0,
@@ -77,6 +77,8 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       return { id, number, remoteId };
     }
     const provider = {
+      async findOrders(number: string) { return [...remote.values()].filter(row => row.channel_order_number === number).map(row => structuredClone(row)); },
+      async createOrder() { throw new Error("Order creation forbidden in cancellation tests"); },
       async readPermissions() { calls.push("permissions"); return mode === "permission-denied" ? {} : permissionBody; },
       async readCollections() { calls.push("collections"); return { count: 2, items: [
         { id: 90, address: providerAddress, contact_name: "TEST", contact_surname: "Sender", contact_email: contact.email, contact_number: contact.phone },
@@ -84,7 +86,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       ] }; },
       async readOrder(id: string) { calls.push("readOrder"); const change = changeDuringRead; changeDuringRead = undefined; await change?.(); return structuredClone(remote.get(id)); },
       async readOrderFulfillments(id: string) { calls.push("fulfillments"); return structuredClone(fulfillments.get(id)); },
-      async readShipment(id: string) { calls.push("shipmentRead"); return structuredClone(remoteShipments.get(id)); },
+      async readShipment(id: string) { calls.push("shipmentRead"); const row = structuredClone(remoteShipments.get(id)); const callback = changeDuringShipmentRead; changeDuringShipmentRead = undefined; await callback?.(); return row; },
       async updateOrder(body: any) { calls.push("update"); assert.equal(body.order_items, undefined); assert.equal(body.payment_status, undefined); assert.equal(body.account_id, undefined);
         const row = remote.get(String(body.id)); Object.assign(row, structuredClone(body)); return structuredClone(row); },
       async orderRates(body: any) { calls.push("rates"); assert.equal(body.order_id > 0, true); const row = remote.get(String(body.order_id));
@@ -98,9 +100,12 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         assert.equal(body.method, "shipment"); assert.equal(body.items, null); assert.equal(body.order_items, undefined); assert.equal(body.account_id, undefined);
         assert.equal(body.selected_rate_request_id, undefined); assert.equal(body.order_fulfillment_presets.provider_slug, "demo-b");
         if (mode === "timeout-empty") throw new Error("PRIVATE uncertain POST");
-        const shipmentId = String(9000 + numberIndex), tracking = `TEST-${shipmentId}`;
-        fulfillments.set(String(body.order_id), { order_fulfillments: [{ order_fulfillment: { id: 8000, order_id: body.order_id, method: "shipment", status: "success", method_id: Number(shipmentId), method_reference: tracking,
-          items: row.order_items.map((item: any) => ({ order_item_id: item.id, qty: item.qty })) } }], count: 1 });
+        const shipmentId = String(++shipmentSerial), tracking = `TEST-${shipmentId}`;
+        const rows = fulfillments.get(String(body.order_id)).order_fulfillments;
+        rows.unshift({ order_fulfillment: { id: ++fulfillmentSerial, order_id: body.order_id, method: "shipment", type: "original", status: "success", method_id: Number(shipmentId), method_reference: tracking,
+          items: row.order_items.map((item: any) => ({ order_item_id: item.id, qty: item.qty })) } });
+        fulfillments.set(String(body.order_id), { order_fulfillments: rows, count: rows.length });
+        for (const item of row.order_items) item.fulfilled_qty = item.qty;
         remoteShipments.set(shipmentId, { id: Number(shipmentId), tracking_reference: tracking, custom_tracking_reference: body.custom_tracking_reference,
           submission_status: "success", status: row.order_fulfillment_presets.collection_address_book_id === 91 ? "awaiting-dropoff" : "pending-collection", provider_slug: "demo-b", service_level_code: "ECO", time_created: new Date().toISOString(),
           collection_location_type: row.order_fulfillment_presets.collection_address_book_id === 91 ? "locker" : "door", delivery_location_type: body.pickup_point_location_id ? "counter" : "door",
@@ -111,15 +116,43 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         if (mode === "timeout-accepted") throw new Error("PRIVATE uncertain POST");
         return { order_id: body.order_id, status: "success", method_id: Number(shipmentId), method_reference: tracking };
       },
+      async cancelFulfillment(id: string) {
+        calls.push("cancel");
+        const rows = [...fulfillments.values()].flatMap(value => value.order_fulfillments), entry = rows.find(value => String(value.order_fulfillment?.id) === id);
+        assert.ok(entry); const fulfillment = entry.order_fulfillment, row = remote.get(String(fulfillment.order_id));
+        const history = await pg.query<any>("select h.* from order_delivery_history h join orders o on o.id=h.order_id where o.order_number=$1 and h.action='waybill_cancel_requested' and h.after->>'fulfillmentId'=$2", [row.channel_order_number, id]);
+        assert.equal(history.rows.length, 1, "linked cancellation fence must be durable before provider POST");
+        if (mode === "cancel-timeout" || mode === "cancel-rejected") throw new Error("PRIVATE cancellation outcome");
+        if (mode !== "cancel-pending") {
+          const shipment = remoteShipments.get(String(fulfillment.method_id));
+          if (mode !== "cancel-fulfillment-only") shipment.status = "cancelled";
+          if (mode !== "cancel-shipment-only") fulfillment.status = "cancelled";
+          shipment.time_modified = new Date().toISOString();
+          if (mode !== "cancel-quantities-held" && mode !== "cancel-shipment-only") for (const item of row.order_items) item.fulfilled_qty = 0;
+        }
+        if (mode === "cancel-timeout-accepted") throw new Error("PRIVATE cancellation outcome");
+        return { success: true }; // Never trusted in place of the three GET checks.
+      },
     };
     const service = createLinkedBookingService(db, provider, config, secret);
+    const { createLinkedWaybillChanges } = load("lib/integrations/bobgo/linked-waybill-change.ts");
+    const changes = createLinkedWaybillChanges(db, config, provider);
     const quote = async (row: any) => (await service.quotes(row.number, parcel, false)).rates.at(-1).quoteToken;
     const bookings = () => calls.filter(call => call === "book").length;
+    const cancellations = () => calls.filter(call => call === "cancel").length;
+    const localShipment = async (row: any) => (await pg.query<any>("select * from shipments where order_id=$1", [row.id])).rows[0];
+    async function change(row: any, action: string, overrides: any = {}) {
+      const order = (await pg.query<any>("select * from orders where id=$1", [row.id])).rows[0], shipment = await localShipment(row);
+      return changes.change(row.number, { action, expectedRevision: order.delivery_revision, expectedWaybill: shipment.tracking_number, confirm: true, ...overrides }, "owner@example.invalid");
+    }
+    async function bookedSeed() { const row = await seed(); await service.book(row.number, await quote(row)); return row; }
     await t.test("disabled service touches neither database nor provider", async () => {
       const disabled = createLinkedBookingService(new Proxy({}, { get() { throw new Error("No DB"); } }), new Proxy({}, { get() { throw new Error("No provider"); } }), { ...config, enabled: false }, secret);
       await assert.rejects(disabled.quotes("MM-TEST", parcel, false), /not activated/);
       await assert.rejects(disabled.book("MM-TEST", "bad"), /not activated/);
       await assert.rejects(disabled.reconcile("MM-TEST"), /not activated/);
+      const disabledChanges = createLinkedWaybillChanges(new Proxy({}, { get() { throw new Error("No DB"); } }), { ...config, enabled: false }, new Proxy({}, { get() { throw new Error("No provider"); } }));
+      await assert.rejects(disabledChanges.change("MM-TEST", {}, "owner@example.invalid"), /not activated/);
     });
     await t.test("permissions are required before changing the remote order or requesting rates", async () => {
       const row = await seed(), before = calls.length; mode = "permission-denied";
@@ -214,6 +247,103 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       await assert.rejects(service.book(row.number, token + "x"));
       await pg.query("update payments set provider='payfast-production' where order_id=$1", [row.id]);
       await assert.rejects(service.book(row.number, token), /verified paid/); assert.equal(bookings(), before);
+    });
+    await t.test("linked cancellation requires confirmation, current revision/reference, correct payment and cancellation permissions", async () => {
+      const row = await bookedSeed(), before = cancellations();
+      for (const overrides of [{ confirm: false }, { expectedRevision: 999 }, { expectedWaybill: "OTHER-WAYBILL" }]) await assert.rejects(change(row, "cancel_waybill", overrides));
+      mode = "permission-denied"; await assert.rejects(change(row, "cancel_waybill"), /permissions/); mode = "normal";
+      await pg.query("update payments set provider='payfast-production' where order_id=$1", [row.id]);
+      await assert.rejects(change(row, "cancel_waybill"), /matching verified payment/); assert.equal(cancellations(), before);
+    });
+    await t.test("a timeout or provider refusal is fenced and can only be checked, never automatically cancelled twice", async () => {
+      for (const outcome of ["cancel-timeout", "cancel-rejected", "cancel-timeout-accepted"]) {
+        const row = await bookedSeed(), before = cancellations(); mode = outcome;
+        await assert.rejects(change(row, "cancel_waybill"), /Do not repeat/); mode = "normal";
+        await change(row, "cancel_waybill"); await change(row, "check_cancellation");
+        assert.equal(cancellations(), before + 1);
+        assert.equal((await localShipment(row)).status, outcome === "cancel-timeout-accepted" ? "cancelled" : "booked");
+        if (outcome !== "cancel-timeout-accepted") await assert.rejects(change(row, "prepare_replacement"), /must confirm/);
+      }
+    });
+    await t.test("shipment-only, fulfilment-only or unreleased quantities cannot unlock a replacement", async () => {
+      for (const outcome of ["cancel-pending", "cancel-shipment-only", "cancel-fulfillment-only", "cancel-quantities-held"]) {
+        const row = await bookedSeed(), before = cancellations(); mode = outcome;
+        const result = await change(row, "cancel_waybill"); assert.match(result.message, /remains locked/); mode = "normal";
+        await assert.rejects(change(row, "prepare_replacement"), /must confirm/);
+        await assert.rejects(quote(row), /already exists/); await change(row, "cancel_waybill"); assert.equal(cancellations(), before + 1);
+      }
+    });
+    await t.test("two admin sessions cannot submit two linked cancellation requests", async () => {
+      const row = await bookedSeed(), before = cancellations(); mode = "cancel-pending";
+      const shipment = await localShipment(row), input = { action: "cancel_waybill", expectedRevision: 0, expectedWaybill: shipment.tracking_number, confirm: true };
+      await Promise.allSettled([changes.change(row.number, input, "owner@example.invalid"), changes.change(row.number, input, "owner@example.invalid")]);
+      mode = "normal"; assert.equal(cancellations(), before + 1);
+    });
+    await t.test("a handed-over or different linked waybill is never cancelled", async () => {
+      const row = await bookedSeed(), shipment = await localShipment(row), raw = remoteShipments.get(shipment.provider_shipment_id), before = cancellations();
+      raw.status = "collected"; await assert.rejects(change(row, "cancel_waybill"), /handed over/);
+      raw.status = "pending-collection"; raw.collected_date = new Date().toISOString(); await assert.rejects(change(row, "cancel_waybill"), /handed over/); raw.collected_date = null;
+      const entry = fulfillments.get(row.remoteId).order_fulfillments[0]; entry.order_fulfillment.method_id = 99999;
+      await assert.rejects(change(row, "cancel_waybill")); assert.equal(cancellations(), before);
+    });
+    await t.test("cancellation and separately approved replacement keep history and the same channel order across repeated replacements", async () => {
+      const row = await bookedSeed(), original = await localShipment(row);
+      for (let round = 0; round < 2; round++) {
+        const previous = await localShipment(row), beforeBooks = bookings();
+        await change(row, "cancel_waybill");
+        assert.equal((await localShipment(row)).booking_snapshot.linkedOrder.cancellationConfirmed, true);
+        await change(row, "prepare_replacement");
+        const reset = await localShipment(row); assert.equal(reset.status, "not_ready"); assert.equal(reset.provider_shipment_id, null); assert.equal(reset.weight_grams, null);
+        assert.equal(bookings(), beforeBooks, "preparing a replacement never books or charges one");
+        await service.book(row.number, await quote(row));
+        const next = await localShipment(row); assert.notEqual(next.tracking_number, previous.tracking_number);
+        assert.equal(next.booking_snapshot.linkedOrder.remoteOrderId, row.remoteId); assert.equal(bookings(), beforeBooks + 1);
+      }
+      const history = (await pg.query<any>("select * from order_delivery_history where order_id=$1 and action='waybill_replacement_prepared' order by revision", [row.id])).rows;
+      assert.equal(history.length, 2); assert.equal(history[0].before.shipment.providerShipmentId, original.provider_shipment_id);
+      const order = (await pg.query<any>("select * from orders where id=$1", [row.id])).rows[0];
+      assert.equal(order.payment_status, "paid"); assert.equal(order.status, "ready"); assert.equal(Number(order.total), 549); assert.equal(Number(order.delivery_fee), 99);
+      assert.equal(fulfillments.get(row.remoteId).order_fulfillments.length, 3);
+    });
+    await t.test("a reactivated retired waybill, unexplained extra fulfilment or missing cancellation history blocks another quote", async () => {
+      const row = await bookedSeed(), old = await localShipment(row); await change(row, "cancel_waybill"); await change(row, "prepare_replacement");
+      const before = bookings(), raw = remoteShipments.get(old.provider_shipment_id); raw.status = "pending-collection";
+      await assert.rejects(quote(row), /not confirmed cancelled/); raw.status = "cancelled";
+      const saved = fulfillments.get(row.remoteId), oldEntry = saved.order_fulfillments[0];
+      saved.order_fulfillments = []; saved.count = 0; await assert.rejects(quote(row), /full previous cancellation history/);
+      saved.order_fulfillments = [oldEntry, { order_fulfillment: { ...oldEntry.order_fulfillment, id: 77777, status: "success" } }]; saved.count = 2;
+      await assert.rejects(quote(row), /already has a fulfilment/); assert.equal(bookings(), before);
+    });
+    await t.test("late tracking for an old waybill cannot overwrite a replacement", async () => {
+      const row = await bookedSeed(), old = await localShipment(row); await change(row, "cancel_waybill"); await change(row, "prepare_replacement"); await service.book(row.number, await quote(row));
+      const next = await localShipment(row), tracker = load("lib/integrations/bobgo/tracking.ts").createDirectShipmentTracking(db, config.environment,
+        async () => ({ shipments: [remoteShipments.get(old.provider_shipment_id)] }));
+      await assert.rejects(tracker.refresh(next.id)); assert.equal((await localShipment(row)).tracking_number, next.tracking_number);
+    });
+    await t.test("a cancelled channel order can change its address before a fresh, separately approved replacement", async () => {
+      const row = await bookedSeed(); await change(row, "cancel_waybill"); await change(row, "prepare_replacement");
+      await load("lib/delivery-management.ts").saveOrderDelivery(row.number, { action: "delivery", expectedRevision: 2, confirmed: true,
+        plan: { ...plan, delivery: { ...plan.delivery, address: { ...address, line1: "44 Replacement Road" } } } }, "owner@example.invalid");
+      await service.book(row.number, await quote(row));
+      assert.equal(remote.get(row.remoteId).delivery_address.street_address, "44 Replacement Road");
+      assert.equal((await localShipment(row)).booking_snapshot.linkedOrder.remoteOrderId, row.remoteId);
+    });
+    await t.test("the background linker handles retired history and cannot resurrect an old read during cancellation", async () => {
+      const row = await bookedSeed(), sync = load("lib/integrations/bobgo/order-sync.ts").createBobGoOrderSyncService(db, provider, config);
+      changeDuringShipmentRead = async () => { await change(row, "cancel_waybill"); await change(row, "prepare_replacement"); };
+      assert.equal((await sync.refreshWaybillLink(row.id)).status, "needs_attention");
+      assert.equal((await localShipment(row)).status, "not_ready");
+      assert.equal((await sync.refreshWaybillLink(row.id)).status, "not_booked");
+      await service.book(row.number, await quote(row));
+      assert.equal((await sync.refreshWaybillLink(row.id)).status, "unchanged");
+    });
+    await t.test("an externally confirmed cancellation can be checked and prepared without another cancellation POST", async () => {
+      const row = await bookedSeed(), local = await localShipment(row), before = cancellations();
+      const entry = fulfillments.get(row.remoteId).order_fulfillments[0].order_fulfillment; entry.status = "cancelled";
+      remoteShipments.get(local.provider_shipment_id).status = "cancelled";
+      for (const item of remote.get(row.remoteId).order_items) item.fulfilled_qty = 0;
+      await change(row, "check_cancellation"); await change(row, "prepare_replacement"); assert.equal(cancellations(), before);
+      assert.equal((await localShipment(row)).provider_shipment_id, null);
     });
     assert.equal(getOrderSyncConfiguration().enabled, false);
   } finally { await pg.close(); }

@@ -302,7 +302,11 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       const cancellationPending = cancellationRequested(history, shipment);
       const linkedOrder = syncRows.some(row => row.orderId === order.id && (row.remoteOrderId || row.submittedAt
         || ["synced", "checking", "syncing"].includes(row.status) || row.leaseExpiresAt && row.leaseExpiresAt.getTime() > Date.now()));
-      const canChangeWaybill = bobGo.enabled && bobGo.apiTokenConfigured && !linkedOrder && order.paymentStatus === "paid"
+      const linkedConfig = getLinkedBookingConfiguration(), linkedSnapshot = shipment?.bookingSnapshot?.linkedOrder;
+      const linkedChangeAllowed = linkedOrder && linkedConfig.enabled && linkedConfig.environment === bobGo.environment
+        && paymentEnvironmentFromProvider(order.paymentProvider) === bobGo.environment && linkedSnapshot?.channelRef === linkedConfig.channelRef
+        && syncRows.some(row => row.orderId === order.id && row.environment === bobGo.environment && row.channelRef === linkedConfig.channelRef && row.status === "synced" && row.remoteOrderId === linkedSnapshot?.remoteOrderId);
+      const canChangeWaybill = bobGo.enabled && bobGo.apiTokenConfigured && (!linkedOrder || linkedChangeAllowed) && order.paymentStatus === "paid"
         && ["new", "confirmed", "processing", "ready"].includes(order.status) && order.originalPaymentStatus === "paid"
         && Boolean(order.providerPaymentId && order.paymentVerifiedAt) && Number(order.total) === Number(order.paidAmount)
         && !(bobGo.environment === "production" && paymentEnvironmentFromProvider(order.paymentProvider) === "sandbox")
@@ -393,7 +397,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         previousWaybills: previousWaybills(history),
         waybillChange: canChangeWaybill && shipment?.trackingNumber ? {
           trackingNumber: shipment.trackingNumber,
-          action: shipment.courierStatus === "cancelled" ? "prepare_replacement" as const : cancellationPending ? "check_cancellation" as const : "cancel_waybill" as const,
+          action: shipment.courierStatus === "cancelled" && (!linkedOrder || linkedSnapshot?.cancellationConfirmed) ? "prepare_replacement" as const
+            : cancellationPending || linkedOrder && shipment.courierStatus === "cancelled" ? "check_cancellation" as const : "cancel_waybill" as const,
         } : undefined } : undefined,
       bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled, getLinkedBookingConfiguration().enabled) : undefined,
       items: itemsByOrder.get(order.id) ?? [],
