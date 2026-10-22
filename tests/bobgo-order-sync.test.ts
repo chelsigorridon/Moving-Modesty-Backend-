@@ -67,3 +67,17 @@ test("PostgreSQL JSONB key ordering does not turn an unchanged payload into a de
   assert.equal(stableOrderPayload(reordered), stableOrderPayload(payload));
   assert.notEqual(stableOrderPayload({ ...payload, buyer_selected_shipping_cost: 0 }), stableOrderPayload(payload));
 });
+
+test("Bob Go's one-decimal item weight read-back does not lose an otherwise exact order link", () => {
+  const payload = buildBobGoOrderPayload({ ...source, items: [{ ...source.items[0], weightGrams: 212 }] });
+  const remote = { ...payload, id: 61586602, order_items: [{ ...payload.order_items[0], unit_weight_kg: 0.2 }] };
+  assert.equal(matchRemoteOrder(remote, payload), "61586602");
+  for (const weight of [0.21, 0.3, 0, -0.2, null, "", undefined]) {
+    assert.equal(matchRemoteOrder({ ...remote, order_items: [{ ...remote.order_items[0], unit_weight_kg: weight }] }, payload), null);
+  }
+  assert.equal(matchRemoteOrder({ ...remote, customer_email: "wrong@example.invalid" }, payload), null);
+  assert.equal(matchRemoteOrder({ ...remote, order_items: [{ ...remote.order_items[0], qty: 2 }] }, payload), null);
+  assert.equal(payload.order_items[0].unit_weight_kg, 0.212, "Original measured item weight is unchanged");
+  const unresolved = orderSyncView({ status: "needs_attention", lastErrorCode: "delivery_changed", remoteOrderId: null }, true, true);
+  assert.doesNotMatch(unresolved.message!, /Compare couriers here/);
+});

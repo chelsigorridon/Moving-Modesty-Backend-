@@ -22,7 +22,7 @@ export function createLinkedBookingTransport(config: OrderSyncConfiguration, tok
       return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
     } catch (error) { throw error instanceof BobGoSyncTransportError ? error : new BobGoSyncTransportError(); }
   }
-  return { readShipment: reader.readShipment, readOrderFulfillments: reader.readOrderFulfillments,
+  return { findOrders: reader.findOrders, readShipment: reader.readShipment, readOrderFulfillments: reader.readOrderFulfillments,
     readPermissions: () => request("/general-data", "GET"),
     readCollections: () => request("/accounts/address-books?limit=100&offset=0", "GET"),
     async readOrder(id: string) {

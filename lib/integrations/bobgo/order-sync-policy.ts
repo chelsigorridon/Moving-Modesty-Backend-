@@ -102,9 +102,17 @@ export function matchRemoteOrder(remote: unknown, expected: BobGoOrderPayload): 
   if (!Array.isArray(row.order_items) || row.order_items.length !== expected.order_items.length) return null;
   const numberPresent = (value: unknown) => (typeof value === "number" || typeof value === "string" && value.trim() !== "") && Number.isFinite(Number(value));
   if (row.order_items.some(value => { const item = object(value); return !numberPresent(item.qty) || !numberPresent(item.unit_price) || !numberPresent(item.unit_weight_kg); })) return null;
-  const remoteItems = row.order_items.map(value => { const item = object(value); return [item.sku, Number(item.qty), moneyCents(Number(item.unit_price)), Number(item.unit_weight_kg)]; }).sort();
-  const expectedItems = expected.order_items.map(item => [item.sku, item.qty, moneyCents(item.unit_price), item.unit_weight_kg]).sort();
-  return JSON.stringify(remoteItems) === JSON.stringify(expectedItems) ? id : null;
+  const remoteItems = row.order_items.map(value => { const item = object(value); return [item.sku, Number(item.qty), moneyCents(Number(item.unit_price)), Number(item.unit_weight_kg)] as const; }).sort();
+  const expectedItems = expected.order_items.map(item => [item.sku, item.qty, moneyCents(item.unit_price), item.unit_weight_kg] as const).sort();
+  // Live Bob Go read-back returns 212 g as 0.2 kg. Accept only the exact
+  // weight or its one-decimal representation, not an arbitrary tolerance.
+  // This identifies the order; quotes/bookings still verify the separately
+  // entered packed parcel against Bob Go. Never round the saved parcel weight.
+  return remoteItems.every((item, index) => {
+    const wanted = expectedItems[index];
+    return item[0] === wanted[0] && item[1] === wanted[1] && item[2] === wanted[2]
+      && item[3] >= 0 && (item[3] === wanted[3] || item[3] === Math.round(wanted[3] * 10) / 10);
+  }) ? id : null;
 }
 
 const waybillLinkMessages: Record<string, string> = {
@@ -116,7 +124,7 @@ const waybillLinkMessages: Record<string, string> = {
 export function orderSyncView(row?: { status: string; lastErrorCode: string | null; remoteOrderId: string | null; waybillLinkErrorCode?: string | null }, enabled = false, linkedBookingEnabled = false) {
   const status = !enabled ? "Not enabled" : !row ? "Waiting to sync" : row.waybillLinkErrorCode ? "Needs attention" : ({ queued: "Waiting to sync", syncing: "Syncing", retry: "Needs attention", checking: "Needs checking", needs_attention: "Needs attention", synced: "Synced with Bob Go" } as Record<string, string>)[row.status] || "Needs attention";
   return { status, message: !enabled ? "Order synchronisation is not activated. Payment and manual courier booking are separate."
-    : row?.lastErrorCode ? linkedBookingEnabled && row.lastErrorCode === "delivery_changed"
+    : row?.lastErrorCode ? linkedBookingEnabled && row.lastErrorCode === "delivery_changed" && row.remoteOrderId
       ? "Delivery details changed. Compare couriers here to update the existing Bob Go order before booking; no second order will be created."
       : orderSyncMessages[row.lastErrorCode as OrderSyncErrorCode] || orderSyncMessages.invalid_order
     : row?.waybillLinkErrorCode ? waybillLinkMessages[row.waybillLinkErrorCode] || waybillLinkMessages.fulfillment_mismatch

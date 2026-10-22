@@ -75,6 +75,47 @@ export async function sourceFor(tx: Reader, orderId: string): Promise<BobGoOrder
       unitPrice: Number(item.unitPrice), weightGrams: item.weightGrams })) };
 }
 
+// Recovery is deliberately lookup-only: no provider create, update, rates or
+// fulfilment methods are accepted. Match the ORIGINAL submission even if the
+// delivery plan changed later, then let the normal quote flow apply that edit.
+export async function reconcileExistingBobGoOrder(database: Database, provider: Pick<BobGoOrderSyncProvider, "findOrders">,
+  config: OrderSyncConfiguration, orderId: string, clock = Date.now) {
+  if (!config.enabled) return { status: "disabled" };
+  const scope = and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef));
+  if (!(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
+  const [initial] = await database.select().from(bobgoOrderSync).where(scope).limit(1);
+  if (!initial?.submittedAt || !initial.requestSnapshot) return { status: "not_submitted" };
+  if (initial.remoteOrderId) return { status: "already_linked" };
+  if (initial.leaseExpiresAt && initial.leaseExpiresAt.getTime() > clock()) return { status: "busy" };
+  let matches: unknown[];
+  try { matches = await provider.findOrders(initial.requestSnapshot.channel_order_number); }
+  catch { return { status: "lookup_failed" }; }
+  if (!Array.isArray(matches)) return { status: "remote_mismatch" };
+  if (matches.length !== 1) return { status: matches.length ? "duplicate_remote" : "not_found" };
+  const remoteId = matchRemoteOrder(matches[0], initial.requestSnapshot);
+  if (!remoteId) return { status: "remote_mismatch" };
+  return database.transaction(async tx => {
+    await tx.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).for("update");
+    const [current] = await tx.select().from(bobgoOrderSync).where(scope).for("update").limit(1);
+    const order = await eligibleOrder(tx, orderId, config);
+    if (!order || !current || current.id !== initial.id || !current.submittedAt
+      || payloadFingerprint(current.requestSnapshot) !== payloadFingerprint(initial.requestSnapshot)) return { status: "changed" };
+    if (current.remoteOrderId) return { status: current.remoteOrderId === remoteId ? "already_linked" : "remote_mismatch" };
+    if (current.leaseExpiresAt && current.leaseExpiresAt.getTime() > clock()) return { status: "busy" };
+    const [other] = await tx.select({ id: bobgoOrderSync.orderId }).from(bobgoOrderSync).where(and(
+      eq(bobgoOrderSync.remoteOrderId, remoteId), eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef))).limit(1);
+    if (other && other.id !== orderId) return { status: "remote_mismatch" };
+    let changed = true;
+    try { changed = payloadFingerprint(buildBobGoOrderPayload(await sourceFor(tx, orderId))) !== payloadFingerprint(current.requestSnapshot); }
+    catch { /* Preserve the link, but do not claim invalid current delivery is synced. */ }
+    const status = changed ? "needs_attention" : "synced";
+    await tx.update(bobgoOrderSync).set({ remoteOrderId: remoteId, status, lastErrorCode: changed ? "delivery_changed" : null,
+      leaseToken: null, leaseExpiresAt: null, updatedAt: new Date(clock()),
+      ...(!changed ? { syncedAt: new Date(clock()), deliveryRevision: order.deliveryRevision } : {}) }).where(eq(bobgoOrderSync.id, current.id));
+    return { status, linked: true };
+  });
+}
+
 export function createBobGoOrderSyncService(database: Database, provider: BobGoOrderSyncProvider,
   config: OrderSyncConfiguration, clock: () => number = Date.now) {
   const scope = (orderId: string) => and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef));

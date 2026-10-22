@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { requireDatabase } from "../../db";
 import { bobgoOrderSync, orders, payments, shipments, orderStatusHistory, orderDeliveryHistory } from "../../db/schema";
-import { sourceFor } from "./order-sync";
+import { reconcileExistingBobGoOrder, sourceFor } from "./order-sync";
 import { buildBobGoOrderPayload, type OrderSyncConfiguration } from "./order-sync-policy";
 import { resolveCourierPlan } from "./delivery";
 import { inspectLinkedBookingPermissions } from "./permissions";
@@ -85,6 +85,8 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
   async function quotes(number: string, value: unknown, additionalCover: boolean) {
     enabled(); const parcel = parcelInput.parse(value);
     if (additionalCover) throw new LinkedBookingConflict("Additional parcel cover is not enabled for linked bookings.");
+    const [candidate] = await database.select({ id: orders.id }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
+    if (candidate) await reconcileExistingBobGoOrder(database, provider, config, candidate.id, clock);
     const initial = await load(database, number), lease = randomUUID();
     assertCurrentSchedule(initial);
     const state = await database.transaction(async tx => {

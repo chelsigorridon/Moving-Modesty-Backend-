@@ -207,6 +207,47 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       mode = "success";
       assert.equal((await service.sync(id)).status, "checking"); assert.equal(createCount(), count);
     });
+    await t.test("lookup-only recovery links the original submitted order after a delivery edit without creating or overwriting anything", async () => {
+      const number = "MM-SYNC-RECOVER-EDIT", { id, addressId } = await seed(number);
+      mode = "timeout-found"; await service.sync(id); mode = "success";
+      const before = await job(id), count = createCount();
+      const existing = remote.get(number);
+      existing.order_items[0].unit_weight_kg = 0.1;
+      await postgres.query("update addresses set line_1='20 Changed Road' where id=$1", [addressId]);
+      await postgres.query("update orders set delivery_revision=1 where id=$1", [id]);
+      await postgres.query("update bobgo_order_sync set status='needs_attention', last_error_code='delivery_changed' where order_id=$1", [id]);
+      const orderBefore = (await postgres.query<any>("select * from orders where id=$1", [id])).rows;
+      const readonly = { findOrders: provider.findOrders };
+      const result = await sync.reconcileExistingBobGoOrder(db, readonly, config, id, () => clock);
+      assert.equal(result.linked, true); assert.equal(result.status, "needs_attention");
+      const after = await job(id);
+      assert.equal(after.remote_order_id, String(existing.id)); assert.equal(after.last_error_code, "delivery_changed");
+      assert.deepEqual(after.request_snapshot, before.request_snapshot);
+      assert.equal(after.submitted_at.toISOString(), before.submitted_at.toISOString());
+      assert.equal(createCount(), count);
+      assert.deepEqual((await postgres.query<any>("select * from orders where id=$1", [id])).rows, orderBefore);
+      assert.equal((await postgres.query<any>("select count(*) from shipments where order_id=$1", [id])).rows[0].count, 0);
+      assert.equal((await sync.reconcileExistingBobGoOrder(db, readonly, config, id, () => clock)).status, "already_linked");
+    });
+    await t.test("lookup-only recovery rejects missing, duplicate, mismatching and concurrently edited submissions", async () => {
+      for (const scenario of ["missing", "duplicate", "mismatch", "lease", "snapshot-race"]) {
+        const number = `MM-SYNC-RECOVER-${scenario}`, { id } = await seed(number);
+        mode = "timeout-found"; await service.sync(id); mode = "success";
+        if (scenario === "missing") remote.delete(number);
+        if (scenario === "duplicate") mode = "duplicate";
+        if (scenario === "mismatch") remote.get(number).customer_email = "other@example.invalid";
+        if (scenario === "lease") await postgres.query("update bobgo_order_sync set lease_expires_at=$2 where order_id=$1", [id, new Date(clock + 60000)]);
+        if (scenario === "snapshot-race") afterLookup = async () => { await postgres.query("update bobgo_order_sync set request_snapshot='{}'::jsonb where order_id=$1", [id]); };
+        const count = createCount();
+        const result = await sync.reconcileExistingBobGoOrder(db, { findOrders: provider.findOrders }, config, id, () => clock);
+        assert.equal(result.status, ({ missing: "not_found", duplicate: "duplicate_remote", mismatch: "remote_mismatch", lease: "busy", "snapshot-race": "changed" } as any)[scenario]);
+        assert.equal((await job(id)).remote_order_id, null); assert.equal(createCount(), count);
+      }
+      mode = "success";
+      const neverSubmitted = await seed("MM-SYNC-RECOVER-NOT-SUBMITTED"), before = calls.length;
+      assert.equal((await sync.reconcileExistingBobGoOrder(db, { findOrders: provider.findOrders }, config, neverSubmitted.id, () => clock)).status, "not_submitted");
+      assert.equal(calls.length, before);
+    });
     await t.test("existing Bob Go waybill links once, updates tracking metadata only and never creates a shipment", async () => {
       const number = "MM-SYNC-EXISTING-WAYBILL", { id } = await seed(number); mode = "success";
       assert.equal((await service.sync(id)).status, "synced"); existingFulfillment(number, 9500);

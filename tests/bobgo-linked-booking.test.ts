@@ -164,6 +164,20 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       const row = await seed(), before = calls.length; mode = "permission-denied";
       await assert.rejects(quote(row), /permissions/); assert.deepEqual(calls.slice(before), ["permissions"]); mode = "normal";
     });
+    await t.test("courier comparison first recovers a lost submitted-order link, using the existing rounded-weight order only", async () => {
+      const seeded = await seed(), before = structuredClone(remote.get(seeded.remoteId));
+      before.order_items[0].unit_weight_kg = 0.1;
+      remote.set(seeded.remoteId, before);
+      await pg.query("update bobgo_order_sync set remote_order_id=null, status='needs_attention', last_error_code='delivery_changed' where order_id=$1", [seeded.id]);
+      const remoteCount = remote.size, count = calls.filter(call => call === "book").length;
+      const result = await service.quotes(seeded.number, parcel, false);
+      assert.ok(result.rates.length);
+      const job = (await pg.query<any>("select * from bobgo_order_sync where order_id=$1", [seeded.id])).rows[0];
+      assert.equal(job.remote_order_id, seeded.remoteId);
+      assert.equal(remote.size, remoteCount); assert.equal(calls.filter(call => call === "book").length, count);
+      assert.equal(remote.get(seeded.remoteId).order_items[0].id, before.order_items[0].id);
+      assert.equal((await pg.query<any>("select status from shipments where order_id=$1", [seeded.id])).rows[0].status, "ready_to_book");
+    });
     await t.test("a linked collection sends its proper date and clearly preferred hours into the same order and fulfilment", async () => {
       const row = await seed(), token = await quote(row), stored = await localShipment(row), snapshot = stored.booking_snapshot;
       assert.deepEqual(snapshot.collectionSchedule, plan.collectionSchedule);
