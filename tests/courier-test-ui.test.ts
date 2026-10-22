@@ -12,6 +12,8 @@ test("the private test never presets a drop-off point or measurements and cannot
   const window = dom.window as any, cache = new Map<string, any>(), calls: string[] = [];
   window.structuredClone = structuredClone;
   function load(name: string): any {
+    if (name === "../lib/shipping/owner-measurements") return require("../lib/shipping/owner-measurements.ts");
+    if (name === "../lib/shipping/collection-schedule") return require("../lib/shipping/collection-schedule.ts");
     if (!name.startsWith("./")) return require(name);
     if (cache.has(name)) return cache.get(name);
     const exports = {}; cache.set(name, exports);

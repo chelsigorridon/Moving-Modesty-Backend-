@@ -1,3 +1,5 @@
+import { movingModestyBoxPreset, zarinaPackedReferences } from "./owner-measurements.ts";
+
 export type PackageDimensions = {
   weightGrams: number;
   lengthCm: number;
@@ -11,10 +13,10 @@ export type ShippingLine = {
 };
 
 export const HAWA_AND_AMINA_PACKAGE: PackageDimensions = {
-  weightGrams: 412,
-  lengthCm: 25,
-  widthCm: 20.5,
-  heightCm: 3.5,
+  weightGrams: zarinaPackedReferences[5].grams,
+  lengthCm: movingModestyBoxPreset.lengthCm,
+  widthCm: movingModestyBoxPreset.widthCm,
+  heightCm: movingModestyBoxPreset.heightCm,
 };
 
 export function resolveVerifiedPackage(lines: ShippingLine[]): PackageDimensions | null {

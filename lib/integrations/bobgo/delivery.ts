@@ -3,6 +3,7 @@ import { bobGoDoorAddress, courierPlanInput, planProvider, type CourierEndpoint,
 import { bobGoRequest } from "./client";
 import type { Operation } from "../../monitoring-policy";
 import { contactName, parcelPayload, parseLocation, type CourierBookingSnapshot, type PackedParcel, type ResolvedCourierEndpoint } from "./protocol";
+import { collectionRateSchedule, collectionShipmentSchedule } from "../../shipping/collection-schedule";
 
 export async function resolveCourierPlan(input: CourierPlan, parcel?: PackedParcel, context?: { operation: Operation; orderId?: string }) {
   const plan = courierPlanInput.parse(input);
@@ -32,6 +33,7 @@ export function deliveryRatePayload(resolved: Awaited<ReturnType<typeof resolveC
     delivery_contact_full_name: delivery.contact.name, delivery_contact_email: delivery.contact.email,
     delivery_contact_mobile_number: delivery.contact.phone,
     instructions_collection: plan.collectionInstructions, instructions_delivery: plan.deliveryInstructions,
+    ...(collection.kind === "door" ? collectionRateSchedule(plan.collectionSchedule) : {}),
     parcels: parcelPayload(parcel, orderNumber), declared_value: declaredValue, timeout: 25000,
     ...(providerSlug ? { pickup_point_provider_slug: providerSlug, providers: [providerSlug] } : {}),
     ...(collection.point ? { collection_pickup_point_location_id: Number(collection.point.id) } : {}),
@@ -50,6 +52,7 @@ export function deliveryShipmentPayload(snapshot: CourierBookingSnapshot, parcel
     parcels: parcelPayload(parcel, orderNumber), declared_value: declaredValue, timeout: 20000,
     custom_tracking_reference: reference, custom_order_number: orderNumber,
     instructions_collection: snapshot.collectionInstructions, instructions_delivery: snapshot.deliveryInstructions,
+    ...(collection.kind === "door" ? collectionShipmentSchedule(snapshot.collectionSchedule) : {}),
     provider_slug: snapshot.providerSlug, service_level_code: snapshot.serviceCode,
     ...(snapshot.rateRequestId ? { selected_rate_request_id: snapshot.rateRequestId } : {}),
     ...(collection.point ? { collection_pickup_point_location_id: Number(collection.point.id) } : {}),

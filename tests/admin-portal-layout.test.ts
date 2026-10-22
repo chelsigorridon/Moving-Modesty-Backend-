@@ -178,9 +178,9 @@ test("ready paid delivery has a prominent waybill action and separates customer 
   const dom = ordersDocument(order({ deliveryMethod: "Courier", deliveryFee: 99, workflow: { nextStatus: null },
     shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [] } }));
   assert.equal(dom.window.document.querySelector('[aria-label="Next step"] button')?.textContent, "Set up delivery");
-  assert.match(dom.window.document.body.textContent || "", /Delivery paid by the customer:.*R\s*99/);
-  assert.match(dom.window.document.body.textContent || "", /Already included in the order total — not an extra charge/);
-  assert.match(dom.window.document.body.textContent || "", /separate Bob Go courier cost appears after you get a quote/);
+  assert.match(dom.window.document.body.textContent || "", /Delivery included in the customer's order total:.*R\s*99/);
+  assert.equal(dom.window.document.querySelector('[data-delivery-step]')?.getAttribute('data-delivery-step'), "2");
+  assert.equal(dom.window.document.querySelector('.mm-admin__quote'), null, "Courier costs appear only after a quote");
   assert.doesNotMatch(dom.window.document.body.textContent || "", /Customer delivery fee|Zarina's courier cost/);
   dom.window.close();
 });
@@ -189,7 +189,7 @@ test("free delivery wording does not imply a fixed R99 customer charge", () => {
   const dom = ordersDocument(order({ deliveryMethod: "Courier", subtotal: 1260, total: 1260, deliveryFee: 0,
     shipping: { status: "Ready to book", senderLocationName: "Constantia Emporium", environment: "production", blockers: [] } }));
   const panel = dom.window.document.querySelector('[aria-label^="Book this order"] > section')!;
-  assert.match(panel.textContent || "", /Delivery paid by the customer:.*Free/);
+  assert.match(dom.window.document.body.textContent || "", /Delivery included in the customer's order total:.*Free/);
   assert.doesNotMatch(panel.textContent || "", /R\s*99|fixed R99/);
   dom.window.close();
 });
@@ -209,10 +209,10 @@ test("courier preparation has one measurements confirmation and no optional extr
   const panel = dom.window.document.querySelector('[aria-label^="Book this order"] > section')!;
   assert.ok(panel);
   assert.equal(panel.querySelectorAll('input[type="checkbox"]').length, 1);
-  assert.match(panel.textContent || "", /checked these packed measurements/);
-  assert.match(panel.textContent || "", /Standard courier liability only/);
+  assert.match(panel.textContent || "", /Dimensions and packed weight checked/);
+  assert.equal(panel.querySelector('.mm-admin__quote'), null);
   assert.doesNotMatch(panel.textContent || "", /Request additional declared-value cover|cover for.*450/);
-  assert.equal([...panel.querySelectorAll('button')].find(button => button.textContent === "Compare courier quotes")?.hasAttribute('disabled'), true);
+  assert.equal([...panel.querySelectorAll('button')].find(button => button.textContent === "Compare couriers")?.hasAttribute('disabled'), true);
   dom.window.close();
 });
 
@@ -244,7 +244,7 @@ test("already-booked waybills retain their status, print and tracking controls",
   assert.ok(panel);
   assert.match(panel.textContent || "", /Booked/);
   assert.match(panel.textContent || "", /Prepare printable waybill|Check shipment status/);
-  assert.equal(panel.querySelector('a[href="https://tracking.example.com/TEST-EXISTING"]')?.textContent, 'Open tracker (enter waybill number)');
+  assert.equal(panel.querySelector('a[href="https://tracking.example.com/TEST-EXISTING"]')?.textContent, 'Track parcel');
   assert.doesNotMatch(panel.textContent || "", /Get delivery quote|Request additional/);
   assert.equal(panel.querySelector('input[type="checkbox"]'), null);
   dom.window.close();
@@ -254,7 +254,7 @@ const deliveryPlan = { version: 1, collection: { kind: "door", contact: { name: 
   address: { company: "", line1: "10 Example Street", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" } },
   delivery: { kind: "door", contact: { name: "TEST Buyer", email: "buyer@example.invalid", phone: "0821234567" },
     address: { company: "", line1: "20 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" } },
-  collectionInstructions: "", deliveryInstructions: "Use bell", customerApprovedPickup: false };
+  collectionInstructions: "", deliveryInstructions: "Use bell", customerApprovedPickup: false, collectionSchedule: { date: "2099-07-16", after: "09:00", before: "16:00" } };
 
 test("delivery editor stays inside the existing courier panel and requires setup before quotes", () => {
   const dom = ordersDocument(order({ deliveryMethod: "Courier", subtotal: 450, deliveryFee: 99,
@@ -266,7 +266,7 @@ test("delivery editor stays inside the existing courier panel and requires setup
   assert.equal(editor.querySelector('[name="collection.line1"]'), null);
   assert.ok([...editor.querySelectorAll('button')].some(button => button.textContent === "Change customer delivery"));
   assert.equal([...editor.querySelectorAll('button')].find(button => button.textContent === "Confirm delivery details")?.disabled, true);
-  const quote = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === "Compare courier quotes");
+  const quote = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === "Compare couriers");
   assert.equal(quote, undefined, "Package and quote controls stay hidden until addresses are confirmed");
   assert.doesNotMatch(dom.window.document.body.textContent || "", /Drop-off: Old fixed locker/);
   dom.window.close();
@@ -318,7 +318,7 @@ test("before-handover waybill changes are explicit, confirmed, and cannot masque
 
 test("previous waybills are reference-only and remain separate from current delivery setup", () => {
   const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Ready",
-    deliveryDetails: { revision: 5, plan: deliveryPlan, draftPlan: deliveryPlan, privateNote: "", canEdit: true,
+    deliveryDetails: { revision: 5, plan: null, draftPlan: deliveryPlan, privateNote: "", canEdit: true,
       previousWaybills: [{ trackingNumber: "OLD-CANCELLED", courierName: "Old courier", status: "Cancelled", replacedAt: "2026-10-17T08:00:00.000Z" }] },
     shipping: { status: "Not ready", environment: "production", blockers: [] } }));
   const history = dom.window.document.querySelector(".mm-delivery__history")!;
@@ -334,11 +334,13 @@ test("booked courier and service are shown without confusing account connection 
   const dom = ordersDocument(order({ deliveryMethod: "Courier", status: "Dispatched", bobGoSync: { status: "Not enabled", message: "Order synchronisation is not activated." },
     shipping: { status: "Booked", courierName: "TEST Other Courier", serviceName: "Express", courierStatus: "in-transit", environment: "production", blockers: [] } }));
   const body = dom.window.document.body.textContent || "";
-  assert.match(body, /Booked courier: TEST Other Courier · Express/);
-  assert.match(body, /Latest courier status: in transit/);
+  assert.match(body, /TEST Other Courier · Express/);
+  assert.match(body, /Courier status: in transit/);
   assert.match(body, /Sales-channel sync: Not enabled/);
   const sync = dom.window.document.querySelector('details[aria-label="Bob Go order synchronisation"]')!;
   assert.equal(sync.hasAttribute("open"), false);
+  assert.equal(sync.closest(".mm-delivery__advanced")?.hasAttribute("open"), false);
+  assert.equal(sync.closest(".mm-delivery__advanced")?.querySelector("summary")?.textContent, "Advanced settings");
   assert.match(sync.querySelector("summary")?.textContent || "", /Not enabled/);
   assert.doesNotMatch(body, /Activate sync|Sync now|Repeat payment notification/);
   dom.window.close();
@@ -346,8 +348,8 @@ test("booked courier and service are shown without confusing account connection 
 
 test("delivery next steps and progress reflect booking and replacement states, not generic booking advice", () => {
   for (const [shipmentStatus, action, label, current] of [
-    ["Ready to book", undefined, "Continue delivery setup", "Parcel"],
-    ["Booking", undefined, "Check booking status", "Choose courier"],
+    ["Ready to book", undefined, "Continue delivery setup", "Box & weight"],
+    ["Booking", undefined, "Check booking status", "Choose & book"],
     ["Booked", undefined, "Print & track waybill", "Print & track"],
     ["Booked", "check_cancellation", "Check cancellation", "Check details"],
     ["Cancelled", "prepare_replacement", "Prepare replacement", "Check details"],
@@ -362,8 +364,8 @@ test("delivery next steps and progress reflect booking and replacement states, n
     assert.equal(next.querySelector("button")?.textContent, label);
     assert.doesNotMatch(next.textContent || "", /Old generic booking advice/);
     assert.deepEqual([...doc.querySelectorAll('[aria-label="Delivery steps"] li')].map(node => node.textContent),
-      ["1Check details", "2Parcel", "3Choose courier", "4Print & track"]);
-    assert.equal(doc.querySelector('[aria-label="Delivery steps"] [aria-current="step"]')?.textContent, `${current === "Parcel" ? 2 : current === "Choose courier" ? 3 : current === "Print & track" ? 4 : 1}${current}`);
+      ["1Check details", "2Box & weight", "3Choose & book", "4Print & track"]);
+    assert.equal(doc.querySelector('[aria-label="Delivery steps"] [aria-current="step"]')?.textContent, `${current === "Box & weight" ? 2 : current === "Choose & book" ? 3 : current === "Print & track" ? 4 : 1}${current}`);
     if (action) assert.equal(doc.querySelector('[aria-label="Delivery steps"] [data-complete="true"]'), null, "Paused recovery must not look completed");
     dom.window.close();
   }
@@ -395,8 +397,9 @@ test("delivery summaries retain visible addresses while folding contact and tech
   }
   const confirm = [...doc.querySelectorAll('button')].find(button => button.textContent === "Confirm delivery details")!;
   assert.equal(confirm.disabled, true);
-  assert.match(doc.getElementById(confirm.getAttribute('aria-describedby')!)?.textContent || "", /Check both addresses/);
+  assert.match(doc.getElementById(confirm.getAttribute('aria-describedby')!)?.textContent || "", /Tick to confirm the details/);
   assert.equal(doc.querySelector('details[aria-label="Bob Go order synchronisation"]')?.hasAttribute("open"), true, "A sync problem must not be silently hidden");
+  assert.equal(doc.querySelector(".mm-delivery__advanced")?.hasAttribute("open"), true, "Advanced settings must also open so the problem remains visible");
   dom.window.close();
 });
 

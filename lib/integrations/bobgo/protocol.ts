@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { CourierContact, PickupPoint } from "../../delivery-input.ts";
+import type { CollectionSchedule } from "../../shipping/collection-schedule.ts";
 
 export const parcelInput = z.object({
   weightGrams: z.number().int().min(1).max(30_000),
@@ -19,6 +20,7 @@ export type ResolvedCourierEndpoint = { kind: "door" | "pickup_point"; contact: 
 export type CourierBookingSnapshot = {
   collection: ResolvedCourierEndpoint; delivery: ResolvedCourierEndpoint;
   collectionInstructions: string; deliveryInstructions: string;
+  collectionSchedule?: CollectionSchedule;
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
   rateRequestId?: number;
   testAttemptReference?: string;

@@ -93,6 +93,9 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
         || !Array.isArray(before.order_items) || before.order_items.some(item => Number(record(item).fulfilled_qty || 0) !== 0)) throw new LinkedBookingConflict();
       assertNoFulfillments(await readActive(state, before, priorMatches ? state.job.requestSnapshot! : state.expected));
       const resolved = await resolveCourierPlan(state.order.courierPlan!, parcel);
+      // The public direct-shipment API documents time windows. The linked
+      // fulfilment transport does not: never silently discard a chosen schedule.
+      if (resolved.plan.collectionSchedule) throw new LinkedBookingConflict("Collection scheduling has not been verified for linked sales-channel bookings. No quote or waybill was requested.");
       const snapshot: CourierBookingSnapshot = { collection: resolved.collection, delivery: resolved.delivery,
         collectionInstructions: resolved.plan.collectionInstructions, deliveryInstructions: resolved.plan.deliveryInstructions,
         providerSlug: "", providerName: "", serviceCode: "", serviceName: "", amount: 0 };

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeCheckoutPhone, normalizeCheckoutProvince, southAfricanProvinces } from "./checkout-input.ts";
+import { collectionScheduleProblem } from "./shipping/collection-schedule.ts";
 
 export const courierAddressInput = z.object({
   company: z.string().trim().max(150).default(""),
@@ -32,7 +33,12 @@ export const courierPlanInput = z.object({
   collectionInstructions: z.string().trim().max(1000).default(""),
   deliveryInstructions: z.string().trim().max(1000).default(""),
   customerApprovedPickup: z.boolean().default(false),
+  collectionSchedule: z.object({ date: z.string(), after: z.string(), before: z.string() }).optional(),
 }).superRefine((plan, context) => {
+  if (plan.collectionSchedule) {
+    const problem = plan.collection.kind !== "door" ? "Collection scheduling applies only when a courier collects from an address." : collectionScheduleProblem(plan.collectionSchedule);
+    if (problem) context.addIssue({ code: "custom", path: ["collectionSchedule"], message: problem });
+  }
   if (plan.collection.kind === "pickup_point" && plan.delivery.kind === "pickup_point"
     && plan.collection.point.providerSlug !== plan.delivery.point.providerSlug) {
     context.addIssue({ code: "custom", path: ["delivery", "point"], message: "Both pickup points must use the same courier." });

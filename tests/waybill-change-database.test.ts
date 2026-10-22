@@ -61,7 +61,7 @@ test("waybill changes use verified cancellation, preserve history and never repe
     const service = createWaybillChanges(database, config, provider), admin = load("lib/admin-data.ts"), management = load("lib/delivery-management.ts"), shipping = load("lib/integrations/bobgo/shipping.ts");
     const contact = { name: "TEST Contact", email: "contact@example.invalid", phone: "0821234567" };
     const address = { company: "", line1: "20 Test Road", line2: "", suburb: "Test Suburb", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
-    const door = { kind: "door", contact, address }, plan = { version: 1, collection: door, delivery: door, collectionInstructions: "Call at gate", deliveryInstructions: "Use bell", customerApprovedPickup: false };
+    const door = { kind: "door", contact, address }, plan = { version: 1, collection: door, delivery: door, collectionInstructions: "Call at gate", deliveryInstructions: "Use bell", customerApprovedPickup: false, collectionSchedule: { date: "2099-07-16", after: "09:00", before: "16:00" } };
     const endpoint = { kind: "door", contact, address: { company: "", street_address: address.line1, local_area: address.suburb, city: address.city, zone: address.province, code: address.postalCode, country: "ZA" } };
     const snapshot = { collection: endpoint, delivery: endpoint, collectionInstructions: "Call", deliveryInstructions: "Gate", providerSlug: "ie", providerName: "Internet Express", serviceCode: "ECO", serviceName: "Economy", amount: 99 };
     async function seed(options: { status?: string; remoteStatus?: string; pickup?: boolean } = {}) {

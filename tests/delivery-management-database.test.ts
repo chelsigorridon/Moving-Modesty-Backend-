@@ -68,7 +68,8 @@ test("delivery editing and all courier routes preserve payments, quotes and book
     const contact = { name: "TEST Contact", email: "contact@example.invalid", phone: "0821234567" };
     const door = { kind: "door", contact, address: { company: "", line1: "20 Test Road", line2: "", suburb: "Test Suburb", city: "Cape Town", province: "western cape", postalCode: "7800" } };
     const point = { kind: "pickup_point", contact, point: { id: "1156", providerSlug: "ie", name: "Untrusted display name" } };
-    const plan = { version: 1, collection: door, delivery: door, collectionInstructions: "Call at gate", deliveryInstructions: "Use bell", customerApprovedPickup: false };
+    const schedule = { date: "2099-07-16", after: "09:00", before: "16:00" };
+    const plan = { version: 1, collection: door, delivery: door, collectionInstructions: "Call at gate", deliveryInstructions: "Use bell", customerApprovedPickup: false, collectionSchedule: schedule };
     const parcel = { weightGrams: 412, lengthCm: 25, widthCm: 20.5, heightCm: 3.5 };
     async function seed(number: string) {
       const id = randomUUID(), customerId = randomUUID(), addressId = randomUUID();
@@ -157,7 +158,7 @@ test("delivery editing and all courier routes preserve payments, quotes and book
     await t.test("pickup points are verified server-side and support all remaining route combinations", async () => {
       for (const [index, collection, delivery] of [[1, point, door], [2, door, { ...point, point: { ...point.point, id: "2000" } }], [3, point, point]] as const) {
         const number = `MM-POINT-${index}`; await seed(number);
-        await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan: { ...plan, collection, delivery, customerApprovedPickup: true } }, "owner@example.invalid");
+        await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan: { ...plan, collection, delivery, collectionSchedule: collection.kind === "door" ? schedule : undefined, customerApprovedPickup: true } }, "owner@example.invalid");
         const rates = await shipping.getCourierQuotes(number, parcel, false);
         assert.equal(rates.rates.length, 1, "Pickup-point rates stay with the verified point provider");
         assert.equal((await shipping.bookCourierShipment(number, rates.rates[0].quoteToken)).booked, true);
@@ -178,6 +179,45 @@ test("delivery editing and all courier routes preserve payments, quotes and book
       assert.equal((await shipping.bookCourierShipment("MM-PENDING-TEST", rates.rates[0].quoteToken)).booked, false);
       await assert.rejects(management.saveOrderDelivery("MM-PENDING-TEST", { action: "delivery", expectedRevision: 1, confirmed: true, plan }, "owner@example.invalid"), /processing/);
       pendingBooking = false;
+    });
+    await t.test("per-order scheduling reaches quotes and shipments, invalidates stale quotes, and is never remembered for future orders", async () => {
+      const number = "MM-SCHEDULE-TEST", id = await seed(number);
+      const noSchedule = { ...plan, collectionSchedule: undefined };
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan: noSchedule }, "owner@example.invalid");
+      const before = calls.length;
+      await assert.rejects(shipping.getCourierQuotes(number, parcel, false), /Choose a collection date/);
+      assert.equal(calls.length, before, "Missing schedule must fail before provider access");
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 1, confirmed: true, plan, rememberCollection: true }, "owner@example.invalid");
+      const originalQuote = await shipping.getCourierQuotes(number, parcel, false);
+      assert.equal(calls.filter(call => call.path === "/rates").at(-1)!.body.requested_collection_date, `${schedule.date}T09:00:00+02:00`);
+      const changed = { ...plan, collectionSchedule: { ...schedule, after: "10:00", before: "15:00" } };
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 2, confirmed: true, plan: changed }, "owner@example.invalid");
+      const shipmentCount = calls.filter(call => call.path === "/shipments").length;
+      await assert.rejects(shipping.bookCourierShipment(number, originalQuote.rates[0].quoteToken), /changed/);
+      assert.equal(calls.filter(call => call.path === "/shipments").length, shipmentCount);
+      const fresh = await shipping.getCourierQuotes(number, parcel, false);
+      await shipping.bookCourierShipment(number, fresh.rates[0].quoteToken);
+      const body = calls.filter(call => call.path === "/shipments").at(-1)!.body;
+      assert.equal(body.collection_min_date, `${schedule.date}T10:00:00+02:00`); assert.equal(body.collection_after, "10:00:00"); assert.equal(body.collection_before, "15:00:00");
+      const stored = (await postgres.query<Record<string, any>>("select courier_plan, total, delivery_fee from orders where id=$1", [id])).rows[0];
+      assert.deepEqual(stored.courier_plan.collectionSchedule, changed.collectionSchedule);
+      assert.equal(Number(stored.total), 549); assert.equal(Number(stored.delivery_fee), 99);
+      const remembered = (await postgres.query<Record<string, any>>("select collection from courier_settings where id='sender'")).rows[0];
+      assert.equal(remembered.collection.collectionSchedule, undefined);
+    });
+    await t.test("a still-signed quote cannot book after the requested collection window ends", async () => {
+      const realNow = Date.now;
+      let now = Date.parse("2031-07-16T14:59:00+02:00"); Date.now = () => now;
+      try {
+        const number = "MM-SCHEDULE-EXPIRED"; await seed(number);
+        const scheduled = { ...plan, collectionSchedule: { date: "2031-07-16", after: "09:00", before: "15:00" } };
+        await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan: scheduled }, "owner@example.invalid");
+        const quote = await shipping.getCourierQuotes(number, parcel, false), before = calls.length;
+        now = Date.parse("2031-07-16T15:01:00+02:00");
+        assert.ok(quote.expires > now, "The signed quote is still within its ten-minute life");
+        await assert.rejects(shipping.bookCourierShipment(number, quote.rates[0].quoteToken), /window has passed/);
+        assert.equal(calls.length, before, "Expired collection windows cannot submit a provider booking");
+      } finally { Date.now = realNow; }
     });
     await t.test("archived, unpaid, collection and completed orders reject delivery rewrites", async () => {
       for (const [index, change] of [{ archivedAt: new Date() }, { paymentStatus: "pending" }, { deliveryMethod: "collection" }, { status: "delivered" }].entries()) {

@@ -14,6 +14,7 @@ import { createDirectShipmentTracking } from "./tracking";
 import { assertCourierTestCanQuote, assertCourierTestBookingApproval, reserveCourierTestAttempt } from "../../live-courier-test";
 import { configuredLinkedBooking } from "./linked-booking-runtime";
 import { LinkedBookingConflict } from "./linked-booking-policy";
+import { collectionScheduleProblem } from "../../shipping/collection-schedule";
 
 export class ShippingConflict extends Error {}
 const database = () => requireDatabase();
@@ -93,6 +94,10 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
   await assertCanBook(data);
   if (await hasSubmittedChannelOrder(data.order.id)) return linkedAction(() => configuredLinkedBooking().quotes(orderNumber, parcel, additionalCover));
   await assertIndependentBookingAllowed(database(), data.order.id);
+  if (data.order.courierPlan?.collection.kind === "door") {
+    const problem = collectionScheduleProblem(data.order.courierPlan.collectionSchedule, true);
+    if (problem) throw new ShippingConflict(problem);
+  }
   const requestedFingerprint = orderFingerprint(data, parcel);
   const config = getBobGoConfiguration();
   const resolved = data.order.courierPlan ? await resolveCourierPlan(data.order.courierPlan, parcel, { operation: "courier_quote", orderId: data.order.id }) : null;
@@ -142,7 +147,8 @@ export async function getCourierQuotes(orderNumber: string, input: unknown, addi
     quoteToken: signQuote({ ...rate, version: resolved ? 2 : 1, rateRequestId: selectedRateRequestId, orderNumber, fingerprint: orderFingerprint(data, savedParcel), expires,
       environment: config.environment, parcel: savedParcel, collectionAddress: location.address, declaredValue,
       ...(resolved ? { deliverySnapshot: { collection: resolved.collection, delivery: resolved.delivery,
-        collectionInstructions: resolved.plan.collectionInstructions, deliveryInstructions: resolved.plan.deliveryInstructions, rateRequestId: selectedRateRequestId, ...rate } } : {}) }, secret()) })) };
+        collectionInstructions: resolved.plan.collectionInstructions, deliveryInstructions: resolved.plan.deliveryInstructions,
+        ...(resolved.collection.kind === "door" && resolved.plan.collectionSchedule ? { collectionSchedule: resolved.plan.collectionSchedule } : {}), rateRequestId: selectedRateRequestId, ...rate } } : {}) }, secret()) })) };
 }
 export async function bookCourierShipment(orderNumber: string, quoteToken: string, testCostApproval = "") {
   let quote: ApprovedQuote;
@@ -152,6 +158,11 @@ export async function bookCourierShipment(orderNumber: string, quoteToken: strin
   if (!Number.isSafeInteger(quote.rateRequestId) || Number(quote.rateRequestId) <= 0) throw new ShippingConflict("Get a fresh courier quote before booking.");
   const data = await loadOrder(orderNumber);
   await assertCanBook(data);
+  if (data.order.courierPlan?.collection.kind === "door") {
+    const problem = collectionScheduleProblem(data.order.courierPlan.collectionSchedule, true);
+    if (problem) throw new ShippingConflict(problem);
+    if (!quote.deliverySnapshot?.collectionSchedule || fingerprint(quote.deliverySnapshot.collectionSchedule) !== fingerprint(data.order.courierPlan.collectionSchedule)) throw new ShippingConflict("Collection schedule changed. Get a fresh courier quote.");
+  }
   const liveTest = quote.environment === "production" && data.paymentProvider === "payfast-sandbox";
   if (liveTest) {
     try { await assertCourierTestBookingApproval(database(), data.order, quoteToken, testCostApproval); }
@@ -166,6 +177,10 @@ export async function bookCourierShipment(orderNumber: string, quoteToken: strin
     await assertCanBook(current, transaction);
     await assertIndependentBookingAllowed(transaction, locked.id);
     if (quote.fingerprint !== orderFingerprint(current, shipmentParcel(current))) throw new ShippingConflict("Order or parcel details changed. Get a new courier quote.");
+    if (locked.courierPlan?.collection.kind === "door") {
+      const problem = collectionScheduleProblem(locked.courierPlan.collectionSchedule, true);
+      if (problem) throw new ShippingConflict(problem);
+    }
     if (liveTest) await reserveCourierTestAttempt(transaction, locked, quoteToken, testCostApproval, attemptReference);
     // Commit a durable lock BEFORE the chargeable POST. Never release it on an unknown outcome.
     await transaction.update(shipments).set({ provider: `bobgo-${quote.environment}`, status: "booking", waybillReference: attemptReference,
