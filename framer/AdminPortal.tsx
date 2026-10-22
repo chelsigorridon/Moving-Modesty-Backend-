@@ -138,6 +138,7 @@ interface CourierQuote {
 interface ShippingResult {
     order?: AdminOrder
     rates?: CourierQuote[]
+    collectionDropOff?: PickupPoint | null
     expires?: number
     declaredValue?: number
     environment?: "sandbox" | "production"
@@ -1098,7 +1099,7 @@ function OrdersView({
                         </Detail>
                         {selected.deliveryMethod === "Courier" && selected.shipping &&
                             ((selected.paymentStatus === "Paid" && selected.status === "Ready") || ["Booking", "Booked", "Failed"].includes(selected.shipping.status)) ? (
-                            <div ref={courierRef} tabIndex={-1} aria-label="Book this order's waybill"><ShippingPanel key={`${selected.id}:${selected.deliveryDetails?.revision || 0}`} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} /></div>
+                            <div ref={courierRef} tabIndex={-1} aria-label="Book this order's waybill"><ShippingPanel key={selected.id} order={selected} loading={loading} connection={bobGoConnection} requestShipping={requestShipping} confirm={setConfirmation} /></div>
                         ) : null}
                         <details key={`notifications-${selected.id}`} className="mm-admin__technical" open={notificationsOpen} onToggle={event => setNotificationsOpen(event.currentTarget.open)}>
                             <summary>Email notifications{selected.notifications?.some(event => event.status === "failed") ? " · Action needed" : ""}</summary>
@@ -1295,40 +1296,63 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const shipping = order.shipping!
     const [parcel, setParcel] = useState({ weightGrams: String(shipping.weightGrams || ""), lengthCm: String(shipping.lengthCm || (shipping.status === "Booked" || shipping.status === "Booking" ? "" : movingModestyBoxPreset.lengthCm)), widthCm: String(shipping.widthCm || (shipping.status === "Booked" || shipping.status === "Booking" ? "" : movingModestyBoxPreset.widthCm)), heightCm: String(shipping.heightCm || (shipping.status === "Booked" || shipping.status === "Booking" ? "" : movingModestyBoxPreset.heightCm)) })
     const [measured, setMeasured] = useState(false)
-    const [quote, setQuote] = useState<ShippingResult | null>(null)
+    const [quote, setQuote] = useState<(ShippingResult & { deliveryRevision?: number }) | null>(null)
     const [quoteIndex, setQuoteIndex] = useState(0)
     const [waybill, setWaybill] = useState("")
     const [editingDelivery, setEditingDelivery] = useState(false)
     const [reviewDetails, setReviewDetails] = useState(false)
     const [error, setError] = useState("")
+    const [changingCollection, setChangingCollection] = useState(false)
+    const homeCollection = useRef(order.deliveryDetails?.plan?.collection.kind === "door" ? {
+        endpoint: order.deliveryDetails.plan.collection, schedule: order.deliveryDetails.plan.collectionSchedule,
+    } : null)
     const pending = shipping.status === "Booking"
     const booked = shipping.status === "Booked"
     const cancellationPending = order.deliveryDetails?.waybillChange?.action === "check_cancellation"
     const liveBookingForTest = connection?.environment === "production" && order.payment?.environment === "sandbox"
     const scheduleProblem = order.deliveryDetails?.plan?.collection.kind === "door" ? collectionScheduleProblem(order.deliveryDetails.plan.collectionSchedule, true) : ""
     const canQuote = !editingDelivery && !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && (connection.configured || order.deliveryDetails?.plan))
-    const rate = quote?.rates?.[quoteIndex]
+    const currentQuote = quote?.deliveryRevision === order.deliveryDetails?.revision ? quote : null
+    const rate = currentQuote?.rates?.[quoteIndex]
     const cancelled = shipping.status === "Cancelled" || order.deliveryDetails?.waybillChange?.action === "prepare_replacement"
-    const progressStep = cancelled || cancellationPending || editingDelivery || reviewDetails || !booked && !pending && Boolean(scheduleProblem) ? 1 : booked ? 4 : pending ? 3 : order.deliveryDetails && !order.deliveryDetails.plan ? 1 : rate ? 3 : 2
+    const progressStep = cancelled || cancellationPending || editingDelivery || reviewDetails || !booked && !pending && Boolean(scheduleProblem) ? 1 : booked ? 4 : pending || changingCollection ? 3 : order.deliveryDetails && !order.deliveryDetails.plan ? 1 : rate ? 3 : 2
     const quoteHintId = useId()
+    const collectionChoiceStyle = (selected: boolean): CSSProperties => ({ minHeight: 48, whiteSpace: "normal", textAlign: "left", lineHeight: 1.4,
+        ...(selected ? { background: "var(--mm-soft)", boxShadow: "inset 3px 0 var(--mm-sage)", borderColor: "var(--mm-sage)" } : {}) })
     const missingMeasurements = Object.entries(parcel).some(([key, value]) => {
         const amount = Number(value)
         return !Number.isFinite(amount) || amount < (key === "weightGrams" ? 1 : 0.01) || amount > (key === "weightGrams" ? 30000 : 150) || key === "weightGrams" && !Number.isInteger(amount)
     })
 
-    async function run(action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}) {
+    async function run(action: "quote" | "book" | "refresh" | "waybill", payload: Record<string, unknown> = {}, sourceOrder = order) {
         startTransition(() => setError(""))
         try {
-            const result = await requestShipping(order, action, payload)
+            const result = await requestShipping(sourceOrder, action, payload)
             if (action === "quote" && !result.rates?.length) throw new Error("No courier services found. Check the address, pickup point and parcel, then try again.")
             startTransition(() => {
-                if (action === "quote") { setQuote(result); setQuoteIndex(0) }
+                if (action === "quote") { setQuote({ ...result, deliveryRevision: sourceOrder.deliveryDetails?.revision }); setQuoteIndex(0) }
                 if (action === "book") setQuote(null)
                 if (action === "waybill" && result.url) setWaybill(result.url)
             })
         } catch (caught) {
             startTransition(() => { setError(caught instanceof Error ? caught.message : "Courier request failed."); if (action === "book") setQuote(null) })
         }
+    }
+    async function compareCollection(endpoint: CourierEndpoint, schedule?: CollectionSchedule) {
+        const details = order.deliveryDetails
+        if (!details?.plan || !details.canEdit || loading || changingCollection || booked || pending || cancelled) return
+        if (details.plan.delivery.kind !== "door") { setError("Confirm the customer’s home delivery address before comparing couriers."); return }
+        if (!currentQuote?.expires || currentQuote.expires <= Date.now()) { setError("These prices expired. Compare couriers again."); setQuote(null); return }
+        if (details.plan.collection.kind === "door") homeCollection.current = { endpoint: details.plan.collection, schedule: details.plan.collectionSchedule }
+        setChangingCollection(true); setQuote(null); setError("")
+        try {
+            const saved = await requestShipping(order, "save_delivery", { action: "delivery", expectedRevision: details.revision,
+                plan: { ...details.plan, collection: endpoint, collectionSchedule: endpoint.kind === "door" ? schedule : undefined,
+                    delivery: details.plan.delivery, customerApprovedPickup: false }, confirmed: true, rememberCollection: false })
+            if (!saved.order || saved.order.deliveryDetails?.revision === details.revision) throw new Error("Collection details saved. Refresh the order and compare couriers again.")
+            await run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }, saved.order)
+        } catch (caught) { setError(caught instanceof Error ? caught.message : "Collection could not be changed. Refresh and compare again.") }
+        finally { setChangingCollection(false) }
     }
     function book() {
         if (!rate || !quote?.expires || quote.expires <= Date.now()) { setError("This quote expired. Get a new quote."); setQuote(null); return }
@@ -1342,7 +1366,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             description: `${order.id}: ${rate.providerName} · ${rate.serviceName} (${rate.serviceCode}), quoted ${courierMoney.format(rate.amount)}. Parcel ${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm, ${parcel.weightGrams} g. ${routeDescription} ${quote.declaredValue ? `Declared-value cover requested for ${courierMoney.format(quote.declaredValue)}; courier terms apply.` : "No additional declared-value cover requested; only the courier's standard terms apply."} ${quote.environment === "production" ? "This creates a real waybill and may charge Zarina's Bob Go account. Final courier charges can differ from the quote." : "Sandbox test only."} Booking the courier does not charge the customer again.`,
             run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
     }
-    const deliveryEditor = order.deliveryDetails ? <EmbeddedDeliveryEditor guided details={order.deliveryDetails} disabled={loading}
+    const deliveryEditor = order.deliveryDetails ? <EmbeddedDeliveryEditor key={order.deliveryDetails.revision} guided details={order.deliveryDetails} disabled={loading || changingCollection}
         onContinue={() => setReviewDetails(false)}
         onEditingChange={editing => { setEditingDelivery(editing); setReviewDetails(editing); setQuote(null); setMeasured(false) }}
         changeWaybill={async payload => { setQuote(null); setMeasured(false); setWaybill(""); await requestShipping(order, payload.action as Parameters<ShippingRequest>[1], payload) }}
@@ -1353,7 +1377,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
         <EmbeddedDeliveryProgress current={progressStep} paused={cancelled || cancellationPending} />
         {!order.deliveryDetails ? <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p> : null}
-        <EmbeddedDeliveryStepFlow current={progressStep} locked={booked || pending || cancelled || cancellationPending || loading} onReview={step => { setReviewDetails(step === 1); setQuote(null); setMeasured(false) }}>
+        <EmbeddedDeliveryStepFlow current={progressStep} locked={booked || pending || cancelled || cancellationPending || loading || changingCollection} onReview={step => { setReviewDetails(step === 1); setQuote(null); setMeasured(false) }}>
         {deliveryEditor}
         {canQuote && (!order.deliveryDetails || order.deliveryDetails.plan) ? <div>
             <EmbeddedParcelEditor value={parcel} disabled={loading} change={value => { setParcel(value); setMeasured(false); setQuote(null) }}
@@ -1362,8 +1386,16 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             <p id={quoteHintId} className="mm-admin__helper mm-delivery__action-hint">{loading ? "Please wait." : scheduleProblem || (missingMeasurements ? "Enter valid box dimensions and a packed weight (1–30,000 g)." : !measured ? "Tick to confirm the parcel." : "Comparing prices does not book a courier.")}</p>
             <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" aria-describedby={quoteHintId} disabled={loading || !measured || missingMeasurements || Boolean(scheduleProblem)} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }) }}>{loading ? "Comparing…" : "Compare couriers"}</button></div>
         </div> : null}
-        <div>{pending ? <><p>Waiting for Bob Go to confirm the booking. Don’t book again.</p><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button></> : rate ? <div className="mm-admin__quote">
-            <h4>3. Choose a courier</h4><label className="mm-admin__field">Courier and service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.providerName}-${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
+        <div>{pending ? <><p>Waiting for Bob Go to confirm the booking. Don’t book again.</p><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button></> : changingCollection ? <p role="status">Comparing prices for the new collection method… No waybill is being booked.</p> : rate ? <div className="mm-admin__quote">
+            <h4>3. Choose a courier</h4>
+            {currentQuote?.collectionDropOff && order.deliveryDetails?.plan ? <div className="mm-delivery__method-choices" role="group" aria-label="How Zarina sends the parcel" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8, marginBottom: 4, minWidth: 0 }}>
+                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(order.deliveryDetails.plan.collection.kind === "door")} aria-pressed={order.deliveryDetails.plan.collection.kind === "door"} disabled={loading || !order.deliveryDetails.canEdit}
+                    onClick={() => { if (order.deliveryDetails?.plan?.collection.kind === "door") return; const saved = homeCollection.current; if (saved) void compareCollection(saved.endpoint, saved.schedule); else { setQuote(null); setReviewDetails(true) } }}>Courier collects from Zarina</button>
+                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(order.deliveryDetails.plan.collection.kind === "pickup_point")} aria-pressed={order.deliveryDetails.plan.collection.kind === "pickup_point"} disabled={loading || !order.deliveryDetails.canEdit}
+                    onClick={() => { if (order.deliveryDetails?.plan?.collection.kind === "pickup_point") return; const contact = order.deliveryDetails?.plan?.collection.contact, point = currentQuote.collectionDropOff; if (contact && point) void compareCollection({ kind: "pickup_point", contact, point }) }}>Locker drop-off · {currentQuote.collectionDropOff.name}</button>
+            </div> : null}
+            <p className="mm-admin__helper">{order.deliveryDetails?.plan?.collection.kind === "pickup_point" ? "Zarina takes the parcel to the locker." : "The courier collects from Zarina’s address."} Both options deliver to the customer’s home.</p>
+            <label className="mm-admin__field">Courier and service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.providerName}-${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
             <p><strong>Courier cost: {courierMoney.format(rate.amount)}</strong></p>
             <p className="mm-admin__helper">Paid by Zarina to Bob Go. Customer paid {order.deliveryFee === undefined ? "delivery at checkout" : order.deliveryFee === 0 ? "no delivery fee" : money.format(order.deliveryFee) + " delivery"}.</p>
             <details className="mm-admin__technical"><summary>Quote details</summary><p className="mm-admin__helper">All available services returned by Bob Go are shown. Locker choices may limit couriers. Quotes expire after 10 minutes; final courier charges can vary. Standard courier liability only; no additional cover is requested.</p></details>
@@ -2361,7 +2393,6 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
   const [saving, setSaving] = useState(false);
   const [plan, setPlan] = useState<CourierPlan>(() => structuredClone(details.draftPlan));
   const [confirmed, setConfirmed] = useState(false);
-  const [approvedPickup, setApprovedPickup] = useState(details.draftPlan.customerApprovedPickup);
   const [remember, setRemember] = useState(false);
   const [note, setNote] = useState(details.privateNote);
   const [error, setError] = useState("");
@@ -2387,7 +2418,6 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
     setPlan(current => ({ ...current, [side]: endpoint, ...(side === "collection" && endpoint.kind === "pickup_point" ? { collectionSchedule: undefined } : {}) })); setConfirmed(false);
     if (endpoint.kind === "door") doorAddresses.current[side] = endpoint.address;
-    if (side === "delivery") setApprovedPickup(false);
   }
   function changeKind(side: "collection" | "delivery", kind: "door" | "pickup_point") {
     const current = plan[side];
@@ -2413,11 +2443,8 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     event.preventDefault(); setError(""); setMessage("");
     // Read this component's own form at submit time, including silent autofill.
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
+    if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "pickup_point" && next.delivery.kind === "pickup_point" && next.collection.point.providerSlug !== next.delivery.point.providerSlug) {
-      setError("Both pickup points must belong to the same courier. Choose another point or use door delivery."); return;
-    }
-    if (next.delivery.kind === "pickup_point" && !next.customerApprovedPickup) { setError("Confirm that the customer agreed to collect from this pickup point."); return; }
     if (next.collection.kind === "door") { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
@@ -2445,7 +2472,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
       : { kind, contact: endpoint.contact, point: { id: "", providerSlug: "", name: "" } };
     if (next.collection.kind === "pickup_point") next.collectionSchedule = undefined;
     setScheduleOnly(onlySchedule);
-    setPlan(next); setEditSide(side); setApprovedPickup(side === "delivery" ? false : next.customerApprovedPickup); setRemember(false);
+    setPlan(next); setEditSide(side); setRemember(false);
     setError(""); setMessage(""); setConfirmed(false); setEditing(true); onEditingChange?.(true);
   }
   const action = details.waybillChange?.action;
@@ -2479,7 +2506,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         {details.collectionTimeMode === "preferred_instructions" ? <p className="mm-admin__helper">Hours are sent as a preferred driver note, not a booked time slot.</p> : null}
         {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled || saving} onClick={() => edit("collection", undefined, true)}>{shownPlan.collectionSchedule ? "Change collection date / time" : "Choose collection date / time"}</button> : null}
         {!guided ? <p className="mm-admin__helper">Requested window, not a guaranteed appointment. Courier cut-offs and business days apply.</p> : null}</div> : null}
-      {details.canEdit && !editing && !guided ? <>
+      {details.canEdit && !editing && !guided && side === "collection" ? <>
         <div className="mm-delivery__method-choices" role="group" aria-label={side === "collection" ? "How Zarina sends the parcel" : "How the customer receives the parcel"}>
           {(["door", "pickup_point"] as const).map(kind => <button key={kind} type="button" disabled={disabled || saving}
             className={shownPlan[side].kind === kind ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={shownPlan[side].kind === kind}
@@ -2518,6 +2545,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     }}><fieldset disabled={disabled || saving} className="mm-delivery__fieldset">
       {editing ? <><p className="mm-admin__helper">{scheduleOnly ? "Update collection for this parcel." : "The other address stays unchanged."}</p>
       {!scheduleOnly ? <DeliveryEndpointFields key={editSide} side={editSide} value={plan[editSide]}
+        allowCollectionMethodChoice={!guided || details.draftPlan.collection.kind === "pickup_point"}
         changeKind={kind => changeKind(editSide, kind)} change={value => changeEndpoint(editSide, value)} searchPoints={searchPoints} /> : null}
       <details><summary>Courier instructions (optional)</summary><div className="mm-delivery__grid">
         <label className="mm-admin__field">Collection instructions<textarea name="collectionInstructions" maxLength={1000} rows={3} value={plan.collectionInstructions}
@@ -2537,7 +2565,6 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
             onChange={event => setPlan(current => ({ ...current, collectionSchedule: { date: current.collectionSchedule?.date || "", after: current.collectionSchedule?.after || "", before: event.target.value } }))} /></label>
         </div><details><summary>Collection timing</summary><p className="mm-admin__helper">Courier cut-offs and business days apply. Bob Go may move collection to the next available business day.</p></details>
       </section> : null}
-      {plan.delivery.kind === "pickup_point" ? <label className="mm-delivery__check"><input type="checkbox" name="approvedPickup" required checked={approvedPickup} onChange={event => setApprovedPickup(event.target.checked)} />The customer agreed to collect from this pickup point.</label> : null}
       {editing && editSide === "collection" && !scheduleOnly ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders. The date and time are for this order only.</label> : null}
       <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label>
       <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
@@ -2554,7 +2581,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
   </section>;
 }
 
-function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints }: { side: "collection" | "delivery"; value: CourierEndpoint;
+function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints, allowCollectionMethodChoice = true }: { side: "collection" | "delivery"; value: CourierEndpoint; allowCollectionMethodChoice?: boolean;
   change: (value: CourierEndpoint) => void; changeKind: (kind: "door" | "pickup_point") => void; searchPoints: DeliveryEditorProps["searchPoints"] }) {
   const [query, setQuery] = useState(""); const [points, setPoints] = useState<DeliveryPointResult[]>([]);
   const [searching, setSearching] = useState(false); const [error, setError] = useState(""); const [searched, setSearched] = useState(false); const [limited, setLimited] = useState(false);
@@ -2567,12 +2594,13 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
   }
   const title = side === "collection" ? "Collection details" : "Customer delivery";
   return <section className="mm-delivery__endpoint" aria-label={side === "collection" ? "Sender collection details" : "Customer delivery details"}>
-    <h4>{title}</h4><label className="mm-admin__field">{side === "collection" ? "Collection method" : "Delivery method"}
+    <h4>{title}</h4>{side === "collection" && allowCollectionMethodChoice ? <label className="mm-admin__field">Collection method
       <select name={`${side}.kind`} value={value.kind} onChange={event => changeKind(event.target.value as "door" | "pickup_point")}>
-        <option value="door">{side === "collection" ? "Courier collects from an address" : "Deliver to the customer's door"}</option>
-        <option value="pickup_point">{side === "collection" ? "Zarina drops off at a locker or counter" : "Customer collects at a locker or counter"}</option>
-      </select></label>
-    {value.kind === "pickup_point" ? <div className="mm-delivery__point-search">
+        <option value="door">Courier collects from an address</option>
+        <option value="pickup_point">Zarina drops off at a locker or counter</option>
+      </select></label> : side === "delivery" ? <p className="mm-admin__helper">The parcel is delivered to the customer’s home address.</p> : null}
+    {value.kind === "pickup_point" && side === "delivery" ? <button type="button" className="mm-admin__secondary-button" onClick={() => changeKind("door")}>Enter customer’s home address</button> : null}
+    {value.kind === "pickup_point" && side === "collection" ? <div className="mm-delivery__point-search">
       <label className="mm-admin__field">Find a Bob Go pickup point<input name={`${side}.search`} value={query} maxLength={100} onChange={event => setQuery(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} placeholder="Place name, suburb or postcode" autoComplete="off" /></label>
       <button type="button" className="mm-admin__secondary-button" disabled={searching} onClick={() => { void search(); }}>{searching ? "Searching…" : "Search pickup points"}</button>
@@ -2585,7 +2613,7 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
       {limited ? <p>Narrow your search to see more relevant results.</p> : null}
       <p className="mm-admin__helper">Available couriers depend on the selected point.</p>
       {error ? <p role="alert" className="mm-admin__error">{error}</p> : null}
-    </div> : <div className="mm-delivery__grid">{([
+    </div> : value.kind === "door" ? <div className="mm-delivery__grid">{([
       ["company", "Company (optional)", false], ["line1", "Street address", true], ["line2", "Unit / building (optional)", false],
       ["suburb", "Suburb", true], ["city", "City", true], ["postalCode", "Postal code", true],
     ] as const).map(([key, label, required]) => <label className="mm-admin__field" key={key}>{label}<input name={`${side}.${key}`} required={required}
@@ -2594,7 +2622,7 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
       onChange={event => change({ ...value, address: { ...value.address, [key]: event.target.value } })} /></label>)}
       <label className="mm-admin__field">Province<select name={`${side}.province`} value={value.address.province} autoComplete={`section-${side} address-level1`}
         onChange={event => change({ ...value, address: { ...value.address, province: event.target.value as CourierAddress["province"] } })}>{deliveryProvinces.map(province => <option key={province}>{province}</option>)}</select></label>
-    </div>}
+    </div> : null}
     <div className="mm-delivery__grid">{([ ["name", "Courier contact name", "text"], ["email", "Courier contact email", "email"], ["phone", "Courier contact phone", "tel"] ] as const)
       .map(([key, label, type]) => <label className="mm-admin__field" key={key}>{label}<input required type={type} name={`${side}.${key}`} maxLength={key === "phone" ? 30 : key === "email" ? 180 : 160}
         autoComplete={`section-${side} ${key === "name" ? "name" : key === "email" ? "email" : "tel"}`} value={value.contact[key]}

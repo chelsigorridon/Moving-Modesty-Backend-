@@ -3,7 +3,9 @@ import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 
 const address = { company: "", line1: "20 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
-const plan = { version: 1, collection: { kind: "door", address: { ...address, line1: "10 Example Street" }, contact: { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" } },
+type ReviewCollection = { kind: "door"; address: typeof address; contact: { name: string; email: string; phone: string } }
+  | { kind: "pickup_point"; point: { id: string; providerSlug: string; name: string }; contact: { name: string; email: string; phone: string } };
+const plan: { version: number; collection: ReviewCollection; delivery: { kind: string; address: typeof address; contact: { name: string; email: string; phone: string } }; collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean; collectionSchedule?: { date: string; after: string; before: string } } = { version: 1, collection: { kind: "door", address: { ...address, line1: "10 Example Street" }, contact: { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" } },
   delivery: { kind: "door", address, contact: { name: "TEST Customer", email: "customer@example.invalid", phone: "0827654321" } },
   collectionInstructions: "", deliveryInstructions: "", customerApprovedPickup: false, collectionSchedule: { date: "2099-07-16", after: "09:00", before: "16:00" } };
 const sampleOrder = { id: "MM-LOCAL-REVIEW", paymentStatus: "Paid", status: "Ready", deliveryMethod: "Courier", deliveryFee: 99,
@@ -31,15 +33,19 @@ export default function DeliveryResponseReview({ source }: { source: string }) {
     <style dangerouslySetInnerHTML={{ __html: `body{margin:0;background:#f5f3f0}${preview.styles}` }} />
     <h1 style={{ fontSize: 24 }}>Delivery · local review</h1>
     <p className="mm-admin__notice">Sample details and courier prices only. Nothing is sent or booked.</p>
-    <Panel key={`${order.id}:${order.deliveryDetails.revision}`} order={order} loading={false} connection={{ enabled: true, configured: true, environment: "production" }}
+    <Panel key={order.id} order={order} loading={false} connection={{ enabled: true, configured: true, environment: "production" }}
       requestShipping={async (_order, action, payload) => {
         if (action === "save_delivery") {
           if (payload.action !== "delivery") return {};
           const next = payload.plan as typeof plan;
-          setOrder(current => ({ ...current, deliveryDetails: { ...current.deliveryDetails, revision: current.deliveryDetails.revision + 1, plan: next, draftPlan: next } }));
-          setNotice("Sample address saved in this preview only."); return {};
+          if (next.delivery.kind !== "door" || JSON.stringify(next.delivery) !== JSON.stringify(order.deliveryDetails.plan.delivery)) throw new Error("The customer's home delivery must remain unchanged.");
+          const updated = { ...order, deliveryDetails: { ...order.deliveryDetails, revision: order.deliveryDetails.revision + 1, plan: next, draftPlan: next } };
+          setOrder(updated);
+          setNotice("Sample collection changed only. The customer’s home delivery stays unchanged."); return { order: updated };
         }
-        if (action === "quote") return { environment: "production", expires: Date.now() + 600000, declaredValue: 0, rates: [
+        if (action === "quote") return { environment: "production", expires: Date.now() + 600000, declaredValue: 0,
+          collectionDropOff: { id: "1156", providerSlug: "ie", name: "Constantia Emporium" },
+          rates: _order.deliveryDetails.plan.collection.kind === "pickup_point" ? [{ providerName: "Example eligible courier", serviceName: "Locker to door", serviceCode: "LOCKER-HOME", amount: 85, quoteToken: "LOCAL-ONLY-DROPOFF" }] : [
           { providerName: "Example Courier A", serviceName: "Economy", serviceCode: "ECO", amount: 95, quoteToken: "LOCAL-ONLY-A" },
           { providerName: "Example Courier B", serviceName: "Express", serviceCode: "EXP", amount: 115, quoteToken: "LOCAL-ONLY-B" },
           { providerName: "Example Courier C", serviceName: "Road", serviceCode: "ROAD", amount: 105, quoteToken: "LOCAL-ONLY-C" },

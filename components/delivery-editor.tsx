@@ -35,7 +35,6 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   const [saving, setSaving] = useState(false);
   const [plan, setPlan] = useState<CourierPlan>(() => structuredClone(details.draftPlan));
   const [confirmed, setConfirmed] = useState(false);
-  const [approvedPickup, setApprovedPickup] = useState(details.draftPlan.customerApprovedPickup);
   const [remember, setRemember] = useState(false);
   const [note, setNote] = useState(details.privateNote);
   const [error, setError] = useState("");
@@ -61,7 +60,6 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
     setPlan(current => ({ ...current, [side]: endpoint, ...(side === "collection" && endpoint.kind === "pickup_point" ? { collectionSchedule: undefined } : {}) })); setConfirmed(false);
     if (endpoint.kind === "door") doorAddresses.current[side] = endpoint.address;
-    if (side === "delivery") setApprovedPickup(false);
   }
   function changeKind(side: "collection" | "delivery", kind: "door" | "pickup_point") {
     const current = plan[side];
@@ -87,11 +85,8 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     event.preventDefault(); setError(""); setMessage("");
     // Read this component's own form at submit time, including silent autofill.
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
+    if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "pickup_point" && next.delivery.kind === "pickup_point" && next.collection.point.providerSlug !== next.delivery.point.providerSlug) {
-      setError("Both pickup points must belong to the same courier. Choose another point or use door delivery."); return;
-    }
-    if (next.delivery.kind === "pickup_point" && !next.customerApprovedPickup) { setError("Confirm that the customer agreed to collect from this pickup point."); return; }
     if (next.collection.kind === "door") { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
@@ -119,7 +114,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
       : { kind, contact: endpoint.contact, point: { id: "", providerSlug: "", name: "" } };
     if (next.collection.kind === "pickup_point") next.collectionSchedule = undefined;
     setScheduleOnly(onlySchedule);
-    setPlan(next); setEditSide(side); setApprovedPickup(side === "delivery" ? false : next.customerApprovedPickup); setRemember(false);
+    setPlan(next); setEditSide(side); setRemember(false);
     setError(""); setMessage(""); setConfirmed(false); setEditing(true); onEditingChange?.(true);
   }
   const action = details.waybillChange?.action;
@@ -153,7 +148,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
         {details.collectionTimeMode === "preferred_instructions" ? <p className="mm-admin__helper">Hours are sent as a preferred driver note, not a booked time slot.</p> : null}
         {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled || saving} onClick={() => edit("collection", undefined, true)}>{shownPlan.collectionSchedule ? "Change collection date / time" : "Choose collection date / time"}</button> : null}
         {!guided ? <p className="mm-admin__helper">Requested window, not a guaranteed appointment. Courier cut-offs and business days apply.</p> : null}</div> : null}
-      {details.canEdit && !editing && !guided ? <>
+      {details.canEdit && !editing && !guided && side === "collection" ? <>
         <div className="mm-delivery__method-choices" role="group" aria-label={side === "collection" ? "How Zarina sends the parcel" : "How the customer receives the parcel"}>
           {(["door", "pickup_point"] as const).map(kind => <button key={kind} type="button" disabled={disabled || saving}
             className={shownPlan[side].kind === kind ? "mm-admin__button" : "mm-admin__secondary-button"} aria-pressed={shownPlan[side].kind === kind}
@@ -192,6 +187,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     }}><fieldset disabled={disabled || saving} className="mm-delivery__fieldset">
       {editing ? <><p className="mm-admin__helper">{scheduleOnly ? "Update collection for this parcel." : "The other address stays unchanged."}</p>
       {!scheduleOnly ? <DeliveryEndpointFields key={editSide} side={editSide} value={plan[editSide]}
+        allowCollectionMethodChoice={!guided || details.draftPlan.collection.kind === "pickup_point"}
         changeKind={kind => changeKind(editSide, kind)} change={value => changeEndpoint(editSide, value)} searchPoints={searchPoints} /> : null}
       <details><summary>Courier instructions (optional)</summary><div className="mm-delivery__grid">
         <label className="mm-admin__field">Collection instructions<textarea name="collectionInstructions" maxLength={1000} rows={3} value={plan.collectionInstructions}
@@ -211,7 +207,6 @@ export default function DeliveryEditor({ details, disabled = false, save, search
             onChange={event => setPlan(current => ({ ...current, collectionSchedule: { date: current.collectionSchedule?.date || "", after: current.collectionSchedule?.after || "", before: event.target.value } }))} /></label>
         </div><details><summary>Collection timing</summary><p className="mm-admin__helper">Courier cut-offs and business days apply. Bob Go may move collection to the next available business day.</p></details>
       </section> : null}
-      {plan.delivery.kind === "pickup_point" ? <label className="mm-delivery__check"><input type="checkbox" name="approvedPickup" required checked={approvedPickup} onChange={event => setApprovedPickup(event.target.checked)} />The customer agreed to collect from this pickup point.</label> : null}
       {editing && editSide === "collection" && !scheduleOnly ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders. The date and time are for this order only.</label> : null}
       <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label>
       <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
@@ -228,7 +223,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   </section>;
 }
 
-function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints }: { side: "collection" | "delivery"; value: CourierEndpoint;
+function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints, allowCollectionMethodChoice = true }: { side: "collection" | "delivery"; value: CourierEndpoint; allowCollectionMethodChoice?: boolean;
   change: (value: CourierEndpoint) => void; changeKind: (kind: "door" | "pickup_point") => void; searchPoints: DeliveryEditorProps["searchPoints"] }) {
   const [query, setQuery] = useState(""); const [points, setPoints] = useState<DeliveryPointResult[]>([]);
   const [searching, setSearching] = useState(false); const [error, setError] = useState(""); const [searched, setSearched] = useState(false); const [limited, setLimited] = useState(false);
@@ -241,12 +236,13 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
   }
   const title = side === "collection" ? "Collection details" : "Customer delivery";
   return <section className="mm-delivery__endpoint" aria-label={side === "collection" ? "Sender collection details" : "Customer delivery details"}>
-    <h4>{title}</h4><label className="mm-admin__field">{side === "collection" ? "Collection method" : "Delivery method"}
+    <h4>{title}</h4>{side === "collection" && allowCollectionMethodChoice ? <label className="mm-admin__field">Collection method
       <select name={`${side}.kind`} value={value.kind} onChange={event => changeKind(event.target.value as "door" | "pickup_point")}>
-        <option value="door">{side === "collection" ? "Courier collects from an address" : "Deliver to the customer's door"}</option>
-        <option value="pickup_point">{side === "collection" ? "Zarina drops off at a locker or counter" : "Customer collects at a locker or counter"}</option>
-      </select></label>
-    {value.kind === "pickup_point" ? <div className="mm-delivery__point-search">
+        <option value="door">Courier collects from an address</option>
+        <option value="pickup_point">Zarina drops off at a locker or counter</option>
+      </select></label> : side === "delivery" ? <p className="mm-admin__helper">The parcel is delivered to the customer’s home address.</p> : null}
+    {value.kind === "pickup_point" && side === "delivery" ? <button type="button" className="mm-admin__secondary-button" onClick={() => changeKind("door")}>Enter customer’s home address</button> : null}
+    {value.kind === "pickup_point" && side === "collection" ? <div className="mm-delivery__point-search">
       <label className="mm-admin__field">Find a Bob Go pickup point<input name={`${side}.search`} value={query} maxLength={100} onChange={event => setQuery(event.target.value)}
         onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} placeholder="Place name, suburb or postcode" autoComplete="off" /></label>
       <button type="button" className="mm-admin__secondary-button" disabled={searching} onClick={() => { void search(); }}>{searching ? "Searching…" : "Search pickup points"}</button>
@@ -259,7 +255,7 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
       {limited ? <p>Narrow your search to see more relevant results.</p> : null}
       <p className="mm-admin__helper">Available couriers depend on the selected point.</p>
       {error ? <p role="alert" className="mm-admin__error">{error}</p> : null}
-    </div> : <div className="mm-delivery__grid">{([
+    </div> : value.kind === "door" ? <div className="mm-delivery__grid">{([
       ["company", "Company (optional)", false], ["line1", "Street address", true], ["line2", "Unit / building (optional)", false],
       ["suburb", "Suburb", true], ["city", "City", true], ["postalCode", "Postal code", true],
     ] as const).map(([key, label, required]) => <label className="mm-admin__field" key={key}>{label}<input name={`${side}.${key}`} required={required}
@@ -268,7 +264,7 @@ function DeliveryEndpointFields({ side, value, change, changeKind, searchPoints 
       onChange={event => change({ ...value, address: { ...value.address, [key]: event.target.value } })} /></label>)}
       <label className="mm-admin__field">Province<select name={`${side}.province`} value={value.address.province} autoComplete={`section-${side} address-level1`}
         onChange={event => change({ ...value, address: { ...value.address, province: event.target.value as CourierAddress["province"] } })}>{deliveryProvinces.map(province => <option key={province}>{province}</option>)}</select></label>
-    </div>}
+    </div> : null}
     <div className="mm-delivery__grid">{([ ["name", "Courier contact name", "text"], ["email", "Courier contact email", "email"], ["phone", "Courier contact phone", "tel"] ] as const)
       .map(([key, label, type]) => <label className="mm-admin__field" key={key}>{label}<input required type={type} name={`${side}.${key}`} maxLength={key === "phone" ? 30 : key === "email" ? 180 : 160}
         autoComplete={`section-${side} ${key === "name" ? "name" : key === "email" ? "email" : "tel"}`} value={value.contact[key]}

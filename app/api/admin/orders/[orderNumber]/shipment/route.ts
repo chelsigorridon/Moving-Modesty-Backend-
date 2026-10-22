@@ -5,6 +5,8 @@ import { getAdminSnapshot } from "@/lib/admin-data";
 import { getCourierQuotes, getCourierWaybill, refreshCourierShipment, ShippingConflict } from "@/lib/integrations/bobgo/shipping";
 import { parcelInput } from "@/lib/integrations/bobgo/protocol";
 import { reportFailure } from "@/lib/monitoring";
+import { getBobGoConfiguration } from "@/lib/integrations/bobgo/configuration";
+import { configuredCollectionDropOff } from "@/lib/shipping/collection-dropoff";
 
 export const maxDuration = 60;
 export function OPTIONS() { return apiOptions(); }
@@ -23,7 +25,8 @@ export async function POST(request: Request, context: { params: Promise<{ orderN
     const result = input.action === "quote" ? await getCourierQuotes(orderNumber, input.parcel, input.additionalCover)
       : await refreshCourierShipment(orderNumber);
     const snapshot = await getAdminSnapshot();
-    return apiJson({ ...result, order: snapshot.orders.find(order => order.id === orderNumber) });
+    return apiJson({ ...result, ...(input.action === "quote" ? { collectionDropOff: configuredCollectionDropOff(getBobGoConfiguration()) } : {}),
+      order: snapshot.orders.find(order => order.id === orderNumber) });
   } catch (error) {
     const previousRef = error && typeof error === "object" && "errorRef" in error ? error.errorRef : undefined;
     const incident = previousRef || error instanceof ShippingConflict ? null : await reportFailure(error, { operation: body.data.action === "quote" ? "courier_quote" : body.data.action === "waybill" ? "courier_waybill" : "courier_refresh", orderNumber });

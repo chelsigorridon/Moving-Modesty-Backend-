@@ -97,7 +97,7 @@ test("visible delivery method buttons open setup without provider requests or sa
   await harness("../components/delivery-editor.tsx", { details: { revision: 1, plan, draftPlan: plan, privateNote: "", canEdit: true },
     save: async (value: any) => writes.push(value), searchPoints: async () => { searches++; return { points: [] }; }, onEditingChange: (value: boolean) => edits.push(value) }, async (doc, button) => {
     const groups = [...doc.querySelectorAll('.mm-delivery__method-choices')];
-    assert.equal(groups.length, 2); assert.equal(groups.flatMap(group => [...group.querySelectorAll('button')]).length, 4);
+    assert.equal(groups.length, 1); assert.equal(groups.flatMap(group => [...group.querySelectorAll('button')]).length, 2);
     for (const group of groups) assert.equal(group.querySelectorAll('[aria-pressed="true"]').length, 1);
     await act(async () => button("Zarina drops off at a locker / counter"));
     assert.equal((doc.querySelector('[name="collection.kind"]') as HTMLSelectElement).value, "pickup_point");
@@ -108,7 +108,7 @@ test("visible delivery method buttons open setup without provider requests or sa
     assert.equal(writes.length, 0, "A pickup point must be explicitly selected before saving");
     assert.match(doc.querySelector('[role="alert"]')?.textContent || "", /Choose each pickup point/);
     await act(async () => button("Cancel editing"));
-    assert.equal(doc.querySelectorAll('.mm-delivery__method-choices').length, 2); assert.deepEqual(edits, [true, false]);
+    assert.equal(doc.querySelectorAll('.mm-delivery__method-choices').length, 1); assert.deepEqual(edits, [true, false]);
   });
 });
 
@@ -126,20 +126,21 @@ test("selecting an existing drop-off preserves its verified point and leaves cus
   });
 });
 
-test("customer pickup requires renewed explicit consent and booked orders never expose method shortcuts", async () => {
+test("customer pickup is not offered, legacy pickup must be corrected to a home address, and booked orders stay locked", async () => {
   const pickupPlan = { ...plan, delivery: { kind: "pickup_point", contact: plan.delivery.contact, point: { id: "91002", providerSlug: "demo", name: "DEMO Counter" } }, customerApprovedPickup: true };
   const writes: any[] = [];
   const props = { details: { revision: 2, plan: pickupPlan, draftPlan: pickupPlan, privateNote: "", canEdit: true }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) };
   await harness("../components/delivery-editor.tsx", props, async (doc, button, rerender) => {
-    await act(async () => button("Customer collects at a locker / counter"));
-    assert.equal((doc.querySelector('[name="approvedPickup"]') as HTMLInputElement).checked, false);
+    assert.equal([...doc.querySelectorAll('button')].some(node => node.textContent === "Customer collects at a locker / counter"), false);
+    await act(async () => button("Edit delivery address"));
+    assert.equal(doc.querySelector('[name="delivery.kind"]'), null);
+    assert.equal(doc.querySelector('[name="delivery.search"]'), null);
+    assert.equal(doc.querySelector('[name="approvedPickup"]'), null);
     await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
     await act(async () => doc.querySelector('fieldset')!.closest('form')!.dispatchEvent(new doc.defaultView!.Event('submit', { bubbles: true, cancelable: true })));
-    assert.equal(writes.length, 0); assert.match(doc.querySelector('[role="alert"]')?.textContent || "", /customer agreed/);
-    await act(async () => (doc.querySelector('[name="approvedPickup"]') as HTMLInputElement).click());
-    await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
-    await act(async () => button("Save delivery details"));
-    assert.equal(writes.length, 1); assert.equal(writes[0].plan.customerApprovedPickup, true);
+    assert.equal(writes.length, 0); assert.match(doc.querySelector('[role="alert"]')?.textContent || "", /home delivery address/);
+    await act(async () => button("Enter customer’s home address"));
+    assert.ok(doc.querySelector('[name="delivery.line1"]'));
     await rerender({ ...props, details: { ...props.details, canEdit: false, blockedReason: "This waybill is booked." } });
     assert.equal(doc.querySelector('.mm-delivery__method-choices'), null);
   });
