@@ -21,6 +21,15 @@ export function remoteId(value: unknown) {
   return id;
 }
 export function expectedFingerprint(value: BobGoOrderPayload) { return fingerprint(stableOrderPayload(value)); }
+export function linkedStandardCoverMatches(presets: Record<string, unknown>) {
+  // Live GET /orders omits declared_value for standard-cover presets even
+  // after PATCH accepted zero. Omission is allowed only for this response
+  // field; requests and the eventual fulfilment still explicitly send zero.
+  if (!Object.hasOwn(presets, "declared_value")) return true;
+  const value = presets.declared_value;
+  return typeof value === "number" ? Number.isFinite(value) && value === 0
+    : typeof value === "string" && /^0(?:\.0+)?$/.test(value.trim());
+}
 export function linkedOrderMatch(value: unknown, expected: BobGoOrderPayload, snapshot?: Pick<CourierBookingSnapshot, "delivery">) {
   const remote = record(value), point = snapshot?.delivery.point;
   // A pickup-point order may omit delivery_address. Its verified point ID and

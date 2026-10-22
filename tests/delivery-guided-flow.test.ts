@@ -77,7 +77,8 @@ test("each slide shows one step without completed cards, and Back never contacts
     assert.equal((doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "");
     assert.equal(doc.querySelector('input[inputmode="numeric"]'), null);
     assert.equal(doc.querySelector('.mm-delivery__completed'), null);
-    const change = doc.querySelector('[aria-label="Back to delivery details"]') as HTMLButtonElement;
+    const change = [...doc.querySelectorAll('button')].find(node => node.textContent === "Edit delivery details") as HTMLButtonElement;
+    assert.ok(change.classList.contains("mm-admin__secondary-button"));
     await act(async () => change.click()); assert.equal(step(), "1");
     assert.equal(doc.querySelector('.mm-admin__parcel-editor'), null);
     await click("Continue to parcel"); assert.equal(step(), "2"); assert.equal(calls.length, 0);
@@ -97,7 +98,7 @@ test("quotes advance to one courier step, show every returned service and are in
     assert.equal(ctx.confirmations.length, 1); assert.match(ctx.confirmations[0].description, /TEST B.*Express.*115/);
     assert.match(ctx.confirmations[0].description, /real waybill.*charge Zarina/);
     assert.equal(ctx.calls.length, 1, "Review is not booking");
-    await act(async () => (ctx.doc.querySelector('[aria-label="Back to parcel"]') as HTMLButtonElement).click());
+    await ctx.click("Back to parcel");
     assert.equal(ctx.step(), "2"); assert.equal(ctx.doc.querySelector('.mm-admin__quote'), null);
     assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "393");
     assert.equal((ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).checked, false);
@@ -112,6 +113,24 @@ test("failed quote leaves the parcel available, exposes a useful error and never
     assert.deepEqual(ctx.calls.map((call: any) => call.action), ["quote"]);
     assert.ok([...ctx.doc.querySelectorAll('button')].find((node: any) => node.textContent === "Compare couriers"));
   }, () => { throw new Error("TEST quote unavailable. Try again."); });
+});
+
+test("the visible edit buttons reach the customer address without provider calls, and cancelling preserves the parcel", async () => {
+  await harness(sample(), async ctx => {
+    await ctx.input('select[name="packedWeightPreset"]', "267");
+    await ctx.click("Edit delivery details");
+    assert.equal(ctx.step(), "1");
+    const edit = [...ctx.doc.querySelectorAll('button')].find((node: HTMLButtonElement) => node.textContent === "Edit delivery address") as HTMLButtonElement;
+    assert.ok(edit.classList.contains("mm-admin__secondary-button"));
+    await ctx.click("Edit delivery address");
+    assert.equal((ctx.doc.querySelector('[name="delivery.line1"]') as HTMLInputElement).value, "20 Example Road");
+    assert.equal(ctx.doc.querySelector('[name="collection.line1"]'), null);
+    assert.equal(ctx.doc.querySelector('button[type="submit"]')?.textContent, "Save delivery details");
+    await ctx.click("Cancel editing");
+    assert.equal(ctx.step(), "2");
+    assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "267");
+    assert.equal(ctx.calls.length, 0);
+  });
 });
 
 test("an empty rate response explains the next action instead of silently returning to parcel", async () => {

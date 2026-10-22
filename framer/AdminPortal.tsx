@@ -2489,7 +2489,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         <p className="mm-admin__helper">{side === "collection" ? "Choose a method to check its address or select a drop-off point." : "Only switch to a pickup point if the customer agrees."}</p>
       </> : null}
       <details className="mm-delivery__contact"><summary>Contact details</summary><p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p></details>
-      {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Change customer delivery"}</button> : null}
+      {details.canEdit && !editing ? <button type="button" className={side === "delivery" ? "mm-admin__secondary-button" : "mm-admin__text-button"} disabled={disabled || saving} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Edit delivery address"}</button> : null}
     </div>)}</div> : null}
     {details.canEdit && !editing && !guided ? <p className="mm-admin__helper">Courier names, services and prices appear after you confirm the details and compare quotes. Locker or counter choices can limit the eligible couriers.</p> : null}
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
@@ -2669,7 +2669,7 @@ function EmbeddedDeliveryStepFlow({ current, onReview, children, locked = false 
   }, [current]);
   return <div className="mm-delivery__flow">
     <style dangerouslySetInnerHTML={{ __html: deliveryStepFlowCss }} />
-    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__text-button mm-delivery__back" aria-label={`Back to ${current === 2 ? "delivery details" : "parcel"}`} onClick={() => onReview(current === 2 ? 1 : 2)}>Back</button> : null}
+    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
     <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${current}: ${deliveryStepTitles[current - 1]}`}>
       {children[current - 1]}
     </div>

@@ -18,7 +18,7 @@ export default function DeliveryStepFlow({ current, onReview, children, locked =
   }, [current]);
   return <div className="mm-delivery__flow">
     <style dangerouslySetInnerHTML={{ __html: deliveryStepFlowCss }} />
-    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__text-button mm-delivery__back" aria-label={`Back to ${current === 2 ? "delivery details" : "parcel"}`} onClick={() => onReview(current === 2 ? 1 : 2)}>Back</button> : null}
+    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
     <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${current}: ${deliveryStepTitles[current - 1]}`}>
       {children[current - 1]}
     </div>

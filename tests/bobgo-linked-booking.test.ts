@@ -90,6 +90,10 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       async readShipment(id: string) { calls.push("shipmentRead"); const row = structuredClone(remoteShipments.get(id)); const callback = changeDuringShipmentRead; changeDuringShipmentRead = undefined; await callback?.(); return row; },
       async updateOrder(body: any) { calls.push("update"); assert.equal(body.order_items, undefined); assert.equal(body.payment_status, undefined); assert.equal(body.account_id, undefined);
         const row = remote.get(String(body.id)); Object.assign(row, structuredClone(body));
+        if (mode === "declared-value-omitted") delete row.order_fulfillment_presets.declared_value;
+        if (mode === "unexpected-cover") row.order_fulfillment_presets.declared_value = 450;
+        if (mode === "parcel-not-saved") row.order_fulfillment_presets.parcels[0].submitted_weight_kg = 1;
+        if (mode === "address-not-saved") row.delivery_address.code = "9999";
         if (mode === "schedule-not-saved") delete row.order_fulfillment_presets.requested_collection_date;
         if (mode === "preference-not-saved") row.order_fulfillment_presets.instructions_collection = "Test collection note";
         return structuredClone(row); },
@@ -102,6 +106,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         const local = (await pg.query<any>("select s.* from shipments s join orders o on o.id=s.order_id where o.order_number=$1", [row.channel_order_number])).rows[0];
         assert.equal(local.status, "booking", "durable fence precedes external POST"); assert.equal(local.waybill_reference, body.custom_tracking_reference);
         assert.equal(body.method, "shipment"); assert.equal(body.items, null); assert.equal(body.order_items, undefined); assert.equal(body.account_id, undefined);
+        assert.equal(body.order_fulfillment_presets.declared_value, 0, "Linked booking cannot silently enable additional cover");
         assert.equal(body.selected_rate_request_id, undefined); assert.equal(body.order_fulfillment_presets.provider_slug, "demo-b");
         if (mode === "timeout-empty") throw new Error("PRIVATE uncertain POST");
         const shipmentId = String(++shipmentSerial), tracking = `TEST-${shipmentId}`;
@@ -204,6 +209,27 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         assert.equal(calls.slice(before).includes("rates"), false); assert.equal(calls.slice(before).includes("book"), false);
       }
       mode = "normal";
+    });
+    await t.test("Bob Go may omit the zero-cover response field without preventing comparison of the same linked order", async () => {
+      const row = await seed(), beforeBookings = bookings(), beforeOrders = remote.size; mode = "declared-value-omitted";
+      try {
+        const result = await service.quotes(row.number, { ...parcel, weightGrams: 267, widthCm: 20, heightCm: 3 }, false);
+        assert.equal(result.rates.length, 2);
+        assert.equal(result.declaredValue, 0);
+        assert.equal((await localShipment(row)).weight_grams, 267);
+        assert.equal(remote.size, beforeOrders); assert.equal(bookings(), beforeBookings);
+        assert.equal(Object.hasOwn(remote.get(row.remoteId).order_fulfillment_presets, "declared_value"), false);
+      } finally { mode = "normal"; }
+    });
+    await t.test("unexpected cover, changed addresses or changed packed weights still stop before rates or booking", async () => {
+      for (const selectedMode of ["unexpected-cover", "parcel-not-saved", "address-not-saved"]) {
+        const row = await seed(), before = calls.length; mode = selectedMode;
+        try {
+          await assert.rejects(quote(row), /did not confirm/);
+          assert.equal(calls.slice(before).includes("rates"), false);
+          assert.equal(calls.slice(before).includes("book"), false);
+        } finally { mode = "normal"; }
+      }
     });
     await t.test("a changed shipment collection date or discarded driver preference stays fenced and is never booked twice", async () => {
       for (const selectedMode of ["wrong-shipment-date", "wrong-shipment-preference"]) {

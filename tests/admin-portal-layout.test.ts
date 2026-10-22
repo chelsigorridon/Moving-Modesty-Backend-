@@ -264,7 +264,7 @@ test("delivery editor stays inside the existing courier panel and requires setup
   assert.ok(editor);
   assert.ok(editor.querySelector('button'));
   assert.equal(editor.querySelector('[name="collection.line1"]'), null);
-  assert.ok([...editor.querySelectorAll('button')].some(button => button.textContent === "Change customer delivery"));
+  assert.ok([...editor.querySelectorAll('button')].some(button => button.textContent === "Edit delivery address" && button.classList.contains("mm-admin__secondary-button")));
   assert.equal([...editor.querySelectorAll('button')].find(button => button.textContent === "Confirm delivery details")?.disabled, true);
   const quote = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === "Compare couriers");
   assert.equal(quote, undefined, "Package and quote controls stay hidden until addresses are confirmed");
@@ -310,7 +310,7 @@ test("before-handover waybill changes are explicit, confirmed, and cannot masque
       const summary = editor.querySelector(".mm-delivery__summary")!;
       assert.ok(form.compareDocumentPosition(summary) & 4, "Recovery action appears before the repeated address summaries");
     }
-    assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Change customer delivery|Change collection/);
+    assert.doesNotMatch([...editor.querySelectorAll('button')].map(button => button.textContent).join(" "), /Edit delivery address|Change collection/);
     if (action === "check_cancellation") assert.doesNotMatch(dom.window.document.body.textContent || "", /Prepare printable waybill|Download the waybill, attach/);
     dom.window.close();
   }
@@ -326,7 +326,7 @@ test("previous waybills are reference-only and remain separate from current deli
   assert.match(history.textContent || "", /OLD-CANCELLED/);
   assert.equal(history.querySelector('a,button'), null);
   assert.match(history.textContent || "", /Do not use these labels/);
-  assert.match(dom.window.document.body.textContent || "", /Change customer delivery/);
+  assert.match(dom.window.document.body.textContent || "", /Edit delivery address/);
   dom.window.close();
 });
 

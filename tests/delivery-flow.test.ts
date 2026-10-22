@@ -83,7 +83,7 @@ test("checking a pending cancellation is explicit and surfaces provider errors b
 test("editing only one address preserves the other and reads silent autofill from its own form", async () => {
   const saved: any[] = [];
   await harness("../components/delivery-editor.tsx", { details: { revision: 0, plan, draftPlan: plan, privateNote: "", canEdit: true }, save: async (value: any) => saved.push(value), searchPoints: async () => ({ points: [] }) }, async (doc, button) => {
-    await act(async () => button("Change customer delivery"));
+    await act(async () => button("Edit delivery address"));
     assert.equal(doc.querySelector('[name="collection.line1"]'), null);
     (doc.querySelector('[name="delivery.line1"]') as HTMLInputElement).value = "30 Autofilled Street";
     await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());

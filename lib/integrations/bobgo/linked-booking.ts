@@ -9,7 +9,7 @@ import { resolveCourierPlan } from "./delivery";
 import { inspectLinkedBookingPermissions } from "./permissions";
 import { existingWaybillReference, verifiedExistingWaybill } from "./waybill-link-policy";
 import { assertNoFulfillments, collectionBookId, expectedFingerprint, linkedFulfillmentPayload, linkedOrderMatch, linkedOrderUpdate,
-  linkedBookingPaused, LinkedBookingConflict, remoteBookingFingerprint } from "./linked-booking-policy";
+  linkedBookingPaused, LinkedBookingConflict, linkedStandardCoverMatches, remoteBookingFingerprint } from "./linked-booking-policy";
 import type { LinkedBookingProvider } from "./linked-booking-transport";
 import { fingerprint, parcelInput, parseRates, record, signQuote, textValue, verifyQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol";
 import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy";
@@ -120,7 +120,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
         const row = record(value); return [Number(row.submitted_length_cm), Number(row.submitted_width_cm), Number(row.submitted_height_cm), Number(row.submitted_weight_kg)];
       }) : [];
       if (linkedOrderMatch(remote, state.expected, snapshot) !== state.job.remoteOrderId || presets.method !== "shipment"
-        || textValue(presets.collection_address_book_id) !== bookId || Number(presets.declared_value) !== 0
+        || textValue(presets.collection_address_book_id) !== bookId || !linkedStandardCoverMatches(presets)
         || !linkedCollectionDateMatches(presets.requested_collection_date, snapshot.collectionSchedule)
         || resolved.collection.kind === "pickup_point" && textValue(presets.requested_collection_date) !== ""
         || textValue(presets.instructions_collection) !== snapshot.collectionInstructions || textValue(presets.instructions_delivery) !== snapshot.deliveryInstructions
