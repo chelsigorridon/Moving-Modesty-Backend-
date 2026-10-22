@@ -1,0 +1,68 @@
+{
+  "kind": "framer-canvas-change-record",
+  "schemaVersion": 1,
+  "description": "Published logo beside the existing Moving Modesty name in the shared native Framer admin navigation. This record is not backend runtime configuration.",
+  "projectId": "HSoQpURWMbVB013b2Lkg",
+  "publishedVersion": "2b7025c4d",
+  "component": {
+    "id": "LXSGwTtYn",
+    "name": "Wireframe/Admin Navigation",
+    "desktopVariantId": "fksZrQ9vy",
+    "mobileVariantId": "r1ytaTKBj"
+  },
+  "asset": {
+    "localPath": "public/brand/moving-modesty-monogram-light.svg",
+    "sha256Lf": "4f507e5b184b30b9471a72c33774c9806215730455454369fa51c7ed995cd0e4",
+    "framerUrl": "https://framerusercontent.com/images/iB7BI6R3FpypVv2AbFdi8iAA1zc.svg",
+    "derivedFrom": "public/brand/moving-modesty-logo-header-vector.svg",
+    "colour": "#EAE6E3",
+    "viewBox": "300 116 480 596"
+  },
+  "brandFrame": {
+    "id": "UEKgsXNgu",
+    "name": "Moving Modesty Brand",
+    "parentId": "fksZrQ9vy",
+    "index": 0,
+    "layout": "stack",
+    "stackDirection": "horizontal",
+    "stackDistribution": "start",
+    "stackAlignment": "center",
+    "gap": "8px",
+    "width": "1fr",
+    "height": "auto",
+    "minWidth": "0px",
+    "overflow": "clip",
+    "children": [
+      {
+        "id": "gvKJfDH_g",
+        "name": "Moving Modesty Monogram",
+        "index": 0,
+        "width": "28px",
+        "height": "35px",
+        "altText": "Moving Modesty monogram"
+      },
+      {
+        "id": "kGA6yVNQO",
+        "index": 1,
+        "existingTextUnchanged": true,
+        "width": "1fr",
+        "height": "auto"
+      }
+    ]
+  },
+  "mobileVariant": {
+    "id": "r1ytaTKBj",
+    "stackDistribution": "start",
+    "gap": "16px",
+    "canvasWidth": "390px",
+    "height": "72px",
+    "padding": "16px 24px 16px 24px"
+  },
+  "verification": {
+    "reviewedWidthsPx": [240, 320, 390],
+    "existingNavigationLinksUnchanged": true,
+    "adminPortalCodeUnchanged": true,
+    "backendChanges": false,
+    "syncSettingsChanges": false
+  }
+}
