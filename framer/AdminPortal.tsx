@@ -613,7 +613,8 @@ export default function AdminPortal(props: AdminPortalProps) {
 
     return (
         <section className="mm-admin" style={cssVariables} aria-busy={loading}>
-            <style>{styles + technicalAlertsCss}</style>
+            {/* Static repository CSS: raw-text output keeps Framer's React 18 SSR and hydration identical. */}
+            <style dangerouslySetInnerHTML={{ __html: styles + technicalAlertsCss }} />
             {view === "login" ? (
                 <LoginView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} backendConfigured={backendConfigured} />
             ) : (
@@ -1936,7 +1937,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
   const stockProps = document && { document, demo, errors, changeColour };
 
   if (framerTrial) return <section className="mm-products" ref={editor}>
-    <style>{catalogueEditorStyles}</style>
+    <style dangerouslySetInnerHTML={{ __html: catalogueEditorStyles }} />
     <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY · UNPUBLISHED TEST</p><h1>Products</h1></div></header>
     <p className="mm-products__notice">Connected TEST draft. Save the name, description and tagline directly to Framer. Nothing is published or saved to live stock.</p>
     {notice && <p className="mm-products__success" role="status">{notice}</p>}
@@ -1958,7 +1959,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
   </section>;
 
   return <section className="mm-products" ref={editor}>
-    <style>{catalogueEditorStyles}</style>
+    <style dangerouslySetInnerHTML={{ __html: catalogueEditorStyles }} />
     <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY</p><h1>Products</h1></div>
       {!current && <button className="mm-products__primary" disabled={loading || busy || needsSetup} onClick={() => select(null)}>Add product</button>}</header>
     <p className="mm-products__notice">{live ? "Save a draft while you prepare. Publish when you’re ready for customers to see the changes." : demo ? "Demo only. Changes stay in this window and don’t affect your website." : "Draft trial. Changes are saved as drafts, not published to your website."}</p>
@@ -2203,7 +2204,7 @@ function DiscountManager({ demo = false, apiBaseUrl = "", enabled = true, produc
   function update<K extends keyof DiscountDraft>(key: K, value: DiscountDraft[K]) { setDraft(previous => previous ? { ...previous, [key]: value } : previous); }
 
   return <section className="mm-discounts" aria-label="Discount management" aria-busy={busy || loading}>
-    <style>{discountStyles}</style>
+    <style dangerouslySetInnerHTML={{ __html: discountStyles }} />
     <header className="mm-discounts__header"><div><p className="mm-discounts__eyebrow">MOVING MODESTY · DISCOUNTS</p><h1>{draft ? draft.id ? "Edit discount" : "Create discount" : "Discounts"}</h1>
       <p>{draft ? "One shared code that customers enter at checkout." : "Create and control your specials without changing product prices."}</p></div>
       {!draft ? <button ref={createButton} type="button" className="mm-discounts__primary" disabled={busy || loading || !ready || !enabled} onClick={() => editDiscount()}>Create discount</button> : null}
@@ -2469,7 +2470,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     {changeError ? <p role="alert" className="mm-admin__error">{changeError}</p> : null}
   </form> : null;
   return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
-    <style>{deliveryEditorCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: deliveryEditorCss }} />
     <div className="mm-delivery__heading"><strong>{details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!guided || !details.canEdit ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
@@ -2630,7 +2631,7 @@ interface DeliveryProgressProps { current: 1 | 2 | 3 | 4; paused?: boolean }
 
 function EmbeddedDeliveryProgress({ current, paused = false }: DeliveryProgressProps) {
   return <div className="mm-delivery__progress">
-    <style>{deliveryProgressCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: deliveryProgressCss }} />
     <ol aria-label="Delivery steps">{["Check details", "Box & weight", "Choose & book", "Print & track"].map((label, index) => <li key={label}
       aria-current={current === index + 1 ? "step" : undefined} aria-label={current === index + 1 ? `Step ${current} of 4: ${label}` : undefined} data-complete={!paused && index + 1 < current ? "true" : undefined}>
       <span className="mm-delivery__step-number" aria-hidden="true">{index + 1}</span><span>{label}</span>
@@ -2667,7 +2668,7 @@ function EmbeddedDeliveryStepFlow({ current, onReview, children, locked = false 
     previous.current = current;
   }, [current]);
   return <div className="mm-delivery__flow">
-    <style>{deliveryStepFlowCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: deliveryStepFlowCss }} />
     {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__text-button mm-delivery__back" aria-label={`Back to ${current === 2 ? "delivery details" : "parcel"}`} onClick={() => onReview(current === 2 ? 1 : 2)}>Back</button> : null}
     <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${current}: ${deliveryStepTitles[current - 1]}`}>
       {children[current - 1]}
@@ -2691,7 +2692,7 @@ interface DeliveryAdvancedSettingsProps { children: ReactNode; needsAttention?: 
 
 function EmbeddedDeliveryAdvancedSettings({ children, needsAttention = false }: DeliveryAdvancedSettingsProps) {
   return <details className="mm-admin__technical mm-delivery__advanced" open={needsAttention ? true : undefined}>
-    <style>{`.mm-delivery__advanced{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95);min-width:0;overflow-wrap:anywhere}.mm-delivery__advanced>summary{min-height:44px;align-content:center;cursor:pointer}.mm-delivery__advanced>summary:focus-visible{outline:3px solid var(--mm-sage,#7d896d);outline-offset:3px}`}</style>
+    <style dangerouslySetInnerHTML={{ __html: `.mm-delivery__advanced{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95);min-width:0;overflow-wrap:anywhere}.mm-delivery__advanced>summary{min-height:44px;align-content:center;cursor:pointer}.mm-delivery__advanced>summary:focus-visible{outline:3px solid var(--mm-sage,#7d896d);outline-offset:3px}` }} />
     <summary>Advanced settings{needsAttention ? " · needs attention" : ""}</summary>
     {children}
   </details>;
@@ -2737,7 +2738,7 @@ function EmbeddedParcelEditor({ value, change, disabled = false, loadPackages }:
   }
   return <section className="mm-admin__parcel-editor" aria-label="Packed parcel">
     <h4>2. Check the parcel</h4>
-    <style>{`.mm-admin__packing-reference{margin:14px 0;font-size:13px}.mm-admin__packing-reference summary{min-height:44px;padding:12px 0;cursor:pointer}.mm-admin__packing-reference dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 14px}.mm-admin__packing-reference dt,.mm-admin__packing-reference dd{margin:0}.mm-admin__packing-reference dd{white-space:nowrap}.mm-admin__parcel-editor>button{max-width:100%;white-space:normal}`}</style>
+    <style dangerouslySetInnerHTML={{ __html: `.mm-admin__packing-reference{margin:14px 0;font-size:13px}.mm-admin__packing-reference summary{min-height:44px;padding:12px 0;cursor:pointer}.mm-admin__packing-reference dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 14px}.mm-admin__packing-reference dt,.mm-admin__packing-reference dd{margin:0}.mm-admin__packing-reference dd{white-space:nowrap}.mm-admin__parcel-editor>button{max-width:100%;white-space:normal}` }} />
     <label className="mm-admin__field">Choose a box<select value={selected} disabled={disabled || loading} onChange={event => choose(event.target.value)}>
       <option value="">Enter dimensions myself</option><option value={movingModestyBoxPreset.id}>{movingModestyBoxPreset.name} · {movingModestyBoxPreset.lengthCm} × {movingModestyBoxPreset.widthCm} × {movingModestyBoxPreset.heightCm} cm</option>
       {packages.length ? <optgroup label="Saved in Bob Go">{packages.map(item => <option key={item.id} value={item.id}>{item.name} · {item.lengthCm} × {item.widthCm} × {item.heightCm} cm</option>)}</optgroup> : null}
@@ -2796,7 +2797,7 @@ function EmbeddedShippingWeightSettings({ request }: ShippingWeightSettingsProps
     setConfirmed(false); setError(""); setMessage("Zarina’s product-only weights filled in. Review the values, confirm them, then save. Nothing has been saved yet.");
   }
   return <details className="mm-delivery__private mm-admin__weight-settings"><summary>Product weights (without packaging)</summary>
-    <style>{`.mm-admin__weight-settings{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}.mm-admin__weight-settings summary{cursor:pointer}.mm-admin__weight-settings .mm-admin__field{display:grid;gap:6px;min-width:0}.mm-admin__weight-settings .mm-admin__field input{width:100%;box-sizing:border-box}.mm-admin__weight-settings .mm-delivery__check{display:flex;align-items:flex-start;gap:10px}.mm-admin__weight-settings .mm-delivery__check input{flex:none;width:20px;height:20px}.mm-admin__weight-settings .mm-delivery__actions{display:flex;flex-wrap:wrap;gap:12px}`}</style>
+    <style dangerouslySetInnerHTML={{ __html: `.mm-admin__weight-settings{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}.mm-admin__weight-settings summary{cursor:pointer}.mm-admin__weight-settings .mm-admin__field{display:grid;gap:6px;min-width:0}.mm-admin__weight-settings .mm-admin__field input{width:100%;box-sizing:border-box}.mm-admin__weight-settings .mm-delivery__check{display:flex;align-items:flex-start;gap:10px}.mm-admin__weight-settings .mm-delivery__check input{flex:none;width:20px;height:20px}.mm-admin__weight-settings .mm-delivery__actions{display:flex;flex-wrap:wrap;gap:12px}` }} />
     <p className="mm-admin__helper">Product weights for sales-channel orders, not the packed parcel. Save each scarf’s weight without its box. Leave unknown weights blank.</p>
     <p className="mm-admin__helper">Zarina’s measured product weights: {zarinaProductMeasurements.map(row => `${row.product} ${row.size}: ${row.productGrams}g`).join(" · ")}. These exclude the box.</p>
     {!rows ? <button type="button" className="mm-admin__secondary-button" disabled={busy} onClick={() => { void load(); }}>{busy ? "Loading…" : "Load product weights"}</button> : <form key={revision} onSubmit={save}>
@@ -3049,7 +3050,7 @@ function EmbeddedOrderCards<T extends { id: string }>({ orders, selectedId, onSe
     onSelect("");
   }
   return <div className="mm-admin__order-list mm-admin__disclosure-list" ref={listRef}>
-    <style>{orderCardsCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: orderCardsCss }} />
     {!orders.length ? empty : null}
     {/* eslint-disable-next-line react-hooks/refs -- Render callbacks only attach close to buttons; refs are read in the effect, never while rendering. */}
     {orders.map(order => {

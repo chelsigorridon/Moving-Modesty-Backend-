@@ -29,7 +29,7 @@ export default function OrderCards<T extends { id: string }>({ orders, selectedI
     onSelect("");
   }
   return <div className="mm-admin__order-list mm-admin__disclosure-list" ref={listRef}>
-    <style>{orderCardsCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: orderCardsCss }} />
     {!orders.length ? empty : null}
     {/* eslint-disable-next-line react-hooks/refs -- Render callbacks only attach close to buttons; refs are read in the effect, never while rendering. */}
     {orders.map(order => {

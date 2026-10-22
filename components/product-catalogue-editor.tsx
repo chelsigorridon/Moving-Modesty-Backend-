@@ -212,7 +212,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
   const stockProps = document && { document, demo, errors, changeColour };
 
   if (framerTrial) return <section className="mm-products" ref={editor}>
-    <style>{styles}</style>
+    <style dangerouslySetInnerHTML={{ __html: styles }} />
     <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY · UNPUBLISHED TEST</p><h1>Products</h1></div></header>
     <p className="mm-products__notice">Connected TEST draft. Save the name, description and tagline directly to Framer. Nothing is published or saved to live stock.</p>
     {notice && <p className="mm-products__success" role="status">{notice}</p>}
@@ -234,7 +234,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
   </section>;
 
   return <section className="mm-products" ref={editor}>
-    <style>{styles}</style>
+    <style dangerouslySetInnerHTML={{ __html: styles }} />
     <header className="mm-products__header"><div><p className="mm-products__eyebrow">MOVING MODESTY</p><h1>Products</h1></div>
       {!current && <button className="mm-products__primary" disabled={loading || busy || needsSetup} onClick={() => select(null)}>Add product</button>}</header>
     <p className="mm-products__notice">{live ? "Save a draft while you prepare. Publish when you’re ready for customers to see the changes." : demo ? "Demo only. Changes stay in this window and don’t affect your website." : "Draft trial. Changes are saved as drafts, not published to your website."}</p>

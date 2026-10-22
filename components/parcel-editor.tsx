@@ -26,7 +26,7 @@ export default function ParcelEditor({ value, change, disabled = false, loadPack
   }
   return <section className="mm-admin__parcel-editor" aria-label="Packed parcel">
     <h4>2. Check the parcel</h4>
-    <style>{`.mm-admin__packing-reference{margin:14px 0;font-size:13px}.mm-admin__packing-reference summary{min-height:44px;padding:12px 0;cursor:pointer}.mm-admin__packing-reference dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 14px}.mm-admin__packing-reference dt,.mm-admin__packing-reference dd{margin:0}.mm-admin__packing-reference dd{white-space:nowrap}.mm-admin__parcel-editor>button{max-width:100%;white-space:normal}`}</style>
+    <style dangerouslySetInnerHTML={{ __html: `.mm-admin__packing-reference{margin:14px 0;font-size:13px}.mm-admin__packing-reference summary{min-height:44px;padding:12px 0;cursor:pointer}.mm-admin__packing-reference dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 14px}.mm-admin__packing-reference dt,.mm-admin__packing-reference dd{margin:0}.mm-admin__packing-reference dd{white-space:nowrap}.mm-admin__parcel-editor>button{max-width:100%;white-space:normal}` }} />
     <label className="mm-admin__field">Choose a box<select value={selected} disabled={disabled || loading} onChange={event => choose(event.target.value)}>
       <option value="">Enter dimensions myself</option><option value={movingModestyBoxPreset.id}>{movingModestyBoxPreset.name} · {movingModestyBoxPreset.lengthCm} × {movingModestyBoxPreset.widthCm} × {movingModestyBoxPreset.heightCm} cm</option>
       {packages.length ? <optgroup label="Saved in Bob Go">{packages.map(item => <option key={item.id} value={item.id}>{item.name} · {item.lengthCm} × {item.widthCm} × {item.heightCm} cm</option>)}</optgroup> : null}

@@ -144,7 +144,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     {changeError ? <p role="alert" className="mm-admin__error">{changeError}</p> : null}
   </form> : null;
   return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
-    <style>{deliveryEditorCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: deliveryEditorCss }} />
     <div className="mm-delivery__heading"><strong>{details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!guided || !details.canEdit ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>

@@ -2,7 +2,7 @@ interface DeliveryProgressProps { current: 1 | 2 | 3 | 4; paused?: boolean }
 
 export default function DeliveryProgress({ current, paused = false }: DeliveryProgressProps) {
   return <div className="mm-delivery__progress">
-    <style>{deliveryProgressCss}</style>
+    <style dangerouslySetInnerHTML={{ __html: deliveryProgressCss }} />
     <ol aria-label="Delivery steps">{["Check details", "Box & weight", "Choose & book", "Print & track"].map((label, index) => <li key={label}
       aria-current={current === index + 1 ? "step" : undefined} aria-label={current === index + 1 ? `Step ${current} of 4: ${label}` : undefined} data-complete={!paused && index + 1 < current ? "true" : undefined}>
       <span className="mm-delivery__step-number" aria-hidden="true">{index + 1}</span><span>{label}</span>

@@ -106,7 +106,7 @@ export default function DiscountManager({ demo = false, apiBaseUrl = "", enabled
   function update<K extends keyof DiscountDraft>(key: K, value: DiscountDraft[K]) { setDraft(previous => previous ? { ...previous, [key]: value } : previous); }
 
   return <section className="mm-discounts" aria-label="Discount management" aria-busy={busy || loading}>
-    <style>{discountStyles}</style>
+    <style dangerouslySetInnerHTML={{ __html: discountStyles }} />
     <header className="mm-discounts__header"><div><p className="mm-discounts__eyebrow">MOVING MODESTY · DISCOUNTS</p><h1>{draft ? draft.id ? "Edit discount" : "Create discount" : "Discounts"}</h1>
       <p>{draft ? "One shared code that customers enter at checkout." : "Create and control your specials without changing product prices."}</p></div>
       {!draft ? <button ref={createButton} type="button" className="mm-discounts__primary" disabled={busy || loading || !ready || !enabled} onClick={() => editDiscount()}>Create discount</button> : null}

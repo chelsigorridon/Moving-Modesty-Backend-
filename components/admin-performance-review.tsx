@@ -11,7 +11,7 @@ const samples = ["One", "Two", "Three"].map((name, index) => ({
 }));
 
 /** Runs the actual portal source with an allowlisted fake transport, never a live API. */
-export default function AdminPerformanceReview({ source }: { source: string }) {
+export default function AdminPerformanceReview({ source, includeLogin = false }: { source: string; includeLogin?: boolean }) {
   const [view, setView] = React.useState("orders"), [reads, setReads] = React.useState(0);
   const [mobile, setMobile] = React.useState(false);
   const Portal = React.useMemo(() => {
@@ -43,11 +43,11 @@ export default function AdminPerformanceReview({ source }: { source: string }) {
   return <main style={{ width: "100%", maxWidth: mobile ? 375 : 1040, margin: "0 auto", minHeight: "100vh", background: "#F5F3F0", color: "#302A24", fontFamily: "Arial, sans-serif" }}>
     <style>{"body{margin:0;background:#F5F3F0}*{box-sizing:border-box}"}</style>
     <aside style={{ padding: "18px 24px", borderBottom: "1px solid #A69E95", fontSize: 14 }}>
-      <p style={{ margin: "0 0 12px" }}>PRIVATE REVIEW · Sample data only. No orders, payments, waybills or sync connections.</p>
+      <p style={{ margin: "0 0 12px" }}>{includeLogin ? "PRIVATE RENDERING REVIEW" : "PRIVATE REVIEW"} · Sample data only. No orders, payments, waybills or sync connections.</p>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-        {(["orders", "dashboard"] as const).map(value => <button type="button" key={value} aria-pressed={value === view}
+        {(includeLogin ? ["orders", "dashboard", "login"] : ["orders", "dashboard"]).map(value => <button type="button" key={value} aria-pressed={value === view}
           style={{ padding: "12px 16px", minHeight: 44, border: "1px solid #A69E95", background: value === view ? "#535F46" : "transparent", color: value === view ? "#fff" : "#302A24", cursor: "pointer" }}
-          onClick={() => setView(value)}>{value === "orders" ? "Review orders" : "Review dashboard"}</button>)}
+          onClick={() => setView(value)}>{value === "orders" ? "Review orders" : value === "login" ? "Review sign-in" : "Review dashboard"}</button>)}
         <span role="status">Sample reads: {reads}</span>
         <button type="button" aria-pressed={mobile} style={{ minHeight: 44, padding: "10px 12px", background: "transparent", color: "#302A24", border: "1px solid #A69E95", cursor: "pointer" }} onClick={() => setMobile(value => !value)}>{mobile ? "Desktop width" : "Mobile width (375px)"}</button>
       </div>
