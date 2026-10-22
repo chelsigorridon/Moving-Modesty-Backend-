@@ -12,6 +12,7 @@ for (const [name, file, original, embedded] of [
   ["PARCEL_EDITOR", "parcel-editor.tsx", "ParcelEditor", "EmbeddedParcelEditor"],
   ["SHIPPING_WEIGHT_SETTINGS", "shipping-weight-settings.tsx", "ShippingWeightSettings", "EmbeddedShippingWeightSettings"],
   ["TECHNICAL_ALERTS", "technical-alerts.tsx", "TechnicalAlerts", "EmbeddedTechnicalAlerts"],
+  ["ORDER_CARDS", "order-cards.tsx", "OrderCards", "EmbeddedOrderCards"],
 ]) {
   const begin = `// BEGIN_MM_${name}`, end = `// END_MM_${name}`;
   portal = portal.replace(new RegExp(`\\n${begin}[\\s\\S]*?${end}\\n?`), "");

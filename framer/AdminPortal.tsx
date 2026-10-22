@@ -247,6 +247,7 @@ export default function AdminPortal(props: AdminPortalProps) {
     const alertsBannerRef = useRef<HTMLButtonElement>(null)
     const alertsReturnFocus = useRef<HTMLElement | null>(null)
     const mutationPending = useRef(false)
+    const initialOrderLinkConsumed = useRef(false)
 
     const backendConfigured = Boolean(normalizeBaseUrl(apiBaseUrl))
     const liveEnabled = backendConfigured && !isStatic
@@ -317,8 +318,12 @@ export default function AdminPortal(props: AdminPortalProps) {
                 if (!active) return
                 startTransition(() => {
                     setSnapshot(data)
-                    const requested = new URLSearchParams(window.location.search).get("order")
-                    setSelectedOrderId((current) => current || requested || data.orders[0]?.id || "")
+                    const requested = initialOrderLinkConsumed.current ? null : new URLSearchParams(window.location.search).get("order")
+                    initialOrderLinkConsumed.current = true
+                    setSelectedOrderId((current) => {
+                        const id = current || requested || ""
+                        return data.orders.some(order => order.id === id) ? id : ""
+                    })
                     if (requested) setOrderFilter("All orders")
                     setLoadState("ready")
                 })
@@ -353,8 +358,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         })
     }, [orderFilter, snapshot.orders, search, method])
 
-    const selectedOrder =
-        filteredOrders.find((order) => order.id === selectedOrderId) || filteredOrders[0]
+    const selectedOrder = filteredOrders.find((order) => order.id === selectedOrderId)
 
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (mutationPending.current) return
@@ -619,11 +623,11 @@ export default function AdminPortal(props: AdminPortalProps) {
                             selectedOrderId={selectedOrder?.id || ""}
                             setSelectedOrderId={setSelectedOrderId}
                             filter={orderFilter}
-                            setFilter={setOrderFilter}
+                            setFilter={value => { setOrderFilter(value); setSelectedOrderId("") }}
                             search={search}
-                            setSearch={setSearch}
+                            setSearch={value => { setSearch(value); setSelectedOrderId("") }}
                             method={method}
-                            setMethod={setMethod}
+                            setMethod={value => { setMethod(value); setSelectedOrderId("") }}
                             updateOrderStatus={updateOrderStatus}
                             requestShipping={requestShipping}
                             requestAftersales={requestAftersales}
@@ -935,7 +939,6 @@ function OrdersView({
     loading: boolean
 }) {
     const detailRef = useRef<HTMLElement>(null)
-    const listRef = useRef<HTMLDivElement>(null)
     const dialogRef = useRef<HTMLDialogElement>(null)
     const courierRef = useRef<HTMLDivElement>(null)
     const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
@@ -974,7 +977,7 @@ function OrdersView({
     return (
         <>
             <PageHeader eyebrow="ADMIN / ORDERS" title="Orders" />
-            <p className="mm-admin__helper">Start with Needs attention. Select an order, then follow its next step.</p>
+            <p className="mm-admin__helper">Select an order to open its details. Select it again to close.</p>
             <section className="mm-admin__order-controls" aria-label="Find and filter orders">
             <div className="mm-admin__filters" role="group" aria-label="Order filters">
                 {["Needs attention", "In progress", "All orders"].map((label) => (
@@ -999,29 +1002,20 @@ function OrdersView({
             <p className="mm-admin__helper" role="status">{orders.length} {orders.length === 1 ? "order" : "orders"} shown</p>
             </section>
             <div className="mm-admin__orders-layout">
-                <div className="mm-admin__order-list" ref={listRef} tabIndex={-1}>
-                    {!orders.length ? <div className="mm-admin__empty"><strong>No matching orders</strong><span>Try All orders or clear your search and delivery filter.</span></div> : null}
-                    {orders.map((order) => (
-                        <button
-                            className={`mm-admin__order-card ${selectedOrderId === order.id ? "is-selected" : ""}`}
-                            type="button"
-                            key={order.id}
-                            aria-pressed={selectedOrderId === order.id}
-                            onClick={() => { setSelectedOrderId(order.id); if (window.matchMedia("(max-width: 1199px)").matches) setFocusDetail(true) }}
-                        >
+                <EmbeddedOrderCards orders={orders} selectedId={selectedOrderId} onSelect={setSelectedOrderId}
+                    empty={<div className="mm-admin__empty"><strong>No matching orders</strong><span>Try All orders or clear your search and delivery filter.</span></div>}
+                    renderSummary={(order, expanded) => <>
                             <span className="mm-admin__order-card-top">
                                 <strong>{order.customer}</strong>
                                 <strong className="mm-admin__order-amount">{money.format(order.total)}</strong>
                             </span>
                             <span className="mm-admin__badges"><em className={badgeClass(order.paymentStatus)}>{order.paymentStatus}</em><em className={badgeClass(order.status)}>{order.status}</em><span>{order.deliveryMethod}</span></span>
-                            <span className="mm-admin__order-meta">{order.id} · {order.placedAt}</span>
+                            <span className="mm-admin__order-summary-footer"><span className="mm-admin__order-meta">{order.id} · {order.placedAt}</span><span className="mm-admin__order-toggle-label">{expanded ? "Close details" : "View details"}</span></span>
                             {order.actionNeeded?.length ? <span className="mm-admin__order-meta">Action needed</span> : null}
-                        </button>
-                    ))}
-                </div>
-                {selected ? (
+                    </>}
+                    renderDetails={close => selected ? (
                     <article className="mm-admin__detail" ref={detailRef} tabIndex={-1} aria-label={`Details for ${selected.id}`}>
-                        <button type="button" className="mm-admin__text-button mm-admin__back" onClick={() => { listRef.current?.scrollIntoView({ behavior: "auto", block: "start" }); listRef.current?.focus({ preventScroll: true }) }}>← Back to orders</button>
+                        <button type="button" className="mm-admin__text-button mm-admin__close-details" onClick={close}>Close details</button>
                         <div className="mm-admin__detail-heading">
                             <p className="mm-admin__eyebrow">ORDER DETAILS</p>
                             <h2>{selected.customer}</h2>
@@ -1079,8 +1073,9 @@ function OrdersView({
                             {selected.workflow?.canCancel ? <button className="mm-admin__secondary-button" type="button" disabled={loading} onClick={() => requestStatus(selected, "Cancelled", "Cancel order")}>Cancel order</button> : null}
                         </div></details> : null}
                         {requestTrace ? <OrderSupportTrace key={`trace-${selected.id}`} order={selected} request={requestTrace} /> : null}
+                        <button type="button" className="mm-admin__text-button mm-admin__close-details" onClick={close}>Close details</button>
                     </article>
-                ) : null}
+                ) : null} />
             </div>
             <dialog className="mm-admin__dialog" ref={dialogRef} aria-labelledby="mm-order-confirm-title" aria-describedby="mm-order-confirm-description" onCancel={() => setConfirmation(null)} onClose={() => setConfirmation(null)}>
                 <h2 id="mm-order-confirm-title">{confirmation?.title}</h2>
@@ -1441,7 +1436,6 @@ const styles = `
 .mm-admin__connection-status p, .mm-admin__delivery-settings .mm-admin__technical p { margin: 0; }
 .mm-admin__delivery-settings .mm-admin__technical { border-top: 1px solid var(--mm-border); }
 .mm-admin__delivery-settings .mm-admin__technical > button { margin: 16px 0; }
-.mm-admin__back { display: none; align-self: flex-start; }
 .mm-admin__cms-steps { padding-left: 20px; line-height: 1.65; }
 .mm-admin__cms-steps li + li { margin-top: 12px; }
 @media (width < 768px) { .mm-admin__responsive-nav { display: contents; } }
@@ -1496,7 +1490,7 @@ const styles = `
 .mm-admin__cms-link { display: inline-flex; min-height: 48px; align-items: center; margin-top: 12px; padding: 13px 18px; background: #536047; color: #fff; font-weight: 700; text-decoration: none; }
 .mm-admin__muted-label { color: var(--mm-muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .mm-admin__filters { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--mm-border); }
-.mm-admin__orders-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: start; gap: 24px; }
+.mm-admin__orders-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 24px; }
 .mm-admin__orders-layout > * { min-width: 0; scroll-margin-top: 24px; }
 .mm-admin__order-card-top { align-items: flex-start; gap: 12px; }
 .mm-admin__order-card-top > strong:first-child { min-width: 0; }
@@ -1570,10 +1564,6 @@ const styles = `
   .mm-admin__product-row { grid-template-columns: 56px 1.4fr repeat(2, .7fr) auto; }
   .mm-admin__product-row > :nth-child(4), .mm-admin__product-row > :nth-child(6) { display: none; }
   .mm-admin__variant-row { padding-left: 16px; }
-}
-@container (max-width: 700px) {
-  .mm-admin__orders-layout { grid-template-columns: 1fr; }
-  .mm-admin__back { display: block; }
 }
 @container (max-width: 620px) {
   .mm-admin__page { gap: 20px; padding: 18px; }
@@ -2990,3 +2980,66 @@ const technicalAlertsCss = `
 @media(max-width:420px) { .mm-admin__alerts { padding:18px; } .mm-admin__alert-facts > div { grid-template-columns:1fr; gap:2px; } }
 `;
 // END_MM_TECHNICAL_ALERTS
+
+// BEGIN_MM_ORDER_CARDS
+interface OrderCardsProps<T extends { id: string }> {
+  orders: T[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  renderSummary: (order: T, expanded: boolean) => ReactNode;
+  renderDetails: (close: () => void) => ReactNode;
+  empty?: ReactNode;
+}
+
+// Display state only: no transport, order updates or courier actions.
+function EmbeddedOrderCards<T extends { id: string }>({ orders, selectedId, onSelect, renderSummary, renderDetails, empty }: OrderCardsProps<T>) {
+  const baseId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  const returnFocusId = useRef("");
+  useEffect(() => {
+    if (selectedId || !returnFocusId.current) return;
+    const trigger = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>(".mm-admin__order-card") || [])
+      .find(button => button.id === returnFocusId.current);
+    returnFocusId.current = "";
+    trigger?.focus({ preventScroll: true });
+    trigger?.scrollIntoView?.({ behavior: "auto", block: "nearest" });
+  }, [selectedId]);
+
+  function close(id: string) {
+    returnFocusId.current = `${baseId}-order-${encodeURIComponent(id)}`;
+    onSelect("");
+  }
+  return <div className="mm-admin__order-list mm-admin__disclosure-list" ref={listRef}>
+    <style>{orderCardsCss}</style>
+    {!orders.length ? empty : null}
+    {/* eslint-disable-next-line react-hooks/refs -- Render callbacks only attach close to buttons; refs are read in the effect, never while rendering. */}
+    {orders.map(order => {
+      const expanded = selectedId === order.id;
+      const triggerId = `${baseId}-order-${encodeURIComponent(order.id)}`;
+      const panelId = `${triggerId}-details`;
+      return <div className="mm-admin__order-disclosure" key={order.id}>
+        <button className={`mm-admin__order-card${expanded ? " is-selected" : ""}`} type="button" id={triggerId}
+          aria-expanded={expanded} aria-controls={panelId} onClick={() => expanded ? close(order.id) : onSelect(order.id)}>
+          {renderSummary(order, expanded)}
+        </button>
+        <div id={panelId} role="region" aria-labelledby={triggerId} hidden={!expanded}>
+          {expanded ? renderDetails(() => close(order.id)) : null}
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+const orderCardsCss = `
+.mm-admin__disclosure-list { display:grid; gap:14px; background:transparent; }
+.mm-admin__order-disclosure { min-width:0; border:1px solid var(--mm-border); background:var(--mm-surface); }
+.mm-admin__order-disclosure > [hidden] { display:none; }
+.mm-admin__order-disclosure .mm-admin__detail { border:0; border-top:1px solid var(--mm-border); }
+.mm-admin__order-disclosure .mm-admin__order-card { min-height:44px; user-select:none; }
+.mm-admin__order-summary-footer { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 14px; width:100%; min-width:0; }
+.mm-admin__order-summary-footer .mm-admin__order-meta { overflow-wrap:anywhere; }
+.mm-admin__order-toggle-label { color:var(--mm-ink); font-size:13px; font-weight:600; text-decoration:underline; text-underline-offset:3px; white-space:nowrap; }
+.mm-admin__order-disclosure .mm-admin__close-details { display:block; align-self:flex-start; }
+.mm-admin__order-disclosure :is(.mm-admin__order-card,.mm-admin__close-details):focus-visible { outline:2px solid var(--mm-sage); outline-offset:3px; }
+`;
+// END_MM_ORDER_CARDS
