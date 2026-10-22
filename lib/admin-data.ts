@@ -393,6 +393,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         order.postalCode,
       ]),
       deliveryDetails: order.deliveryMethod === "courier" ? { revision: order.deliveryRevision, plan: order.courierPlan, draftPlan,
+        collectionTimeMode: linkedOrder ? "preferred_instructions" as const : undefined,
         privateNote: order.privateNote || "", canEdit: !editBlocker, blockedReason: editBlocker || undefined,
         previousWaybills: previousWaybills(history),
         waybillChange: canChangeWaybill && shipment?.trackingNumber ? {

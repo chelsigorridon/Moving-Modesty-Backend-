@@ -29,7 +29,8 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
   const contact = { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" };
   const address = { company: "", line1: "10 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
   const plan = { version: 1, collection: { kind: "door", contact, address }, delivery: { kind: "door", contact: { ...contact, name: "TEST Buyer", email: "buyer@example.invalid" }, address },
-    collectionInstructions: "Test collection note", deliveryInstructions: "Test delivery note", customerApprovedPickup: false };
+    collectionInstructions: "Test collection note", deliveryInstructions: "Test delivery note", customerApprovedPickup: false,
+    collectionSchedule: { date: "2099-07-16", after: "09:00", before: "16:00" } };
   const parcel = { weightGrams: 412, lengthCm: 25, widthCm: 20.5, heightCm: 3.5 };
   const providerAddress = { company: "", street_address: address.line1, local_area: address.suburb, city: address.city, zone: "WC", country: "South Africa", code: address.postalCode };
   function load(file: string): any {
@@ -88,7 +89,10 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       async readOrderFulfillments(id: string) { calls.push("fulfillments"); return structuredClone(fulfillments.get(id)); },
       async readShipment(id: string) { calls.push("shipmentRead"); const row = structuredClone(remoteShipments.get(id)); const callback = changeDuringShipmentRead; changeDuringShipmentRead = undefined; await callback?.(); return row; },
       async updateOrder(body: any) { calls.push("update"); assert.equal(body.order_items, undefined); assert.equal(body.payment_status, undefined); assert.equal(body.account_id, undefined);
-        const row = remote.get(String(body.id)); Object.assign(row, structuredClone(body)); return structuredClone(row); },
+        const row = remote.get(String(body.id)); Object.assign(row, structuredClone(body));
+        if (mode === "schedule-not-saved") delete row.order_fulfillment_presets.requested_collection_date;
+        if (mode === "preference-not-saved") row.order_fulfillment_presets.instructions_collection = "Test collection note";
+        return structuredClone(row); },
       async orderRates(body: any) { calls.push("rates"); assert.equal(body.order_id > 0, true); const row = remote.get(String(body.order_id));
         row.rate_request = { id: 3000, provider_rate_requests: ["demo-a", "demo-b"].map(provider_slug => ({ provider_slug, provider_name: provider_slug, status: mode === "pending-rates" && provider_slug === "demo-b" ? "pending" : "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 95 }] })) };
         return structuredClone(row); },
@@ -112,6 +116,8 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
           ...(row.order_fulfillment_presets.collection_address_book_id === 91 ? { collection_pickup_point_location_id: 90 } : {}),
           ...(body.pickup_point_location_id ? { delivery_pickup_point_location_id: body.pickup_point_location_id } : {}),
           collection_address: mode === "wrong-collection" ? { ...providerAddress, code: "9999" } : providerAddress, collection_contact_name: "TEST", collection_contact_surname: "Sender", collection_contact_email: contact.email, collection_contact_mobile_number: contact.phone,
+          collection_min_date: mode === "wrong-shipment-date" ? "2099-07-17T08:00:00+02:00" : body.order_fulfillment_presets.requested_collection_date,
+          instructions_collection: mode === "wrong-shipment-preference" ? "Test collection note" : body.order_fulfillment_presets.instructions_collection,
           delivery_address: { ...row.delivery_address, country: "South Africa", zone: "WC" }, delivery_contact_name: "TEST", delivery_contact_surname: "Buyer", delivery_contact_email: "buyer@example.invalid", delivery_contact_mobile_number: contact.phone });
         if (mode === "timeout-accepted") throw new Error("PRIVATE uncertain POST");
         return { order_id: body.order_id, status: "success", method_id: Number(shipmentId), method_reference: tracking };
@@ -157,6 +163,63 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
     await t.test("permissions are required before changing the remote order or requesting rates", async () => {
       const row = await seed(), before = calls.length; mode = "permission-denied";
       await assert.rejects(quote(row), /permissions/); assert.deepEqual(calls.slice(before), ["permissions"]); mode = "normal";
+    });
+    await t.test("a linked collection sends its proper date and clearly preferred hours into the same order and fulfilment", async () => {
+      const row = await seed(), token = await quote(row), stored = await localShipment(row), snapshot = stored.booking_snapshot;
+      assert.deepEqual(snapshot.collectionSchedule, plan.collectionSchedule);
+      assert.equal(snapshot.collectionTimeMode, "preferred_instructions");
+      assert.match(snapshot.collectionInstructions, /Test collection note\nPreferred collection hours: 2099-07-16, 09:00-16:00 SAST\. Requested, not a guaranteed time slot\./);
+      assert.equal(remote.get(row.remoteId).order_fulfillment_presets.requested_collection_date, "2099-07-16T09:00:00+02:00");
+      assert.equal((await service.book(row.number, token)).booked, true);
+      const shipment = remoteShipments.get((await localShipment(row)).provider_shipment_id);
+      assert.equal(shipment.instructions_collection, snapshot.collectionInstructions);
+      assert.equal(shipment.collection_min_date, "2099-07-16T09:00:00+02:00");
+    });
+    await t.test("missing or expired collection schedules stop before provider access and note overflow cannot be truncated", async () => {
+      for (const collectionSchedule of [undefined, { date: "2000-01-01", after: "09:00", before: "16:00" }]) {
+        const row = await seed({ ...plan, collectionSchedule } as any), before = calls.length;
+        await assert.rejects(quote(row), /Choose|passed/); assert.equal(calls.length, before);
+      }
+      const row = await seed({ ...plan, collectionInstructions: "x".repeat(1000) }), before = calls.length;
+      await assert.rejects(quote(row), /Shorten/); assert.equal(calls.length, before);
+    });
+    await t.test("Bob Go must read back the requested date and driver preference before any rates or waybill POST", async () => {
+      for (const selectedMode of ["schedule-not-saved", "preference-not-saved"]) {
+        const row = await seed(), before = calls.length; mode = selectedMode;
+        await assert.rejects(quote(row), /did not confirm/);
+        assert.equal(calls.slice(before).includes("rates"), false); assert.equal(calls.slice(before).includes("book"), false);
+      }
+      mode = "normal";
+    });
+    await t.test("a changed shipment collection date or discarded driver preference stays fenced and is never booked twice", async () => {
+      for (const selectedMode of ["wrong-shipment-date", "wrong-shipment-preference"]) {
+        const row = await seed(), token = await quote(row), before = bookings(); mode = selectedMode;
+        await assert.rejects(service.book(row.number, token), /Do not book again/);
+        assert.equal((await localShipment(row)).status, "booking");
+        await assert.rejects(service.book(row.number, token), /already exists/);
+        assert.equal(bookings(), before + 1);
+      }
+      mode = "normal";
+    });
+    await t.test("date edits invalidate signed linked quotes locally and in the Bob Go dashboard", async () => {
+      const row = await seed(), token = await quote(row), before = bookings();
+      await pg.query("update orders set courier_plan=jsonb_set(courier_plan,'{collectionSchedule,date}','\"2099-07-17\"') where id=$1", [row.id]);
+      await assert.rejects(service.book(row.number, token), /quote changed/); assert.equal(bookings(), before);
+      const other = await seed(), otherToken = await quote(other);
+      remote.get(other.remoteId).order_fulfillment_presets.requested_collection_date = "2099-07-17T09:00:00+02:00";
+      await assert.rejects(service.book(other.number, otherToken), /Bob Go order changed/); assert.equal(bookings(), before);
+    });
+    await t.test("preferred hours cannot expire while a signed quote or its pre-booking checks are still valid", async () => {
+      const start = Date.parse("2099-07-16T13:55:00Z"); let clock = start;
+      const timed = createLinkedBookingService(db, provider, config, secret, () => clock);
+      const row = await seed(), token = (await timed.quotes(row.number, parcel, false)).rates.at(-1).quoteToken, before = bookings();
+      clock = Date.parse("2099-07-16T14:00:00Z");
+      await assert.rejects(timed.book(row.number, token), /passed/); assert.equal(bookings(), before);
+      clock = start;
+      const other = await seed(), otherToken = (await timed.quotes(other.number, parcel, false)).rates.at(-1).quoteToken;
+      changeDuringRead = async () => { clock = Date.parse("2099-07-16T14:00:00Z"); };
+      await assert.rejects(timed.book(other.number, otherToken), /passed/); assert.equal(bookings(), before);
+      assert.equal((await localShipment(other)).status, "ready_to_book");
     });
     await t.test("one signed courier choice creates one full order-linked fulfilment and preserves financial state", async () => {
       const row = await seed(), token = await quote(row), before = bookings();
@@ -222,11 +285,13 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
     await t.test("linked locker/counter routes preserve verified pickup IDs and restrict couriers to the selected point provider", async () => {
       for (const [collectionPoint, deliveryPoint] of [[true, false], [false, true], [true, true]]) {
         const selected: any = { ...plan,
+          collectionSchedule: collectionPoint ? undefined : plan.collectionSchedule,
           collection: collectionPoint ? { kind: "pickup_point", contact, point: { id: "90", providerSlug: "demo-b", name: "TEST Collection" } } : plan.collection,
           delivery: deliveryPoint ? { kind: "pickup_point", contact: plan.delivery.contact, point: { id: "91", providerSlug: "demo-b", name: "TEST Delivery" } } : plan.delivery,
           customerApprovedPickup: Boolean(deliveryPoint) };
         const row = await seed(selected), result = await service.quotes(row.number, parcel, false);
         assert.equal(result.rates.length, 1); assert.equal(result.rates[0].providerSlug, "demo-b");
+        if (collectionPoint) assert.equal(remote.get(row.remoteId).order_fulfillment_presets.requested_collection_date, null);
         assert.equal((await service.book(row.number, result.rates[0].quoteToken)).booked, true);
       }
     });

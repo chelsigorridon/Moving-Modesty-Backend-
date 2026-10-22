@@ -28,7 +28,7 @@ const examplePoints = [
 ];
 
 export default function DeliveryReview() {
-  const [details, setDetails] = useState<Details>({ revision: 0, plan: null, draftPlan: examplePlan, privateNote: "", canEdit: true });
+  const [details, setDetails] = useState<Details>({ revision: 0, plan: null, draftPlan: examplePlan, privateNote: "", canEdit: true, collectionTimeMode: "preferred_instructions" });
   const [booked, setBooked] = useState(false), [quoted, setQuoted] = useState(false), [choice, setChoice] = useState("0");
   const [editingDelivery, setEditingDelivery] = useState(false);
   const [reviewDetails, setReviewDetails] = useState(false);

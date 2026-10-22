@@ -200,6 +200,25 @@ test("the Moving Modesty box works offline, preserves actual weight and stays av
   });
 });
 
+test("linked collection hours are clearly labelled as a preferred driver note and remain editable", async () => {
+  const writes: any[] = [];
+  await harness("../components/delivery-editor.tsx", { guided: true, details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: true, collectionTimeMode: "preferred_instructions" }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) }, async (doc, button) => {
+    assert.match(doc.body.textContent || "", /Hours are sent as a preferred driver note, not a booked time slot/);
+    await act(async () => button("Change collection date / time"));
+    const section = doc.querySelector('[aria-label="Requested collection schedule"]')!;
+    assert.match(section.textContent || "", /driver note, not a booked time slot/);
+    assert.match(section.textContent || "", /Preferred from.*Preferred until/);
+    assert.equal(doc.querySelector('[name="collectionSchedule.after"]')?.getAttribute("type"), "time");
+    assert.equal(doc.querySelector('[name="remember"]'), null);
+    (doc.querySelector('[name="collectionSchedule.after"]') as HTMLInputElement).value = "10:00";
+    await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
+    await act(async () => doc.querySelector('fieldset')!.closest('form')!.dispatchEvent(new doc.defaultView!.Event('submit', { bubbles: true, cancelable: true })));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].plan.collectionSchedule.after, "10:00");
+    assert.equal(writes[0].plan.collectionInstructions, "", "The backend adds the preference; saving the form must not accumulate generated notes");
+  });
+});
+
 test("advanced delivery setup is collapsed for daily bookings but opens for an actionable problem", async () => {
   await harness("../components/delivery-advanced-settings.tsx", { children: "TEST product weights and sales-channel sync" }, async (doc, _button, rerender) => {
     const details = () => doc.querySelector("details")!;

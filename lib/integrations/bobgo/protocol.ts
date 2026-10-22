@@ -21,6 +21,7 @@ export type CourierBookingSnapshot = {
   collection: ResolvedCourierEndpoint; delivery: ResolvedCourierEndpoint;
   collectionInstructions: string; deliveryInstructions: string;
   collectionSchedule?: CollectionSchedule;
+  collectionTimeMode?: "preferred_instructions";
   providerSlug: string; providerName: string; serviceCode: string; serviceName: string; amount: number;
   rateRequestId?: number;
   testAttemptReference?: string;

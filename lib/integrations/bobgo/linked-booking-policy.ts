@@ -2,6 +2,7 @@ import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy.ts";
 import { courierContactInput } from "../../delivery-input.ts";
 import { matchRemoteOrder, stableOrderPayload, type BobGoOrderPayload, type OrderSyncConfiguration } from "./order-sync-policy.ts";
 import { fingerprint, parcelPayload, record, textValue, type ApprovedQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol.ts";
+import { linkedCollectionDateFields } from "./linked-collection.ts";
 
 export class LinkedBookingConflict extends Error {
   constructor(message = "The linked Bob Go order needs checking. No separate shipment will be created.") { super(message); this.name = "LinkedBookingConflict"; }
@@ -70,6 +71,7 @@ export function linkedOrderUpdate(id: string, expected: BobGoOrderPayload, snaps
     pickup_point_provider_slug: snapshot.delivery.point?.providerSlug || null,
     order_fulfillment_presets: { method: "shipment", collection_address_book_id: Number(remoteId(bookId)),
       parcels: parcelPayload(parcel, expected.channel_order_number), declared_value: 0,
+      requested_collection_date: linkedCollectionDateFields(snapshot.collectionSchedule).requested_collection_date ?? null,
       instructions_collection: snapshot.collectionInstructions, instructions_delivery: snapshot.deliveryInstructions } };
 }
 export function linkedFulfillmentPayload(quote: ApprovedQuote, reference: string) {
@@ -78,6 +80,7 @@ export function linkedFulfillmentPayload(quote: ApprovedQuote, reference: string
   return { order_id: Number(remoteId(linked.remoteOrderId)), items: null, method: "shipment", type: "original", source: "full",
     custom_tracking_reference: reference,
     order_fulfillment_presets: { provider_slug: quote.providerSlug, service_level_code: quote.serviceCode,
+      requested_collection_date: linkedCollectionDateFields(snapshot.collectionSchedule).requested_collection_date ?? null,
       declared_value: 0, instructions_collection: snapshot.collectionInstructions, instructions_delivery: snapshot.deliveryInstructions,
       store_location_id: null },
     pickup_point_location_id: snapshot.delivery.point ? Number(snapshot.delivery.point.id) : null,

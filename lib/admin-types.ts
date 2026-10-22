@@ -74,6 +74,7 @@ export type AdminOrder = {
     privateNote: string;
     canEdit: boolean;
     blockedReason?: string;
+    collectionTimeMode?: "preferred_instructions";
     waybillChange?: { action: "cancel_waybill" | "check_cancellation" | "prepare_replacement"; trackingNumber: string };
     previousWaybills?: Array<{ trackingNumber: string; courierName: string; status: string; replacedAt: string }>;
   };

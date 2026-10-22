@@ -12,6 +12,7 @@ type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierE
 
 type DeliveryPointResult = PickupPoint & { description: string; type: string };
 type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string;
+  collectionTimeMode?: "preferred_instructions";
   waybillChange?: { action: "cancel_waybill" | "check_cancellation" | "prepare_replacement"; trackingNumber: string };
   previousWaybills?: Array<{ trackingNumber: string; courierName: string; status: string; replacedAt: string }> };
 interface DeliveryEditorProps {
@@ -149,6 +150,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
       {side === "collection" && shownPlan.collection.kind === "door" && (!guided || details.plan) ? <div className="mm-delivery__schedule-summary"><p><strong>Requested collection:</strong> {shownPlan.collectionSchedule ? collectionScheduleLabel(shownPlan.collectionSchedule) : "Choose a date and time."}</p>
+        {details.collectionTimeMode === "preferred_instructions" ? <p className="mm-admin__helper">Hours are sent as a preferred driver note, not a booked time slot.</p> : null}
         {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled || saving} onClick={() => edit("collection", undefined, true)}>{shownPlan.collectionSchedule ? "Change collection date / time" : "Choose collection date / time"}</button> : null}
         {!guided ? <p className="mm-admin__helper">Requested window, not a guaranteed appointment. Courier cut-offs and business days apply.</p> : null}</div> : null}
       {details.canEdit && !editing && !guided ? <>
@@ -199,13 +201,13 @@ export default function DeliveryEditor({ details, disabled = false, save, search
       </div></details></> : null}
       {plan.collection.kind === "door" ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
         <h4>When can the courier collect?</h4>
-        <p className="mm-admin__helper">Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed.</p>
+        <p className="mm-admin__helper">{details.collectionTimeMode === "preferred_instructions" ? "Choose preferred hours between 08:00 and 17:00 (SAST). These are sent as a driver note, not a booked time slot." : "Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed."}</p>
         <div className="mm-delivery__grid">
           <label className="mm-admin__field">Requested collection date<input name="collectionSchedule.date" type="date" required min={southAfricaToday()} value={plan.collectionSchedule?.date || ""} autoComplete="off"
             onChange={event => setPlan(current => ({ ...current, collectionSchedule: { date: event.target.value, after: current.collectionSchedule?.after || "", before: current.collectionSchedule?.before || "" } }))} /></label>
-          <label className="mm-admin__field">Available from<input name="collectionSchedule.after" type="time" required min="08:00" max="17:00" step={60} value={plan.collectionSchedule?.after || ""} autoComplete="off"
+          <label className="mm-admin__field">{details.collectionTimeMode === "preferred_instructions" ? "Preferred from" : "Available from"}<input name="collectionSchedule.after" type="time" required min="08:00" max="17:00" step={60} value={plan.collectionSchedule?.after || ""} autoComplete="off"
             onChange={event => setPlan(current => ({ ...current, collectionSchedule: { date: current.collectionSchedule?.date || "", after: event.target.value, before: current.collectionSchedule?.before || "" } }))} /></label>
-          <label className="mm-admin__field">Available until<input name="collectionSchedule.before" type="time" required min="08:00" max="17:00" step={60} value={plan.collectionSchedule?.before || ""} autoComplete="off"
+          <label className="mm-admin__field">{details.collectionTimeMode === "preferred_instructions" ? "Preferred until" : "Available until"}<input name="collectionSchedule.before" type="time" required min="08:00" max="17:00" step={60} value={plan.collectionSchedule?.before || ""} autoComplete="off"
             onChange={event => setPlan(current => ({ ...current, collectionSchedule: { date: current.collectionSchedule?.date || "", after: current.collectionSchedule?.after || "", before: event.target.value } }))} /></label>
         </div><details><summary>Collection timing</summary><p className="mm-admin__helper">Courier cut-offs and business days apply. Bob Go may move collection to the next available business day.</p></details>
       </section> : null}
