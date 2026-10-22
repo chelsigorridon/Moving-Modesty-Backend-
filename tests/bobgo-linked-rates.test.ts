@@ -40,6 +40,48 @@ test("locker collection rates retain both the selected point and its provider", 
   assert.equal(result.rates.length, 1);
 });
 
+// Observed Bob Box response shape; synthetic addresses replace customer data.
+const homeAddress = { company: "", street_address: "20 Example Road", local_area: "Example", city: "Cape Town", zone: "Western Cape", country: "ZA", code: "7800" };
+const senderLocker = { collection: { kind: "pickup_point", point: { id: "1156", providerSlug: "ie" } }, delivery: { kind: "door", address: homeAddress } } as typeof route;
+const lockerRate = { ...rate, provider_slug: "ie", provider_name: "Internet Express", service_level_code: "BOXL-S", service_level_name: "Bob Box (BOXL-S)",
+  rate_amount: 53.39, service_level_delivery_type: "pickup-point", collection_pickup_point_location_id: 1156 };
+const lockerRequest = (overrides: Record<string, unknown> = {}) => request({ collection_pickup_point_location_id: 1156,
+  delivery_address: homeAddress, door_rates: [lockerRate], ...overrides });
+
+test("the observed Constantia sender-locker pickup-point label remains a home-delivery quote", () => {
+  for (const value of [lockerRequest(), { rate_request: lockerRequest() }, { order: { id: 77, rate_request: lockerRequest() } }]) {
+    const result = readLinkedRates(value, "77", senderLocker, 3000);
+    assert.equal(result.pending, false); assert.equal(result.rates.length, 1);
+    assert.deepEqual(result.rates[0], { providerSlug: "ie", providerName: "Internet Express", serviceCode: "BOXL-S", serviceName: "Bob Box (BOXL-S)", amount: 53.39 });
+  }
+  assert.equal(readLinkedRates(lockerRequest({ should_poll: true }), "77", senderLocker).pending, true);
+});
+
+test("sender-locker exceptions require the exact point, provider and verified home address", () => {
+  for (const changes of [{ collection_pickup_point_location_id: 1157 }, { collection_pickup_point_location_id: null },
+    { delivery_address: null }, { delivery_address: {} }, { delivery_address: { ...homeAddress, code: "9999" } },
+    { delivery_address: { ...homeAddress, street_address: "Another Road" } }, { delivery_address: { ...homeAddress, country: "US" } }]) {
+    assert.equal(readLinkedRates(lockerRequest(changes), "77", senderLocker).rates.length, 0, JSON.stringify(changes));
+  }
+  for (const changes of [{ collection_pickup_point_location_id: 1157 }, { collection_pickup_point_location_id: null }, { provider_slug: "other" },
+    { pickup_point_location_id: 1156 }, { pickup_point_location_id: null }, { pickup_point_location_id: undefined }]) {
+    assert.equal(readLinkedRates(lockerRequest({ door_rates: [{ ...lockerRate, ...changes }] }), "77", senderLocker).rates.length, 0, JSON.stringify(changes));
+  }
+  assert.equal(readLinkedRates(lockerRequest(), "77", route).rates.length, 0, "A sender locker must actually be selected");
+  assert.equal(readLinkedRates(lockerRequest(), "77", { ...senderLocker, delivery: { kind: "door" } } as typeof route).rates.length, 0);
+  assert.equal(readLinkedRates(lockerRequest({ delivery_address: { ...homeAddress, country: "South Africa", zone: "WC" } }), "77", senderLocker).rates.length, 1);
+});
+
+test("sender-locker labels do not admit recipient pickup, on-demand, disabled or unfunded services", () => {
+  for (const changes of [{ is_disabled: true }, { is_failed: true }, { status: "failed" }, { error_message: "Unavailable" },
+    { has_insufficient_funds_can_make_payment: true }, { rate_amount: 0 }, { rate_amount: -1 }, { rate_amount: "" },
+    { service_level_delivery_type: "locker" }, { service_level_delivery_type: "counter" }, { service_level_delivery_type: "unknown" }]) {
+    assert.equal(readLinkedRates(lockerRequest({ door_rates: [{ ...lockerRate, ...changes }] }), "77", senderLocker).rates.length, 0, JSON.stringify(changes));
+  }
+  assert.equal(readLinkedRates(lockerRequest({ door_rates: [], pickup_point_rates: [lockerRate] }), "77", senderLocker).rates.length, 0);
+  assert.equal(readLinkedRates(lockerRequest({ door_rates: [], on_demand_rates: [lockerRate] }), "77", senderLocker).rates.length, 0);
+});
+
 test("disabled, failed, unfunded, malformed, non-positive and wrong-route entries are not bookable options", () => {
   for (const changes of [{ is_disabled: true }, { is_failed: true }, { has_insufficient_funds_can_make_payment: true }, { status: "failed" },
     { rate_amount: 0 }, { rate_amount: -1 }, { rate_amount: null }, { rate_amount: "" }, { rate_amount: NaN }, { provider_slug: "../bad" },

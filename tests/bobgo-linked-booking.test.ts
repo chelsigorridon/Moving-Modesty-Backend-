@@ -108,6 +108,11 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         row.rate_request = { rate_request_id: requestId, should_poll: mode === "pending-rates" || mode === "delayed-rates" && count < 3 || mode === "rate-id-change" && count === 1,
           door_rates: pickup ? [] : options, pickup_point_rates: pickup ? options : [], on_demand_rates: [] };
         if (mode === "empty-rates") row.rate_request.door_rates = [];
+        if (mode === "sender-locker-pickup-type") {
+          row.rate_request.collection_pickup_point_location_id = collectionPoint;
+          row.rate_request.delivery_address = structuredClone(row.delivery_address);
+          row.rate_request.door_rates = options.map(option => ({ ...option, service_level_code: "BOXL-S", service_level_name: "TEST Bob Box", service_level_delivery_type: "pickup-point", rate_amount: 53.39 }));
+        }
         // Match the real modal response: no order.id, no legacy provider array.
         return { rate_request: structuredClone(row.rate_request) }; },
       async createFulfillment(body: any) {
@@ -375,6 +380,19 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         if (collectionPoint) assert.equal(remote.get(row.remoteId).order_fulfillment_presets.requested_collection_date, null);
         assert.equal((await service.book(row.number, result.rates[0].quoteToken)).booked, true);
       }
+    });
+    await t.test("sender-locker pickup-point-labelled door rates become selectable on the same linked order without booking", async () => {
+      const selected: any = { ...plan, collectionSchedule: undefined, collection: { kind: "pickup_point", contact, point: { id: "90", providerSlug: "demo-b", name: "TEST Collection Locker" } } };
+      const row = await seed(selected), beforeBookings = bookings(), beforeOrders = remote.size;
+      mode = "sender-locker-pickup-type";
+      try {
+        const result = await service.quotes(row.number, parcel, false);
+        assert.equal(result.rates.length, 1); assert.equal(result.rates[0].providerSlug, "demo-b");
+        assert.equal(result.rates[0].serviceCode, "BOXL-S"); assert.equal(result.rates[0].amount, 53.39); assert.ok(result.rates[0].quoteToken);
+        assert.equal(bookings(), beforeBookings); assert.equal(remote.size, beforeOrders);
+        assert.equal(remote.get(row.remoteId).order_fulfillment_presets.collection_address_book_id, 91);
+        assert.deepEqual(remote.get(row.remoteId).delivery_address, { ...providerAddress, country: "ZA", zone: "Western Cape" });
+      } finally { mode = "normal"; }
     });
     await t.test("packed measurement changes invalidate quotes even without a delivery revision change", async () => {
       const row = await seed(), token = await quote(row), before = bookings();

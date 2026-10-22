@@ -1,4 +1,5 @@
 import { LinkedBookingConflict } from "./linked-booking-policy.ts";
+import { bobGoAddressesMatch } from "./address-policy.ts";
 import { parseRates, record, textValue, type CourierBookingSnapshot, type CourierRate } from "./protocol.ts";
 
 type Route = Pick<CourierBookingSnapshot, "collection" | "delivery">;
@@ -35,7 +36,15 @@ export function readLinkedRates(value: unknown, orderId: string, route: Route, e
   }
   if (typeof request.should_poll !== "boolean" || ["door_rates", "pickup_point_rates", "on_demand_rates"].some(key => !Array.isArray(request[key]) || (request[key] as unknown[]).length > 1000)) throw invalid();
   const point = route.delivery.point;
-  const candidates = point ? request.pickup_point_rates as unknown[] : [...request.door_rates as unknown[], ...request.on_demand_rates as unknown[]];
+  const doorRates = request.door_rates as unknown[];
+  // Bob Box sender-locker services can be labelled "pickup-point" even in
+  // door_rates. Accept that label only for the verified locker-to-home route;
+  // never infer the customer's destination from this service label alone.
+  const senderLockerToHome = !point && route.delivery.kind === "door" && route.collection.kind === "pickup_point" && Boolean(route.collection.point)
+    && String(request.collection_pickup_point_location_id) === route.collection.point?.id
+    && ["street_address", "local_area", "city", "zone", "country", "code"].every(key => textValue(record(route.delivery.address)[key]).trim())
+    && bobGoAddressesMatch(record(request.delivery_address), record(route.delivery.address));
+  const candidates = point ? request.pickup_point_rates as unknown[] : [...doorRates, ...request.on_demand_rates as unknown[]];
   const rates: CourierRate[] = [];
   for (const value of candidates) {
     const row = record(value), amount = row.rate_amount;
@@ -44,7 +53,9 @@ export function readLinkedRates(value: unknown, orderId: string, route: Route, e
     const slug = textValue(row.provider_slug), code = textValue(row.service_level_code);
     if (!/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(slug) || !code.trim() || code.length > 100 || provider && slug !== provider) continue;
     if (point ? String(row.pickup_point_location_id) !== point.id || !["locker", "counter"].includes(textValue(row.service_level_delivery_type))
-      : !noPoint(row.pickup_point_location_id) || row.service_level_delivery_type !== "door") continue;
+      : !noPoint(row.pickup_point_location_id) || !(row.service_level_delivery_type === "door"
+        || senderLockerToHome && doorRates.includes(value) && row.service_level_delivery_type === "pickup-point"
+          && (row.pickup_point_location_id === 0 || row.pickup_point_location_id === "0"))) continue;
     if (route.collection.point ? String(row.collection_pickup_point_location_id) !== route.collection.point.id
       : !noPoint(row.collection_pickup_point_location_id)) continue;
     rates.push({ providerSlug: slug, providerName: textValue(row.provider_name) || slug, serviceCode: code,
