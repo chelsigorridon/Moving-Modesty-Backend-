@@ -1,9 +1,10 @@
 import "server-only";
-import { and, asc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { requireDatabase } from "../../db";
 import { bobgoOrderSync, orders, shipments } from "../../db/schema";
 import { createBobGoOrderSyncService, type BobGoOrderSyncProvider } from "./order-sync";
 import type { OrderSyncConfiguration } from "./order-sync-policy";
+import { validSyncScope } from "./activation-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Report = (orderId: string, kind: "sync" | "tracking", failed: boolean) => Promise<void>;
@@ -13,10 +14,13 @@ export function createBobGoSyncRunner(database: Database, provider: BobGoOrderSy
   return async function run() {
     const result = { enabled: config.enabled, ordersChecked: 0, waybillLinksChecked: 0, shipmentsChecked: 0, needsAttention: 0 };
     if (!config.enabled) return result;
+    if (!validSyncScope(config)) throw new Error("New-order sync cutoff is required.");
+    const newOrdersOnly = config.createdAfter ? gte(orders.createdAt, new Date(config.createdAfter)) : undefined;
     const started = clock(), now = new Date(started);
     // Only the payment outbox is processed; never bulk-import historical orders.
     const jobs = await database.select({ orderId: bobgoOrderSync.orderId }).from(bobgoOrderSync)
-      .where(and(eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef),
+      .innerJoin(orders, eq(orders.id, bobgoOrderSync.orderId))
+      .where(and(newOrdersOnly, eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef),
         inArray(bobgoOrderSync.status, ["queued", "retry", "checking", "syncing"]), lte(bobgoOrderSync.nextAttemptAt, now),
         or(isNull(bobgoOrderSync.leaseExpiresAt), lte(bobgoOrderSync.leaseExpiresAt, now))))
       .orderBy(asc(bobgoOrderSync.nextAttemptAt)).limit(2);
@@ -31,8 +35,9 @@ export function createBobGoSyncRunner(database: Database, provider: BobGoOrderSy
     // Discover only fulfilled copies of this channel's already-synced orders.
     // No account-wide shipment scan, historical order import or booking call.
     const unlinked = await database.select({ orderId: bobgoOrderSync.orderId }).from(bobgoOrderSync)
+      .innerJoin(orders, eq(orders.id, bobgoOrderSync.orderId))
       .leftJoin(shipments, eq(shipments.orderId, bobgoOrderSync.orderId))
-      .where(and(eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef),
+      .where(and(newOrdersOnly, eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef),
         eq(bobgoOrderSync.status, "synced"), isNotNull(bobgoOrderSync.remoteOrderId),
         or(isNull(bobgoOrderSync.waybillLinkCheckedAt), lte(bobgoOrderSync.waybillLinkCheckedAt, cutoff)),
         or(isNull(shipments.id), inArray(shipments.status, ["not_ready", "ready_to_book"]))))
@@ -47,7 +52,8 @@ export function createBobGoSyncRunner(database: Database, provider: BobGoOrderSy
       } catch { result.needsAttention++; await report(item.orderId, "sync", true); }
     }
     const due = await database.select({ orderId: shipments.orderId }).from(shipments)
-      .where(and(eq(shipments.provider, `bobgo-${config.environment}`), eq(shipments.status, "booked"),
+      .innerJoin(orders, eq(orders.id, shipments.orderId))
+      .where(and(newOrdersOnly, eq(shipments.provider, `bobgo-${config.environment}`), eq(shipments.status, "booked"),
         or(isNull(shipments.courierCheckedAt), lte(shipments.courierCheckedAt, cutoff)),
         or(isNull(shipments.courierStatus), inArray(shipments.courierStatus, ["pending-collection", "collected", "at-hub", "in-transit", "at-destination-hub", "out-for-delivery", "delivery-exception"]))))
       .orderBy(sql`${shipments.courierCheckedAt} asc nulls first`, asc(shipments.createdAt)).limit(2);

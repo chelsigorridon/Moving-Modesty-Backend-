@@ -20,6 +20,7 @@ import {
 } from "./db/schema";
 import type { AdminOrder, OrderStatus, PaymentStatus } from "./admin-types";
 import { getBobGoConfiguration } from "./integrations/bobgo/configuration";
+import { isOrderInSyncScope } from "./integrations/bobgo/activation-policy";
 import { shipmentBookingBlockers } from "./shipping/readiness";
 import { orders as demoOrders, products as demoProducts } from "./store-data";
 import type { ProductInput } from "./product-input";
@@ -300,7 +301,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       const editBlocker = deliveryEditBlocker(order, shipment);
       const history = deliveryHistory.filter(row => row.orderId === order.id);
       const cancellationPending = cancellationRequested(history, shipment);
-      const linkedOrder = syncRows.some(row => row.orderId === order.id && (row.remoteOrderId || row.submittedAt
+      const inSyncScope = syncConfiguration.enabled && order.paymentProvider === `payfast-${syncConfiguration.environment}` && isOrderInSyncScope(order, syncConfiguration);
+      const linkedOrder = inSyncScope || syncRows.some(row => row.orderId === order.id && (row.remoteOrderId || row.submittedAt
         || ["synced", "checking", "syncing"].includes(row.status) || row.leaseExpiresAt && row.leaseExpiresAt.getTime() > Date.now()));
       const linkedConfig = getLinkedBookingConfiguration(), linkedSnapshot = shipment?.bookingSnapshot?.linkedOrder;
       const linkedChangeAllowed = linkedOrder && linkedConfig.enabled && linkedConfig.environment === bobGo.environment
@@ -401,7 +403,9 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
           action: shipment.courierStatus === "cancelled" && (!linkedOrder || linkedSnapshot?.cancellationConfirmed) ? "prepare_replacement" as const
             : cancellationPending || linkedOrder && shipment.courierStatus === "cancelled" ? "check_cancellation" as const : "cancel_waybill" as const,
         } : undefined } : undefined,
-      bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? orderSyncView(syncRows.find(row => row.orderId === order.id), syncConfiguration.enabled, getLinkedBookingConfiguration().enabled) : undefined,
+      bobGoSync: order.deliveryMethod === "courier" && order.paymentStatus === "paid" ? syncConfiguration.enabled && !inSyncScope
+        ? { status: "Excluded from new-order sync", message: "Sync is enabled for new live-paid orders only. This existing or test order is unchanged." }
+        : orderSyncView(syncRows.find(row => row.orderId === order.id), inSyncScope, getLinkedBookingConfiguration().enabled) : undefined,
       items: itemsByOrder.get(order.id) ?? [],
       actionNeeded: [
         ...(notificationRows.some(event => event.orderId === order.id && event.status === "failed") ? [{ message: "An email notification needs attention. Open Email notifications below to see what to do." }] : []),

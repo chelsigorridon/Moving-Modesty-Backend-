@@ -16,6 +16,7 @@ import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy";
 import { courierContactInput } from "../../delivery-input";
 import { activeLinkedFulfillments, retiredLinkedFulfillments, retiredFingerprint, verifyRetiredShipments } from "./linked-fulfillment-policy";
 import { linkedCollectionDateMatches, linkedCollectionInstructions, linkedCollectionProblem, linkedCollectionShipmentMatches } from "./linked-collection";
+import { isOrderInSyncScope } from "./activation-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Reader = Pick<Database, "select" | "insert" | "update">;
@@ -29,7 +30,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
   function enabled() { if (!config.enabled || !secret || !config.channelRef || config.channelRef === "not-activated") throw new LinkedBookingConflict(linkedBookingPaused); }
   async function load(reader: Reader, number: string) {
     const [order] = await reader.select().from(orders).where(eq(orders.orderNumber, number)).limit(1);
-    if (!order) throw new LinkedBookingConflict("Order not found.");
+    if (!order || !isOrderInSyncScope(order, config)) throw new LinkedBookingConflict("Linked booking is enabled for new orders only. This older order is unchanged.");
     const [job] = await reader.select().from(bobgoOrderSync).where(scope(order.id)).limit(1);
     const otherChannels = await reader.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.orderId, order.id), eq(bobgoOrderSync.environment, config.environment)));
     if (otherChannels.some(row => row.channelRef !== config.channelRef && (row.remoteOrderId || row.submittedAt || ["syncing", "checking", "synced"].includes(row.status)))) throw new LinkedBookingConflict("This order also has another channel submission. Reconcile both copies before booking.");

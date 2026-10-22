@@ -309,6 +309,29 @@ test("Bob Go sync outbox is isolated, reconciles uncertain creates and never cha
       assert.equal((await service.refreshWaybillLink(id)).status, "ineligible"); assert.equal(calls.length, before);
       assert.equal((await job(id)).waybill_link_checked_at.getTime(), clock);
     });
+    await t.test("activation excludes historical paid orders, delayed callbacks and old queued jobs without changing their records", async () => {
+      const boundary = new Date(clock), scopedConfig = { ...config, createdAfter: boundary.toISOString() };
+      const historical = await seed("MM-SYNC-ACTIVATION-OLD", { createdAt: new Date(clock - 86400000) });
+      const queued = await seed("MM-SYNC-ACTIVATION-OLD-QUEUE", { createdAt: new Date(clock - 86400000) });
+      const fresh = await seed("MM-SYNC-ACTIVATION-NEW", { createdAt: new Date(clock + 1) });
+      await db.transaction((tx: any) => sync.enqueuePaidBobGoOrder(tx, queued.id, config));
+      const original = JSON.stringify((await postgres.query<any>("select * from orders where id in ($1,$2) order by id", [historical.id, queued.id])).rows);
+      const originalJob = JSON.stringify(await job(queued.id)), before = calls.length;
+      const scoped = sync.createBobGoOrderSyncService(db, provider, scopedConfig, () => clock);
+      assert.equal((await db.transaction((tx: any) => sync.enqueuePaidBobGoOrder(tx, historical.id, scopedConfig))).queued, false);
+      for (const id of [historical.id, queued.id]) {
+        assert.equal((await scoped.sync(id)).status, "ineligible"); assert.equal((await scoped.retry(id)).status, "ineligible");
+        assert.equal((await scoped.refreshTracking(id)).status, "ineligible"); assert.equal((await scoped.refreshWaybillLink(id)).status, "ineligible");
+      }
+      assert.equal(calls.length, before); assert.equal(await job(historical.id), undefined); assert.equal(JSON.stringify(await job(queued.id)), originalJob);
+      await db.transaction((tx: any) => sync.enqueuePaidBobGoOrder(tx, fresh.id, scopedConfig));
+      const { createBobGoSyncRunner } = load("lib/integrations/bobgo/order-sync-runner.ts");
+      const result = await createBobGoSyncRunner(db, provider, scopedConfig, async () => {}, () => clock)();
+      assert.equal(result.ordersChecked, 1); assert.equal((await job(fresh.id)).status, "synced");
+      assert.equal(remote.has("MM-SYNC-ACTIVATION-OLD"), false); assert.equal(remote.has("MM-SYNC-ACTIVATION-OLD-QUEUE"), false);
+      assert.equal(JSON.stringify(await job(queued.id)), originalJob);
+      assert.equal(JSON.stringify((await postgres.query<any>("select * from orders where id in ($1,$2) order by id", [historical.id, queued.id])).rows), original);
+    });
     await t.test("verified weight configuration is audited, optimistic and independent of stock, payments and sync activation", async () => {
       const first = await seed("MM-SYNC-WEIGHTS-FIRST"), second = await seed("MM-SYNC-WEIGHTS-SECOND"), count = calls.length;
       const weights = load("lib/shipping-weights.ts");

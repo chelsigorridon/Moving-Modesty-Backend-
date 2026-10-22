@@ -1,15 +1,14 @@
 import { z } from "zod";
 import { courierAddressInput, courierContactInput } from "../../delivery-input.ts";
 import { bobGoAddressesMatch } from "./address-policy.ts";
+import { newOrderConfiguration } from "./activation-policy.ts";
+export type { OrderSyncConfiguration } from "./activation-policy.ts";
+import type { OrderSyncConfiguration } from "./activation-policy.ts";
 
 export type OrderSyncState = "queued" | "syncing" | "retry" | "checking" | "synced" | "needs_attention";
-export type OrderSyncConfiguration = { enabled: boolean; environment: "sandbox" | "production"; channelRef: string };
-
-// Deliberately not environment-switchable in this review release. There is no
-// activation until domain/channel setup, weights and shipment/order linkage
-// have been verified. The prepared transport/runner cannot bypass this gate.
+// Explicit production activation only, with an immutable new-order cutoff.
 export function getOrderSyncConfiguration(): OrderSyncConfiguration {
-  return { enabled: false, environment: "sandbox", channelRef: "not-activated" };
+  return newOrderConfiguration("BOBGO_ORDER_SYNC_ENABLED");
 }
 
 export const orderSyncMessages = {

@@ -2,6 +2,9 @@ import { apiJson, apiOptions } from "@/lib/api-response";
 import { getRequestAdmin } from "@/lib/auth";
 import { checkConfiguredBobGoWaybillLink, retryConfiguredBobGoSync } from "@/lib/integrations/bobgo/order-sync-runtime";
 
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
 export function OPTIONS() { return apiOptions(); }
 export async function POST(request: Request, context: { params: Promise<{ orderNumber: string }> }) {
   if (!(await getRequestAdmin(request))) return apiJson({ error: "Unauthorized" }, { status: 401 });

@@ -4,6 +4,10 @@
     {
       "path": "/api/internal/bobgo-delivery",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/internal/bobgo-sync",
+      "schedule": "10 5 * * *"
     }
   ]
 }

@@ -9,6 +9,7 @@ import { createBobGoSyncRunner } from "./order-sync-runner";
 import { createBobGoOrderSyncService } from "./order-sync";
 import { eq } from "drizzle-orm";
 import { orders } from "../../db/schema";
+import { isOrderInSyncScope } from "./activation-policy";
 
 export function isSyncRunnerAuthorized(request: Request, secret = process.env.CRON_SECRET) {
   if (!secret || secret.length < 32 || secret.startsWith("replace-")) return false;
@@ -18,8 +19,8 @@ export function isSyncRunnerAuthorized(request: Request, secret = process.env.CR
   return timingSafeEqual(digest(supplied), digest(`Bearer ${secret}`));
 }
 
-// This gate stays closed even when credentials are added. Enabling the policy
-// is a separate reviewed release after domain/channel/provider acceptance tests.
+// Credentials alone cannot activate syncing; the policy also requires explicit
+// production switches and the persisted new-order cutoff.
 export function preparedSyncCredentials(config: OrderSyncConfiguration) {
   if (!config.enabled) return null;
   const token = process.env.BOBGO_ORDER_SYNC_API_TOKEN?.trim(), channel = process.env.BOBGO_ORDER_SYNC_CHANNEL_REF?.trim();
@@ -44,14 +45,31 @@ export async function runConfiguredBobGoSync() {
   })();
 }
 
+// Called only after a verified payment response. Never backfill order history,
+// wait for a daily cron, or mix customer payment success with provider failure.
+export async function syncConfiguredPaidOrder(orderId: string) {
+  const config = getOrderSyncConfiguration();
+  if (!config.enabled) return { status: "disabled" };
+  const database = requireDatabase();
+  const [order] = await database.select({ createdAt: orders.createdAt }).from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order || !isOrderInSyncScope(order, config)) return { status: "ineligible" };
+  const credentials = preparedSyncCredentials(config);
+  if (!credentials) return { status: "disabled" };
+  const result = await createBobGoOrderSyncService(database, createBobGoSyncTransport(config, credentials.token), config).sync(orderId);
+  if (["needs_attention", "retry", "checking"].includes(result.status)) await reportFailure(null, { operation: "courier_sync", orderId, code: "provider_request", alert: false });
+  else if (result.status === "synced") await resolveFailures("courier_sync", orderId);
+  return result;
+}
+
 export async function retryConfiguredBobGoSync(orderNumber: string) {
   const config = getOrderSyncConfiguration(), credentials = preparedSyncCredentials(config);
   if (!credentials) return { status: "disabled" };
   const database = requireDatabase();
   const [order] = await database.select({ id: orders.id }).from(orders).where(eq(orders.orderNumber, orderNumber)).limit(1);
   if (!order) return { status: "ineligible" };
-  // Retry only queues the existing job. The background runner performs read-back.
-  return createBobGoOrderSyncService(database, createBobGoSyncTransport(config, credentials.token), config).retry(order.id);
+  const service = createBobGoOrderSyncService(database, createBobGoSyncTransport(config, credentials.token), config);
+  const result = await service.retry(order.id);
+  return result.status === "queued" ? service.sync(order.id) : result;
 }
 
 export async function checkConfiguredBobGoWaybillLink(orderNumber: string) {

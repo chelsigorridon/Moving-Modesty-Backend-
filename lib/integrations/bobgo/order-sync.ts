@@ -9,6 +9,7 @@ import { buildBobGoOrderPayload, getOrderSyncConfiguration, matchRemoteOrder, st
   type BobGoOrderPayload, type BobGoOrderSource, type OrderSyncConfiguration, type OrderSyncErrorCode } from "./order-sync-policy";
 import { existingWaybillReference, verifiedExistingWaybill, WaybillLinkError, type WaybillLinkErrorCode } from "./waybill-link-policy";
 import { activeLinkedFulfillments, retiredLinkedFulfillments, verifyRetiredShipments } from "./linked-fulfillment-policy";
+import { isOrderInSyncScope } from "./activation-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -28,7 +29,7 @@ export interface BobGoOrderSyncProvider {
 async function eligibleOrder(tx: Reader, orderId: string, config: OrderSyncConfiguration) {
   const [data] = await tx.select({ order: orders, payment: payments }).from(orders)
     .leftJoin(payments, eq(payments.orderId, orders.id)).where(eq(orders.id, orderId)).limit(1);
-  if (!data || data.order.archivedAt || data.order.deliveryMethod !== "courier" || data.order.paymentStatus !== "paid"
+  if (!data || !isOrderInSyncScope(data.order, config) || data.order.archivedAt || data.order.deliveryMethod !== "courier" || data.order.paymentStatus !== "paid"
     || ["cancelled", "collected"].includes(data.order.status) || data.payment?.status !== "paid" || !data.payment.verifiedAt
     || !data.payment.providerPaymentId || data.payment.provider !== `payfast-${config.environment}`
     || Number(data.order.total) !== Number(data.payment.amount)) return null;
@@ -102,6 +103,9 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
   }
   async function sync(orderId: string) {
     if (!config.enabled) return { status: "disabled" };
+    // Old queued jobs and delayed/repeated PayFast callbacks must leave every
+    // historical record untouched, not even change an old job's error status.
+    if (!(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
     const claimed = await database.transaction(async tx => {
       // Order lock is always taken first, matching checkout/delivery/booking.
       await tx.select({ id: orders.id }).from(orders).where(eq(orders.id, orderId)).for("update");
@@ -172,6 +176,7 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
   // webhook endpoint or live adapter in this review release.
   async function refreshTracking(orderId: string) {
     if (!config.enabled) return { status: "disabled" };
+    if (!(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
     const [shipment] = await database.select().from(shipments).where(eq(shipments.orderId, orderId)).limit(1);
     if (!shipment?.providerShipmentId || !shipment.trackingNumber || shipment.status !== "booked" || shipment.provider !== `bobgo-${config.environment}`) return { status: "ineligible" };
     const remote = record(await provider.readShipment(shipment.providerShipmentId));
@@ -204,6 +209,8 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
   // in Bob Go. It is behind the same hard-off gate as the prepared sync runner.
   async function refreshWaybillLink(orderId: string) {
     if (!config.enabled) return { status: "disabled" };
+    const [scopedOrder] = await database.select({ createdAt: orders.createdAt }).from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!scopedOrder || !isOrderInSyncScope(scopedOrder, config)) return { status: "ineligible" };
     const [job] = await database.select().from(bobgoOrderSync).where(scope(orderId)).limit(1);
     if (!job || job.status !== "synced" || !job.remoteOrderId) return { status: "ineligible" };
     // Reserve a check time before network access, including for now-ineligible
@@ -269,6 +276,7 @@ export function createBobGoOrderSyncService(database: Database, provider: BobGoO
   }
   async function retry(orderId: string) {
     if (!config.enabled) return { status: "disabled" };
+    if (!(await eligibleOrder(database, orderId, config))) return { status: "ineligible" };
     return database.transaction(async tx => {
       const job = await lock(tx, orderId);
       if (!job || !(await eligibleOrder(tx, orderId, config))) return { status: "ineligible" };

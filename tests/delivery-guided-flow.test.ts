@@ -155,13 +155,13 @@ test("booked deliveries show print and tracking first, with safe changes behind 
   }, action => action === "waybill" ? { url: "https://example.invalid/TEST.pdf" } : {});
 });
 
-test("the shared one-step layout is bundled once and both sync gates remain disabled", () => {
+test("the shared one-step layout is bundled once and both gates require explicit new-order activation", () => {
   assert.equal((source.match(/function EmbeddedDeliveryStepFlow\(/g) || []).length, 1);
   assert.doesNotMatch(source, /from ["']\.\/delivery-step-flow/);
   assert.match(source, /key=\{current\}/);
   assert.match(source, /@media\(prefers-reduced-motion:reduce\)/);
   for (const path of ["order-sync-policy", "linked-booking-policy"]) {
     const policy = readFileSync(new URL(`../lib/integrations/bobgo/${path}.ts`, import.meta.url), "utf8");
-    assert.match(policy, /return \{ enabled: false, environment: "sandbox", channelRef: "not-activated" \}/);
+    assert.match(policy, /return newOrderConfiguration\("BOBGO_(?:ORDER_SYNC|LINKED_BOOKING)_ENABLED"\)/);
   }
 });

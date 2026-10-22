@@ -5,8 +5,11 @@ import {
 } from "@/lib/integrations/payfast/notification";
 import { sendPaidOrderEmails } from "@/lib/email";
 import { reportFailure, resolveFailures } from "@/lib/monitoring";
+import { after } from "next/server";
+import { syncConfiguredPaidOrder } from "@/lib/integrations/bobgo/order-sync-runtime";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
@@ -33,6 +36,10 @@ export async function POST(request: Request) {
   await resolveFailures("payment_notify", result.orderId);
 
   if (result.paymentStatus === "paid" && !result.courierTest) {
+    after(async () => {
+      try { await syncConfiguredPaidOrder(result.orderId); }
+      catch { await reportFailure(null, { operation: "courier_sync", orderId: result.orderId, code: "provider_request", alert: false }); }
+    });
     try {
       await sendPaidOrderEmails(result.orderId);
     } catch (error) {

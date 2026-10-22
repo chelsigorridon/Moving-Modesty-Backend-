@@ -15,6 +15,8 @@ import { assertCourierTestCanQuote, assertCourierTestBookingApproval, reserveCou
 import { configuredLinkedBooking } from "./linked-booking-runtime";
 import { LinkedBookingConflict } from "./linked-booking-policy";
 import { collectionScheduleProblem } from "../../shipping/collection-schedule";
+import { getOrderSyncConfiguration } from "./order-sync-policy";
+import { isOrderInSyncScope } from "./activation-policy";
 
 export class ShippingConflict extends Error {}
 const database = () => requireDatabase();
@@ -37,6 +39,12 @@ async function loadOrder(orderNumber: string) {
 }
 type ShippingOrder = Awaited<ReturnType<typeof loadOrder>>;
 async function hasSubmittedChannelOrder(orderId: string) {
+  const config = getOrderSyncConfiguration();
+  if (config.enabled) {
+    const [order] = await database().select({ createdAt: orders.createdAt, provider: payments.provider }).from(orders)
+      .innerJoin(payments, eq(payments.orderId, orders.id)).where(eq(orders.id, orderId)).limit(1);
+    if (order?.provider === `payfast-${config.environment}` && isOrderInSyncScope(order, config)) return true;
+  }
   const jobs = await database().select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, getBobGoConfiguration().environment)));
   return jobs.some(job => job.remoteOrderId || job.submittedAt || ["synced", "checking", "syncing"].includes(job.status)
     || job.leaseExpiresAt && job.leaseExpiresAt.getTime() > Date.now());
@@ -47,7 +55,14 @@ async function linkedAction<T>(action: () => Promise<T>): Promise<T> {
 }
 async function assertIndependentBookingAllowed(reader: Pick<ReturnType<typeof requireDatabase>, "select">, orderId: string) {
   // Also protects previously-synced orders if automatic sync is later paused.
-  // Current unsynced orders retain the existing manual portal workflow.
+  // Newly activated orders must wait for their channel copy. This also fences
+  // an old standalone quote signed before the payment outbox was submitted.
+  const config = getOrderSyncConfiguration();
+  if (config.enabled) {
+    const [order] = await reader.select({ createdAt: orders.createdAt, provider: payments.provider }).from(orders)
+      .innerJoin(payments, eq(payments.orderId, orders.id)).where(eq(orders.id, orderId)).limit(1);
+    if (order?.provider === `payfast-${config.environment}` && isOrderInSyncScope(order, config)) throw new ShippingConflict("This new order uses linked Bob Go booking. Wait for sales-channel sync, then compare couriers again.");
+  }
   const jobs = await reader.select({ status: bobgoOrderSync.status, remoteId: bobgoOrderSync.remoteOrderId, submittedAt: bobgoOrderSync.submittedAt,
     leaseExpiresAt: bobgoOrderSync.leaseExpiresAt }).from(bobgoOrderSync)
     .where(and(eq(bobgoOrderSync.orderId, orderId), eq(bobgoOrderSync.environment, getBobGoConfiguration().environment)));

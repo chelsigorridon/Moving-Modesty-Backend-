@@ -410,6 +410,12 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       await change(row, "check_cancellation"); await change(row, "prepare_replacement"); assert.equal(cancellations(), before);
       assert.equal((await localShipment(row)).provider_shipment_id, null);
     });
+    await t.test("old linked orders cannot quote or book through new-order activation, with no provider calls", async () => {
+      const row = await seed(), before = calls.length;
+      const scoped = createLinkedBookingService(db, provider, { ...config, createdAfter: new Date(Date.now() + 60000).toISOString() }, secret);
+      await assert.rejects(scoped.quotes(row.number, parcel, false), /new orders only/);
+      assert.equal(calls.length, before);
+    });
     assert.equal(getOrderSyncConfiguration().enabled, false);
   } finally { await pg.close(); }
 });

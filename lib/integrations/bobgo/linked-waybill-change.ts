@@ -11,6 +11,7 @@ import { inspectLinkedBookingPermissions, linkedWaybillChangePermissions } from 
 import { record } from "./protocol";
 import { verifiedExistingWaybill } from "./waybill-link-policy";
 import { verifiedShipment } from "./tracking-policy";
+import { isOrderInSyncScope } from "./activation-policy";
 
 type Database = ReturnType<typeof requireDatabase>;
 type Reader = Pick<Database, "select" | "insert" | "update">;
@@ -21,7 +22,7 @@ export function createLinkedWaybillChanges(database: Database, config: OrderSync
   const scope = (id: string) => and(eq(bobgoOrderSync.orderId, id), eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef));
   async function load(reader: Reader, number: string, input: Input) {
     const [order] = await reader.select().from(orders).where(eq(orders.orderNumber, number)).limit(1);
-    if (!order || order.archivedAt || order.deliveryMethod !== "courier" || order.paymentStatus !== "paid"
+    if (!order || !isOrderInSyncScope(order, config) || order.archivedAt || order.deliveryMethod !== "courier" || order.paymentStatus !== "paid"
       || !["new", "confirmed", "processing", "ready"].includes(order.status)) throw new LinkedBookingConflict("Only active paid delivery orders that have not been handed over can change their linked waybill.");
     if (order.deliveryRevision !== input.expectedRevision) throw new LinkedBookingConflict("This order changed. Refresh it before continuing.");
     const [job] = await reader.select().from(bobgoOrderSync).where(scope(order.id)).limit(1);

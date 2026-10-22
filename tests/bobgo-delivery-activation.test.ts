@@ -4,13 +4,13 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-test("the Hobby-compatible recovery schedule invokes only delivery tracking, never order copying", () => {
+test("daily recovery schedules keep tracking and explicitly activated new-order sync separate", () => {
   const configuration = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
-  assert.deepEqual(configuration.crons, [{ path: "/api/internal/bobgo-delivery", schedule: "0 5 * * *" }]);
+  assert.deepEqual(configuration.crons, [{ path: "/api/internal/bobgo-delivery", schedule: "0 5 * * *" }, { path: "/api/internal/bobgo-sync", schedule: "10 5 * * *" }]);
   const runtime = readFileSync(new URL("../lib/integrations/bobgo/delivery-runtime.ts", import.meta.url), "utf8");
   assert.doesNotMatch(runtime, /order-sync|runConfiguredBobGoSync|bookShipment|sendEmail/);
   const syncPolicy = readFileSync(new URL("../lib/integrations/bobgo/order-sync-policy.ts", import.meta.url), "utf8");
-  assert.match(syncPolicy, /enabled: false/);
+  assert.match(syncPolicy, /newOrderConfiguration\("BOBGO_ORDER_SYNC_ENABLED"\)/);
 });
 
 test("the scheduled recovery handler requires authorization before doing tracking-only work", async () => {

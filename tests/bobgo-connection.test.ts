@@ -16,6 +16,9 @@ test("read-only connection checks verify account access without requiring a lock
       if (name.endsWith("/api-response")) return { apiJson: (body: any, options?: ResponseInit) => Response.json(body, options), apiOptions: () => new Response(null, { status: 204 }) };
       if (name.endsWith("/auth")) return { getRequestAdmin: async () => authenticated ? { email: "owner@example.invalid" } : null };
       if (name.endsWith("bobgo/configuration")) return { getBobGoConfiguration: () => config };
+      if (name.endsWith("bobgo/order-sync-policy")) return { getOrderSyncConfiguration: () => ({ enabled: false }) };
+      if (name.endsWith("bobgo/linked-booking-policy")) return { getLinkedBookingConfiguration: () => ({ enabled: false }) };
+      if (["bobgo/order-sync-runtime", "bobgo/linked-booking-transport", "bobgo/permissions"].some(path => name.endsWith(path))) return {};
       if (name.endsWith("payfast/configuration")) return { getPayFastConfiguration: () => ({ environment: "sandbox" }) };
       if (name.endsWith("/monitoring")) return { reportFailure: async () => ({ reference: "TEST-REF" }), resolveFailures: async () => {} };
       if (name.endsWith("/admin-data")) return { getAdminSnapshot: async () => ({ orders: [], products: [] }) };

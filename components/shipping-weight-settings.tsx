@@ -23,7 +23,7 @@ export default function ShippingWeightSettings({ request }: ShippingWeightSettin
     if (!form.has("confirmed")) return;
     if (!changes.length) { setMessage("No weights changed."); return; }
     setBusy(true);
-    try { const saved = await request(changes); setRows(saved); setDrafts(Object.fromEntries(saved.map(row => [row.id, row.grams === null ? "" : String(row.grams)]))); setRevision(value => value + 1); setConfirmed(false); setMessage("Measured weights saved. Automatic sync remains off."); }
+    try { const saved = await request(changes); setRows(saved); setDrafts(Object.fromEntries(saved.map(row => [row.id, row.grams === null ? "" : String(row.grams)]))); setRevision(value => value + 1); setConfirmed(false); setMessage("Measured weights saved."); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Weights could not be saved."); }
     finally { setBusy(false); }
   }
@@ -36,7 +36,7 @@ export default function ShippingWeightSettings({ request }: ShippingWeightSettin
   }
   return <details className="mm-delivery__private mm-admin__weight-settings"><summary>Product weights (without packaging)</summary>
     <style>{`.mm-admin__weight-settings{margin-top:18px;padding-top:14px;border-top:1px solid var(--mm-border,#a69e95)}.mm-admin__weight-settings summary{cursor:pointer}.mm-admin__weight-settings .mm-admin__field{display:grid;gap:6px;min-width:0}.mm-admin__weight-settings .mm-admin__field input{width:100%;box-sizing:border-box}.mm-admin__weight-settings .mm-delivery__check{display:flex;align-items:flex-start;gap:10px}.mm-admin__weight-settings .mm-delivery__check input{flex:none;width:20px;height:20px}.mm-admin__weight-settings .mm-delivery__actions{display:flex;flex-wrap:wrap;gap:12px}`}</style>
-    <p className="mm-admin__helper">One-time setup for future sales-channel sync, not the parcel you are booking. Save the weight of each scarf without its box. Leave unknown weights blank. Automatic sync stays off.</p>
+    <p className="mm-admin__helper">Product weights for sales-channel orders, not the packed parcel. Save each scarf’s weight without its box. Leave unknown weights blank.</p>
     <p className="mm-admin__helper">Zarina’s measured product weights: {zarinaProductMeasurements.map(row => `${row.product} ${row.size}: ${row.productGrams}g`).join(" · ")}. These exclude the box.</p>
     {!rows ? <button type="button" className="mm-admin__secondary-button" disabled={busy} onClick={() => { void load(); }}>{busy ? "Loading…" : "Load product weights"}</button> : <form key={revision} onSubmit={save}>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, display: "grid", gap: 12 }}>

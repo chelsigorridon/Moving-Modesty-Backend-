@@ -102,7 +102,7 @@ test("delivery updates are separately gated, require protected recovery access, 
     assert.equal(mod.exports.deliveryUpdatesConfiguration().environment, "production");
     process.env.VERCEL_ENV = "preview";
     assert.throws(() => mod.exports.deliveryUpdatesConfiguration());
-    assert.match(readFileSync(new URL("../lib/integrations/bobgo/order-sync-policy.ts", import.meta.url), "utf8"), /enabled: false/);
+    assert.match(readFileSync(new URL("../lib/integrations/bobgo/order-sync-policy.ts", import.meta.url), "utf8"), /newOrderConfiguration\("BOBGO_ORDER_SYNC_ENABLED"\)/);
   } finally { keys.forEach((key, index) => { if (before[index] === undefined) delete process.env[key]; else process.env[key] = before[index]; }); }
 });
 

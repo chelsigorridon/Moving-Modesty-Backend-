@@ -6,13 +6,14 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { parseBobGoPackages } from "../lib/integrations/bobgo/packages.ts";
+import { isOrderInSyncScope } from "../lib/integrations/bobgo/activation-policy.ts";
 
 const require = createRequire(import.meta.url);
 function load(file: string, stubs: Record<string, any> = {}, env: Record<string, string> = {}) {
   const exports: any = {};
   const compiled = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   runInNewContext(compiled, { exports, Buffer, URL, URLSearchParams, AbortSignal, Response, fetch: () => { throw new Error("Live network forbidden"); }, process: { env },
-    require: (name: string) => name === "server-only" ? {} : Object.hasOwn(stubs, name) ? stubs[name] : require(name) });
+    require: (name: string) => name === "server-only" ? {} : name === "./activation-policy" ? { isOrderInSyncScope } : Object.hasOwn(stubs, name) ? stubs[name] : require(name) });
   return exports;
 }
 test("saved Bob Go packages use dimensions only, never the volumetric figure as actual weight", () => {

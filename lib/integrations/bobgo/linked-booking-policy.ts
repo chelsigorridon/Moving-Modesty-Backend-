@@ -3,6 +3,7 @@ import { courierContactInput } from "../../delivery-input.ts";
 import { matchRemoteOrder, stableOrderPayload, type BobGoOrderPayload, type OrderSyncConfiguration } from "./order-sync-policy.ts";
 import { fingerprint, parcelPayload, record, textValue, type ApprovedQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol.ts";
 import { linkedCollectionDateFields } from "./linked-collection.ts";
+import { newOrderConfiguration } from "./activation-policy.ts";
 
 export class LinkedBookingConflict extends Error {
   constructor(message = "The linked Bob Go order needs checking. No separate shipment will be created.") { super(message); this.name = "LinkedBookingConflict"; }
@@ -10,10 +11,9 @@ export class LinkedBookingConflict extends Error {
 export const linkedBookingPaused = "Linked portal booking is not activated. Keep the existing order in Bob Go; do not create a separate shipment.";
 // Manual linked booking has its own release gate. Pausing automatic order
 // copying must not force an already-linked order back into standalone shipping.
-// Activation requires a separate reviewed acceptance step; credentials alone
-// cannot enable either gate. No environment flag switches automatic sync on.
+// Both switches share the same new-order cutoff; booking is always manual.
 export function getLinkedBookingConfiguration(): OrderSyncConfiguration {
-  return { enabled: false, environment: "sandbox", channelRef: "not-activated" };
+  return newOrderConfiguration("BOBGO_LINKED_BOOKING_ENABLED");
 }
 export function remoteId(value: unknown) {
   const id = textValue(value);

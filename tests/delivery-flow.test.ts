@@ -255,7 +255,7 @@ test("Zarina's weights are staged explicitly, preserve unknown variants, and sav
     await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
     await act(async () => button("Save product weights"));
     assert.deepEqual(JSON.parse(JSON.stringify(writes)), [[{ id: "small", expectedGrams: null, grams: 126 }, { id: "large", expectedGrams: 140, grams: 145 }, { id: "amina", expectedGrams: null, grams: 212 }]]);
-    assert.match(doc.body.textContent || "", /Automatic sync remains off/);
+    assert.match(doc.body.textContent || "", /Measured weights saved\./);
     assert.equal((doc.querySelector('[name="confirmed"]') as HTMLInputElement).checked, false);
   });
 });
