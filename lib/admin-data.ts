@@ -285,7 +285,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
 
   return {
     operationalNotice: incidents === null ? "Error monitoring is temporarily unavailable. Orders are still shown; ask website support to check it."
-      : incidents.some(incident => !incident.orderId && incident.severity === "error") ? "A website service needs attention. Please ask website support to check the technical alerts." : undefined,
+      : incidents.some(incident => !incident.orderId && incident.severity === "error") ? "Recorded website issues need review. Open Technical alerts under Account." : undefined,
     orders: orderRows.map((order) => {
       const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.customerFirstName ?? "", lastName: order.customerLastName ?? "", email: order.customerEmail ?? "", phone: order.customerPhone });
       const shipment = shipmentByOrder.get(order.id);

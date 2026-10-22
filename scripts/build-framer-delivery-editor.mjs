@@ -11,6 +11,7 @@ for (const [name, file, original, embedded] of [
   ["ORDER_SYNC_STATUS", "order-sync-status.tsx", "OrderSyncStatus", "EmbeddedOrderSyncStatus"],
   ["PARCEL_EDITOR", "parcel-editor.tsx", "ParcelEditor", "EmbeddedParcelEditor"],
   ["SHIPPING_WEIGHT_SETTINGS", "shipping-weight-settings.tsx", "ShippingWeightSettings", "EmbeddedShippingWeightSettings"],
+  ["TECHNICAL_ALERTS", "technical-alerts.tsx", "TechnicalAlerts", "EmbeddedTechnicalAlerts"],
 ]) {
   const begin = `// BEGIN_MM_${name}`, end = `// END_MM_${name}`;
   portal = portal.replace(new RegExp(`\\n${begin}[\\s\\S]*?${end}\\n?`), "");
@@ -20,6 +21,7 @@ for (const [name, file, original, embedded] of [
   if (original) source = source.replace(`export default function ${original}`, `function ${embedded}`);
   if (name === "PACKING_REFERENCE") source = source.replace(/^export (?=(?:const|function)\b)/gm, "");
   if (name === "COLLECTION_SCHEDULE") source = source.replace(/^export (?=(?:type|function)\b)/gm, "");
+  if (name === "TECHNICAL_ALERTS") source = source.replace(/^export (?=const\b)/gm, "");
   portal = `${portal.trimEnd()}\n\n${begin}\n${source.trim()}\n${end}\n`;
 }
 writeFileSync(target, portal);
