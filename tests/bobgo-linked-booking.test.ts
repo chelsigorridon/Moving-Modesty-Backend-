@@ -24,7 +24,7 @@ test("permission inspection uses only the key user's role and never treats a suc
 test("linked quotes, booking and timeout reconciliation are isolated and fenced against duplicates", async t => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), ".."), require = createRequire(import.meta.url);
   const pg = new PGlite(), db = require("drizzle-orm/pglite").drizzle(pg), cache = new Map<string, any>();
-  const calls: string[] = [], remote = new Map<string, any>(), fulfillments = new Map<string, any>(), remoteShipments = new Map<string, any>();
+  const calls: string[] = [], waits: number[] = [], ratePolls = new Map<string, number>(), remote = new Map<string, any>(), fulfillments = new Map<string, any>(), remoteShipments = new Map<string, any>();
   let mode = "normal", changeDuringRead: (() => Promise<void>) | undefined, changeDuringShipmentRead: (() => Promise<void>) | undefined;
   const contact = { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" };
   const address = { company: "", line1: "10 Example Road", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
@@ -98,8 +98,18 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         if (mode === "preference-not-saved") row.order_fulfillment_presets.instructions_collection = "Test collection note";
         return structuredClone(row); },
       async orderRates(body: any) { calls.push("rates"); assert.equal(body.order_id > 0, true); const row = remote.get(String(body.order_id));
-        row.rate_request = { id: 3000, provider_rate_requests: ["demo-a", "demo-b"].map(provider_slug => ({ provider_slug, provider_name: provider_slug, status: mode === "pending-rates" && provider_slug === "demo-b" ? "pending" : "success", responses: [{ status: "success", service_level_code: "ECO", rate_amount: 95 }] })) };
-        return structuredClone(row); },
+        const count = body.queue_rates ? 1 : (ratePolls.get(String(body.order_id)) || 0) + 1; ratePolls.set(String(body.order_id), count);
+        assert.equal(Boolean(body.queue_rates), body.rate_request_id === undefined, "Polling never queues a fresh calculation");
+        const pickup = row.pickup_point_location_id || 0, collectionPoint = row.order_fulfillment_presets.collection_address_book_id === 91 ? 90 : null;
+        const options = ["demo-a", "demo-b"].map(provider_slug => ({ provider_slug, provider_name: provider_slug, status: "success", is_failed: false, is_disabled: false,
+          service_level_code: "ECO", service_level_name: "Economy", rate_amount: 95, service_level_delivery_type: pickup ? "counter" : "door", pickup_point_location_id: pickup, collection_pickup_point_location_id: collectionPoint }));
+        const requestId = mode === "rate-id-change" && count > 1 ? 3001 : 3000;
+        row.rate_request_id = mode === "wrong-linked-rate" ? 4000 : requestId;
+        row.rate_request = { rate_request_id: requestId, should_poll: mode === "pending-rates" || mode === "delayed-rates" && count < 3 || mode === "rate-id-change" && count === 1,
+          door_rates: pickup ? [] : options, pickup_point_rates: pickup ? options : [], on_demand_rates: [] };
+        if (mode === "empty-rates") row.rate_request.door_rates = [];
+        // Match the real modal response: no order.id, no legacy provider array.
+        return { rate_request: structuredClone(row.rate_request) }; },
       async createFulfillment(body: any) {
         calls.push("book");
         const row = remote.get(String(body.order_id));
@@ -145,7 +155,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         return { success: true }; // Never trusted in place of the three GET checks.
       },
     };
-    const service = createLinkedBookingService(db, provider, config, secret);
+    const service = createLinkedBookingService(db, provider, config, secret, Date.now, async (milliseconds: number) => { waits.push(milliseconds); });
     const { createLinkedWaybillChanges } = load("lib/integrations/bobgo/linked-waybill-change.ts");
     const changes = createLinkedWaybillChanges(db, config, provider);
     const quote = async (row: any) => (await service.quotes(row.number, parcel, false)).rates.at(-1).quoteToken;
@@ -301,8 +311,39 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
       await assert.rejects(quote(row), /already has a fulfilment/); assert.equal(bookings(), before);
     });
     await t.test("a provider still calculating rates cannot silently hide other courier choices", async () => {
-      const row = await seed(), before = bookings(); mode = "pending-rates";
-      await assert.rejects(quote(row), /not finished/); mode = "normal"; assert.equal(bookings(), before);
+      const row = await seed(), before = bookings(), waitStart = waits.length, callStart = calls.length; mode = "pending-rates";
+      try {
+        await assert.rejects(quote(row), /still calculating/);
+        assert.deepEqual(waits.slice(waitStart), [1000, 2000, 4000]);
+        assert.equal(calls.slice(callStart).filter(call => call === "rates").length, 4);
+        assert.equal(await localShipment(row), undefined);
+      } finally { mode = "normal"; }
+      assert.equal(bookings(), before);
+    });
+    await t.test("modern delayed rates wait with backoff and return all services without booking", async () => {
+      const row = await seed(), before = bookings(), waitStart = waits.length; mode = "delayed-rates";
+      try {
+        const result = await service.quotes(row.number, parcel, false);
+        assert.equal(result.rates.length, 2); assert.deepEqual(waits.slice(waitStart), [1000, 2000]);
+        assert.equal(ratePolls.get(row.remoteId), 3);
+        assert.equal((await localShipment(row)).status, "ready_to_book");
+        assert.equal(bookings(), before);
+      } finally { mode = "normal"; }
+    });
+    await t.test("unbound or changed rate references and completed empty results cannot save or book a quote", async () => {
+      for (const selectedMode of ["wrong-linked-rate", "rate-id-change", "empty-rates"]) {
+        const row = await seed(), before = bookings(); mode = selectedMode;
+        try {
+          await assert.rejects(quote(row), /could not be matched|quote reference changed|no bookable/);
+          assert.equal(await localShipment(row), undefined); assert.equal(bookings(), before);
+        } finally { mode = "normal"; }
+      }
+    });
+    await t.test("a new dashboard rate calculation invalidates the signed courier choice before booking", async () => {
+      const row = await seed(), token = await quote(row), before = bookings();
+      remote.get(row.remoteId).rate_request_id = 4000;
+      await assert.rejects(service.book(row.number, token), /Bob Go order changed/);
+      assert.equal(bookings(), before);
     });
     await t.test("unconfirmed collection address read-back cannot be labelled as a successful booking", async () => {
       const row = await seed(), token = await quote(row), before = bookings(); mode = "wrong-collection";

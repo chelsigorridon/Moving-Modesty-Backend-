@@ -30,8 +30,12 @@ test("linked transport targets the order fulfilment API with channel authenticat
     return Response.json(url.includes("/orders?") ? { orders: [{ id: 77 }] } : {});
   });
   await transport.readPermissions(); await transport.readCollections(); await transport.readOrder("77");
-  await transport.updateOrder({ id: 77 }); await transport.orderRates({ order_id: 77 }); await transport.createFulfillment({ order_id: 77 });
-  assert.deepEqual(calls.map(call => call.options.method), ["GET", "GET", "GET", "PATCH", "POST", "POST"]);
+  await transport.updateOrder({ id: 77 }); await transport.orderRates({ order_id: 77, queue_rates: true, new_rates_modal: true });
+  await transport.orderRates({ order_id: 77, rate_request_id: 3000, new_rates_modal: true }); await transport.createFulfillment({ order_id: 77 });
+  assert.deepEqual(calls.map(call => call.options.method), ["GET", "GET", "GET", "PATCH", "POST", "POST", "POST"]);
+  assert.equal(calls[4].url, "https://api.sandbox.bobgo.co.za/v2/orders/rates");
+  assert.equal(calls[5].url, calls[4].url);
+  assert.deepEqual(JSON.parse(calls[5].options.body), { order_id: 77, rate_request_id: 3000, new_rates_modal: true });
   assert.equal(calls.at(-1).url, "https://api.sandbox.bobgo.co.za/v2/order-fulfillments");
   for (const call of calls) { assert.equal(call.options.redirect, "error"); assert.equal(call.options.cache, "no-store");
     assert.equal(call.options.headers.Authorization, "Bearer TEST-ONLY-TOKEN"); assert.equal(call.options.headers["bobgo-channel-identifier"], "store.example.invalid"); }

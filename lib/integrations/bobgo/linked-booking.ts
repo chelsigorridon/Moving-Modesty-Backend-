@@ -11,7 +11,8 @@ import { existingWaybillReference, verifiedExistingWaybill } from "./waybill-lin
 import { assertNoFulfillments, collectionBookId, expectedFingerprint, linkedFulfillmentPayload, linkedOrderMatch, linkedOrderUpdate,
   linkedBookingPaused, LinkedBookingConflict, linkedStandardCoverMatches, remoteBookingFingerprint } from "./linked-booking-policy";
 import type { LinkedBookingProvider } from "./linked-booking-transport";
-import { fingerprint, parcelInput, parseRates, record, signQuote, textValue, verifyQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol";
+import { fingerprint, parcelInput, record, signQuote, textValue, verifyQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol";
+import { readLinkedRates, linkedRateRequestMatches } from "./linked-rates";
 import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy";
 import { courierContactInput } from "../../delivery-input";
 import { activeLinkedFulfillments, retiredLinkedFulfillments, retiredFingerprint, verifyRetiredShipments } from "./linked-fulfillment-policy";
@@ -24,7 +25,8 @@ type Reader = Pick<Database, "select" | "insert" | "update">;
 // Dependency-injected so every external action can be tested offline. This
 // service cannot create orders and never calls the standalone shipment endpoint.
 export function createLinkedBookingService(database: Database, provider: LinkedBookingProvider,
-  config: OrderSyncConfiguration, secret: string, clock = Date.now) {
+  config: OrderSyncConfiguration, secret: string, clock = Date.now,
+  wait: (milliseconds: number) => Promise<void> = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))) {
   const scope = (id: string) => and(eq(bobgoOrderSync.orderId, id), eq(bobgoOrderSync.environment, config.environment), eq(bobgoOrderSync.channelRef, config.channelRef));
   const now = () => new Date(clock());
   function enabled() { if (!config.enabled || !secret || !config.channelRef || config.channelRef === "not-activated") throw new LinkedBookingConflict(linkedBookingPaused); }
@@ -128,22 +130,25 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
         throw new LinkedBookingConflict("Bob Go did not confirm the saved address and packed parcel. No waybill was requested.");
       }
       const remoteHash = remoteBookingFingerprint(remote);
-      let response: unknown = await provider.orderRates({ order_id: update.id, queue_rates: true, new_rates_modal: true });
-      let rates: ReturnType<typeof parseRates> = [], requestId = 0, pending = false;
-      for (let attempt = 0; attempt < 4; attempt++) {
-        const order = record(record(response).order || response), request = record(order.rate_request);
-        if (String(order.id) !== state.job.remoteOrderId) throw new LinkedBookingConflict();
-        requestId = Number(request.id ?? request.rate_request_id);
-        if (!Number.isSafeInteger(requestId) || requestId <= 0) throw new LinkedBookingConflict("Bob Go did not return an order-specific quote reference.");
-        rates = parseRates(request, resolved.providerSlug);
-        pending = Array.isArray(request.provider_rate_requests) && request.provider_rate_requests.some(value => ["pending", "queued", "processing", "pending-rates"].includes(textValue(record(value).status)));
-        if (rates.length && !pending) break;
-        if (attempt < 3) response = await provider.orderRates({ order_id: update.id, rate_request_id: requestId, new_rates_modal: true });
+      const deadline = clock() + 25000;
+      let result = readLinkedRates(await provider.orderRates({ order_id: update.id, queue_rates: true, new_rates_modal: true }), state.job.remoteOrderId!, snapshot);
+      const requestId = result.requestId;
+      // The new response can omit order.id. Verify its request ID against an
+      // exact-order read, rather than accepting an unbound list of prices.
+      const boundOrder = await provider.readOrder(state.job.remoteOrderId!);
+      if (!linkedRateRequestMatches(boundOrder, state.job.remoteOrderId!, requestId)
+        || remoteBookingFingerprint(boundOrder) !== remoteHash) throw new LinkedBookingConflict("The courier quotes could not be matched to this Bob Go order. Compare again; no waybill was requested.");
+      for (const delay of [1000, 2000, 4000]) {
+        if (!result.pending || clock() + delay + 8000 > deadline) break;
+        await wait(delay);
+        result = readLinkedRates(await provider.orderRates({ order_id: update.id, rate_request_id: requestId, new_rates_modal: true }), state.job.remoteOrderId!, snapshot, requestId);
       }
-      if (!rates.length || pending) throw new LinkedBookingConflict("Bob Go has not finished returning the eligible linked-order courier quotes. Wait briefly and compare again; no waybill was requested.");
+      if (result.pending) throw new LinkedBookingConflict("Bob Go is still calculating courier prices. Wait briefly and compare again; no waybill was requested.");
+      const rates = result.rates;
+      if (!rates.length) throw new LinkedBookingConflict("Bob Go returned no bookable courier services for this delivery method, address and parcel. Check the delivery details or pickup point and compare again; no waybill was requested.");
       // A concurrent Bob Go dashboard edit/booking invalidates these quotes.
       remote = record(await provider.readOrder(state.job.remoteOrderId!));
-      if (remoteBookingFingerprint(remote) !== remoteHash) throw new LinkedBookingConflict("The Bob Go order changed while comparing couriers. Get a fresh quote.");
+      if (!linkedRateRequestMatches(remote, state.job.remoteOrderId!, requestId) || remoteBookingFingerprint(remote) !== remoteHash) throw new LinkedBookingConflict("The Bob Go order changed while comparing couriers. Get a fresh quote.");
       assertNoFulfillments(await readActive(state, remote));
       snapshot.linkedOrder = { remoteOrderId: state.job.remoteOrderId!, channelRef: config.channelRef, requestFingerprint: expectedFingerprint(state.expected),
         remoteFingerprint: remoteHash, collectionAddressBookId: bookId, retiredFingerprint: retiredFingerprint(state.retired) };
@@ -181,7 +186,8 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
     await permissions();
     if (collectionBookId(await provider.readCollections(), quote.deliverySnapshot!.collection) !== linked.collectionAddressBookId) throw new LinkedBookingConflict("The saved Bob Go collection address changed. Get a fresh quote.");
     const remote = await provider.readOrder(linked.remoteOrderId);
-    if (remoteBookingFingerprint(remote) !== linked.remoteFingerprint) throw new LinkedBookingConflict("The Bob Go order changed. Get a fresh quote.");
+    if (!linkedRateRequestMatches(remote, linked.remoteOrderId, quote.rateRequestId!)
+      || remoteBookingFingerprint(remote) !== linked.remoteFingerprint) throw new LinkedBookingConflict("The Bob Go order changed. Get a fresh quote.");
     assertNoFulfillments(await readActive(state, remote));
     const reference = `MM${randomUUID().replaceAll("-", "").slice(0, 20)}`;
     await database.transaction(async tx => {

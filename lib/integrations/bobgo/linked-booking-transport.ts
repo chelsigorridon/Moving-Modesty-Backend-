@@ -7,10 +7,10 @@ import { record } from "./protocol";
 export function createLinkedBookingTransport(config: OrderSyncConfiguration, token: string, fetcher: typeof fetch = fetch) {
   const reader = createBobGoSyncTransport(config, token, fetcher);
   const base = config.environment === "production" ? "https://api.bobgo.co.za/v2" : "https://api.sandbox.bobgo.co.za/v2";
-  async function request(path: string, method: "GET" | "POST" | "PATCH", payload?: Record<string, unknown>) {
+  async function request(path: string, method: "GET" | "POST" | "PATCH", payload?: Record<string, unknown>, timeout = 12000) {
     try {
       // No redirects, no POST retries, no browser-supplied host or credential.
-      const response = await fetcher(`${base}${path}`, { method, redirect: "error", cache: "no-store", signal: AbortSignal.timeout(12000),
+      const response = await fetcher(`${base}${path}`, { method, redirect: "error", cache: "no-store", signal: AbortSignal.timeout(timeout),
         headers: { Accept: "application/json", Authorization: `Bearer ${token}`, "bobgo-channel-identifier": config.channelRef,
           ...(payload ? { "Content-Type": "application/json" } : {}) }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
       if (!response.ok) { await response.body?.cancel(); throw new BobGoSyncTransportError(response.status); }
@@ -31,7 +31,7 @@ export function createLinkedBookingTransport(config: OrderSyncConfiguration, tok
       return body.orders[0];
     },
     updateOrder: (payload: Record<string, unknown>) => request("/orders", "PATCH", payload),
-    orderRates: (payload: Record<string, unknown>) => request("/orders/rates", "POST", payload),
+    orderRates: (payload: Record<string, unknown>) => request("/orders/rates", "POST", payload, 8000),
     createFulfillment: (payload: Record<string, unknown>) => request("/order-fulfillments", "POST", payload),
     // Bob Go's dashboard cancels the fulfilment by its own ID. This also
     // releases the order's fulfilled quantities; cancelling only the shipment
