@@ -68,26 +68,6 @@ async function validateWithPayFast(
   }
 }
 
-export async function recordPayFastNotificationFailure(error: PayFastNotificationError) {
-  if (!error.merchantPaymentId) return;
-  const database = requireDatabase();
-  const [payment] = await database
-    .select({ id: payments.id, status: payments.status })
-    .from(payments)
-    .where(eq(payments.merchantPaymentId, error.merchantPaymentId))
-    .limit(1);
-
-  if (!payment || payment.status === "paid") return;
-  await database
-    .update(payments)
-    .set({
-      providerStatus: "ITN_REJECTED",
-      failureReason: `PayFast ${error.stage} check failed: ${error.message}`.slice(0, 500),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(payments.id, payment.id), eq(payments.status, payment.status)));
-}
-
 export async function processPayFastNotification(request: Request, rawBody: string) {
   const params = new URLSearchParams(rawBody);
   const merchantPaymentId = params.get("m_payment_id")?.trim() ?? "";

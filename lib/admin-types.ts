@@ -44,6 +44,9 @@ export type AdminShipment = {
 };
 
 export type AdminOrder = {
+  detailsLoaded?: boolean;
+  listNeedsAttention?: boolean;
+  listInProgress?: boolean;
   id: string;
   customer: string;
   email: string;

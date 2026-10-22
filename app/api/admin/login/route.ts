@@ -2,6 +2,7 @@ import { z } from "zod";
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { authenticateAdmin, consumeAdminLoginAttempt, isAuthConfigured, issueAdminApiToken } from "@/lib/auth";
 import { reportFailure } from "@/lib/monitoring";
+import { readLimitedJson, RequestBodyError } from "@/lib/request-body";
 
 const credentialsSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
@@ -16,29 +17,9 @@ export async function POST(request: Request) {
   if (!isAuthConfigured()) {
     return apiJson({ error: "Admin authentication is not configured on Vercel." }, { status: 503 });
   }
-  if (!request.headers.get("content-type")?.includes("application/json")) return apiJson({ error: "Use JSON credentials." }, { status: 415 });
-  if (Number(request.headers.get("content-length")) > 4096) return apiJson({ error: "Request is too large." }, { status: 413 });
-  const reader = request.body?.getReader();
-  if (!reader) return apiJson({ error: "Enter a valid email address and password." }, { status: 400 });
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > 4096) {
-        await reader.cancel();
-        return apiJson({ error: "Request is too large." }, { status: 413 });
-      }
-      chunks.push(chunk.value);
-    }
-  } catch {
-    return apiJson({ error: "The sign-in request could not be read. Please try again." }, { status: 400 });
-  } finally { reader.releaseLock(); }
-  const body = new TextDecoder().decode(Buffer.concat(chunks));
   let credentials: unknown;
-  try { credentials = JSON.parse(body); } catch { credentials = null; }
+  try { credentials = await readLimitedJson(request, 4096); }
+  catch (error) { return apiJson({ error: error instanceof RequestBodyError ? error.message : "The sign-in request could not be read. Please try again." }, { status: error instanceof RequestBodyError ? error.status : 400 }); }
   const parsed = credentialsSchema.safeParse(credentials);
   if (!parsed.success) return apiJson({ error: "Enter a valid email address and password." }, { status: 400 });
   try {

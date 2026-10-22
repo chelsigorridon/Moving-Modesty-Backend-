@@ -15,7 +15,7 @@ test("discounts persist, validate server-owned prices and keep submitted PayFast
   const postgres = new PGlite();
   const database = require("drizzle-orm/pglite").drizzle(postgres);
   const modules = new Map<string, any>();
-  const env: Record<string, string> = { DISCOUNTS_ENABLED: "true", NODE_ENV: "test", RESEND_API_KEY: "TEST-NOT-REAL", ORDER_NOTIFICATION_EMAIL: "owner@example.test" };
+  const env: Record<string, string> = { DISCOUNTS_ENABLED: "true", NODE_ENV: "test", AUTH_SECRET: "LOCAL-DISCOUNT-TEST-ONLY-NOT-A-LIVE-SECRET", RESEND_API_KEY: "TEST-NOT-REAL", ORDER_NOTIFICATION_EMAIL: "owner@example.test" };
   let admin: any = { email: "owner@example.test", role: "owner" };
   const sent: any[] = [];
   const configuration = { environment: "production", merchantId: "12345678", merchantKey: "TEST-key", passphrase: "TEST-only", storeUrl: "https://store.test.invalid",
@@ -94,7 +94,9 @@ test("discounts persist, validate server-owned prices and keep submitted PayFast
     const newCheckout = await upsertCheckoutOrder({ ...discounted, checkoutToken: randomUUID(), discountCode: "NEW15" }, database);
     assert.equal(newCheckout.total, 456);
     const { POST: restore } = load("app/api/checkout/session/route.ts");
-    const session = await (await restore(new Request("https://test.invalid/api/checkout/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }))).json();
+    const restored = await restore(new Request("https://test.invalid/api/checkout/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }));
+    assert.equal(restored.status, 200);
+    const session = await restored.json();
     assert.equal(session.session.discountSnapshot.code, "SAVE10"); assert.equal(Number(session.session.discountAmount), 42);
     const { processPayFastNotification } = load("lib/integrations/payfast/notification.ts");
     const { createPayFastNotificationSignature } = load("lib/integrations/payfast/signature.ts");

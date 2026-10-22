@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { newOrderConfiguration, isOrderInSyncScope } from "../lib/integrations/bobgo/activation-policy.ts";
+import { readLimitedText, RequestBodyError } from "../lib/request-body.ts";
 
 const start = "2026-10-22T13:00:00.000Z";
 test("production activation requires an explicit switch and valid persisted cutoff; previews remain off", () => {
@@ -42,6 +43,7 @@ test("payment handoff schedules only verified real paid orders after response; B
   const callbacks: Array<() => Promise<void>> = []; let syncCalls = 0, emails = 0, failSync = false;
   let result: any = { paymentStatus: "paid", orderId: "NEW-TEST-ONLY", courierTest: false };
   const mod = route("../app/api/payments/payfast/notify/route.ts", {
+    "@/lib/request-body": { readLimitedText, RequestBodyError },
     "@/lib/integrations/payfast/notification": { processPayFastNotification: async () => result, PayFastNotificationError: class extends Error {}, recordPayFastNotificationFailure: async () => {} },
     "@/lib/email": { sendPaidOrderEmails: async () => { emails++; } },
     "@/lib/monitoring": { reportFailure: async () => ({}), resolveFailures: async () => {} },

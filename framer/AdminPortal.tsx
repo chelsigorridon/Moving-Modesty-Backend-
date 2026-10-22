@@ -35,6 +35,9 @@ interface OrderItem {
 }
 
 interface AdminOrder {
+    detailsLoaded?: boolean
+    listNeedsAttention?: boolean
+    listInProgress?: boolean
     id: string
     customer: string
     email: string
@@ -167,7 +170,7 @@ const emptySnapshot: Snapshot = { orders: [] }
 async function adminFetch(url: string, init?: RequestInit) {
     try { return await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(45000) }) }
     catch (error) {
-        if (error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
+        if (!init?.signal?.aborted && error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
             // Do not include tokens, URLs, form fields or customer data in telemetry.
             void fetch(`${new URL(url).origin}/api/diagnostics/browser`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "admin", code: error.name === "TypeError" ? "browser_network" : "browser_timeout" }), signal: AbortSignal.timeout(5000) }).catch(() => undefined)
         }
@@ -302,7 +305,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         }
         let active = true
         startTransition(() => { setLoading(true); setLoadState("loading") })
-        adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data`, {
+        adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?view=${encodeURIComponent(view)}`, {
             headers: { Authorization: `Bearer ${adminToken}` },
         })
             .then(async (response) => {
@@ -344,21 +347,43 @@ export default function AdminPortal(props: AdminPortalProps) {
         const query = search.trim().toLowerCase()
         return snapshot.orders.filter((order) => {
             const matchesStatus = orderFilter === "All orders" ||
-                (orderFilter === "Needs attention" && Boolean(order.actionNeeded?.length)) ||
-                (orderFilter === "Needs attention" && Boolean(order.aftersales?.returns.some(record => record.status !== "received") || order.aftersales?.canRecordRefund)) ||
-                (orderFilter === "Needs attention" && order.paymentStatus === "Paid" &&
+                (orderFilter === "Needs attention" && (order.listNeedsAttention ?? (Boolean(order.actionNeeded?.length) ||
+                    Boolean(order.aftersales?.returns.some(record => record.status !== "received") || order.aftersales?.canRecordRefund) ||
+                    order.paymentStatus === "Paid" &&
                     (order.status === "New" || order.status === "Confirmed" ||
                      (order.status === "Ready" && order.shipping?.status !== "Booking" && order.shipping?.status !== "Booked") ||
-                     (!['Collected', 'Delivered', 'Cancelled'].includes(order.status) && order.shipping?.status === "Failed"))) ||
-                (orderFilter === "In progress" && order.paymentStatus === "Paid" &&
+                     (!['Collected', 'Delivered', 'Cancelled'].includes(order.status) && order.shipping?.status === "Failed"))))) ||
+                (orderFilter === "In progress" && (order.listInProgress ?? (order.paymentStatus === "Paid" &&
                     (order.status === "Preparing" || order.status === "Dispatched" ||
-                     (order.status === "Ready" && ['Booking', 'Booked'].includes(order.shipping?.status || ""))))
+                     (order.status === "Ready" && ['Booking', 'Booked'].includes(order.shipping?.status || ""))))))
             return matchesStatus && (method === "All methods" || method === order.deliveryMethod) &&
                 (!query || [order.id, order.customer, order.email].some((value) => value.toLowerCase().includes(query)))
         })
     }, [orderFilter, snapshot.orders, search, method])
 
     const selectedOrder = filteredOrders.find((order) => order.id === selectedOrderId)
+    const [detailError, setDetailError] = useState("")
+    const [detailRetry, setDetailRetry] = useState(0)
+    const needsDetails = selectedOrder?.detailsLoaded === false
+    useEffect(() => {
+        if (!liveEnabled || view !== "orders" || loadState !== "ready" || !selectedOrderId || !needsDetails) return
+        const controller = new AbortController()
+        startTransition(() => setDetailError(""))
+        adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?order=${encodeURIComponent(selectedOrderId)}`, {
+            headers: { Authorization: `Bearer ${token()}` },
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
+        }).then(async response => {
+            if (response.status === 401) { rememberAdminReturnPath(); route("/admin/login"); throw new Error("Please sign in again.") }
+            const data = await response.json().catch(() => null)
+            if (!response.ok || !data?.orders?.some((order: AdminOrder) => order.id === selectedOrderId)) throw new Error(apiErrorMessage(data, "Order details could not be loaded."))
+            if (controller.signal.aborted) return
+            const fullOrder = data.orders.find((order: AdminOrder) => order.id === selectedOrderId)
+            startTransition(() => setSnapshot(current => ({ ...current, orders: current.orders.map(order => order.id === selectedOrderId ? { ...fullOrder, detailsLoaded: true } : order) })))
+        }).catch(error => {
+            if (!controller.signal.aborted) startTransition(() => setDetailError(error instanceof Error ? error.message : "Order details could not be loaded."))
+        })
+        return () => controller.abort()
+    }, [apiBaseUrl, liveEnabled, view, loadState, refresh, selectedOrderId, needsDetails, detailRetry])
 
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (mutationPending.current) return
@@ -612,6 +637,8 @@ export default function AdminPortal(props: AdminPortalProps) {
                     {snapshot.operationalNotice ? <div className="mm-admin__notice" role="status"><p style={{ margin: 0 }}>{snapshot.operationalNotice}</p><button type="button" className="mm-admin__text-button" ref={alertsBannerRef} aria-haspopup="dialog" onClick={() => openTechnicalAlerts(true)}>Review technical alerts</button></div> : null}
                     {view === "discounts" ? (
                         <DiscountManager apiBaseUrl={apiBaseUrl} enabled={liveEnabled} />
+                    ) : view === "products" ? (
+                        <ProductsView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} />
                     ) : liveEnabled && loadState !== "ready" ? (
                         <div className="mm-admin__empty" role="status"><strong>{loadState === "error" ? "Orders could not be loaded" : "Loading your orders…"}</strong><span>{loadState === "error" ? "Use Refresh orders to try again. No order data has been changed." : "Connecting securely to your store."}</span></div>
                     ) : view === "dashboard" ? (
@@ -635,6 +662,8 @@ export default function AdminPortal(props: AdminPortalProps) {
                             retryNotification={retryNotification}
                             requestTrace={liveEnabled ? requestTrace : undefined}
                             loading={loading}
+                            detailError={detailError}
+                            retryDetails={() => setDetailRetry(value => value + 1)}
                         />
                     ) : (
                 <ProductsView apiBaseUrl={apiBaseUrl} liveEnabled={liveEnabled} />
@@ -919,6 +948,8 @@ function OrdersView({
     retryNotification,
     requestTrace,
     loading,
+    detailError,
+    retryDetails,
 }: {
     orders: AdminOrder[]
     selected?: AdminOrder
@@ -937,6 +968,8 @@ function OrdersView({
     retryNotification: (order: AdminOrder, notificationId: string) => void
     requestTrace?: (order: AdminOrder) => Promise<OrderTrace>
     loading: boolean
+    detailError?: string
+    retryDetails?: () => void
 }) {
     const detailRef = useRef<HTMLElement>(null)
     const dialogRef = useRef<HTMLDialogElement>(null)
@@ -1013,7 +1046,13 @@ function OrdersView({
                             <span className="mm-admin__order-summary-footer"><span className="mm-admin__order-meta">{order.id} · {order.placedAt}</span><span className="mm-admin__order-toggle-label">{expanded ? "Close details" : "View details"}</span></span>
                             {order.actionNeeded?.length ? <span className="mm-admin__order-meta">Action needed</span> : null}
                     </>}
-                    renderDetails={close => selected ? (
+                    renderDetails={close => selected?.detailsLoaded === false ? (
+                        <section className="mm-admin__detail" aria-label={`Details for ${selected.id}`} aria-busy={!detailError}>
+                            <button type="button" className="mm-admin__text-button mm-admin__close-details" onClick={close}>Close details</button>
+                            <p role="status">{detailError || "Loading order details…"}</p>
+                            {detailError ? <button type="button" className="mm-admin__secondary-button" onClick={retryDetails}>Try again</button> : null}
+                        </section>
+                    ) : selected ? (
                     <article className="mm-admin__detail" ref={detailRef} tabIndex={-1} aria-label={`Details for ${selected.id}`}>
                         <button type="button" className="mm-admin__text-button mm-admin__close-details" onClick={close}>Close details</button>
                         <div className="mm-admin__detail-heading">

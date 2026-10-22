@@ -18,7 +18,7 @@ const fixtures = ["One", "Two", "Three"].map((name, i) => ({
   workflow: { guidance: "Review this sample order.", canCancel: false },
 }));
 
-async function harness(check: (context: any) => Promise<void>, query = "", initial = fixtures) {
+async function harness(check: (context: any) => Promise<void>, query = "", initial: any[] = fixtures, options: { summary?: boolean; failDetail?: boolean; deferDetails?: boolean } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: `https://store.test.invalid/admin/orders${query}`, runScripts: "outside-only" });
   const win = dom.window as any, originals = new Map<string, PropertyDescriptor | undefined>();
   for (const [name, value] of Object.entries({ window: win, document: win.document, HTMLElement: win.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
@@ -33,11 +33,20 @@ async function harness(check: (context: any) => Promise<void>, query = "", initi
   win.exports = {};
   const requests: string[] = [];
   let currentOrders = initial;
+  let failDetail = Boolean(options.failDetail);
+  const pending: Array<() => void> = [];
   win.fetch = async (url: string, init: any = {}) => {
     assert.equal(new URL(url).pathname, "/api/admin/data", "Only fake admin reads are allowed");
     assert.equal(init.method || "GET", "GET", "Opening cards must not mutate anything");
     requests.push(url);
-    return Response.json({ orders: currentOrders });
+    const id = new URL(url).searchParams.get("order");
+    if (id) {
+      const respond = () => failDetail ? Response.json({ error: "TEST detail read failed" }, { status: 503 })
+        : Response.json({ orders: currentOrders.filter(order => order.id === id) });
+      if (options.deferDetails) return new Promise(resolve => pending.push(() => resolve(respond())));
+      return respond();
+    }
+    return Response.json({ orders: options.summary ? currentOrders.map(order => ({ ...order, items: [], workflow: undefined, detailsLoaded: false })) : currentOrders });
   };
   win.sessionStorage.setItem("moving_modesty_admin_token", "TEST-only-no-real-session");
   win.eval(compiled);
@@ -61,7 +70,8 @@ async function harness(check: (context: any) => Promise<void>, query = "", initi
   };
   try {
     await act(async () => root.render(React.createElement(win.exports.default, { view: "orders", apiBaseUrl: "https://api.test.invalid" })));
-    await check({ doc, win, cards, opened, details, requests, click, toggle, input, setOrders: (orders: typeof fixtures) => { currentOrders = orders; } });
+    await check({ doc, win, cards, opened, details, requests, click, toggle, input, setOrders: (orders: any[]) => { currentOrders = orders; },
+      setDetailFailure: (value: boolean) => { failDetail = value; }, flushDetail: async (index = 0) => { await act(async () => pending.splice(index, 1)[0]?.()); } });
   } finally {
     await act(async () => root.unmount()); dom.window.close();
     for (const [name, descriptor] of originals) if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name);
@@ -136,6 +146,55 @@ test("empty orders do not invent a selected order", async () => {
   await harness(async ({ doc, opened, cards }) => {
     assert.equal(cards().length, 0); assert.equal(opened().length, 0); assert.match(doc.body.textContent, /No matching orders/);
   }, "", []);
+});
+
+test("lightweight cards load exactly one order on demand and reuse its details until refresh", async () => {
+  await harness(async ({ requests, toggle, details, click }) => {
+    assert.equal(new URL(requests[0]).searchParams.get("view"), "orders");
+    assert.equal(requests.length, 1);
+    await toggle(0);
+    assert.match(details()[0].textContent, /Sample scarf/);
+    assert.equal(new URL(requests[1]).searchParams.get("order"), "DEMO-1");
+    await toggle(0); await toggle(0);
+    assert.equal(requests.length, 2);
+    await click("Refresh orders");
+    assert.equal(requests.length, 4);
+    assert.equal(new URL(requests[3]).searchParams.get("order"), "DEMO-1");
+  }, "", fixtures, { summary: true });
+});
+
+test("failed detail reads show retry and never expose mutation controls from incomplete summaries", async () => {
+  await harness(async ({ toggle, details, click, setDetailFailure, requests }) => {
+    await toggle(0);
+    assert.match(details()[0].textContent, /TEST detail read failed/);
+    assert.doesNotMatch(details()[0].textContent, /Cancel order|YOUR NEXT STEP|Sample scarf/);
+    setDetailFailure(false); await click("Try again");
+    assert.match(details()[0].textContent, /Sample scarf/);
+    assert.equal(requests.length, 3);
+  }, "", fixtures, { summary: true, failDetail: true });
+});
+
+test("late detail responses cannot reopen a closed card or replace another selected order", async () => {
+  await harness(async ({ toggle, details, opened, flushDetail, requests }) => {
+    await toggle(0); assert.match(details()[0].textContent, /Loading order details/);
+    await toggle(1); await flushDetail(0);
+    assert.match(details()[0].textContent, /Loading order details/);
+    await flushDetail(0); assert.match(details()[0].textContent, /Sample Two/);
+    await toggle(1); assert.equal(opened().length, 0);
+    await toggle(2); await toggle(2); await flushDetail(0);
+    assert.equal(opened().length, 0); assert.equal(requests.length, 4);
+  }, "", fixtures, { summary: true, deferDetails: true });
+});
+
+test("summary filters respect booked/return attention flags without inventing missing shipping states", async () => {
+  await harness(async ({ cards, click }) => {
+    assert.equal(cards().length, 1); assert.match(cards()[0].textContent, /Return attention/);
+    await click("In progress"); assert.equal(cards().length, 1); assert.match(cards()[0].textContent, /Already booked/);
+    await click("All orders"); assert.equal(cards().length, 2);
+  }, "", [
+    { ...fixtures[0], customer: "Already booked", status: "Ready", listNeedsAttention: false, listInProgress: true },
+    { ...fixtures[1], customer: "Return attention", status: "Delivered", listNeedsAttention: true, listInProgress: false },
+  ], { summary: true });
 });
 test("preview uses the exact bundled disclosure and stays development-only with no provider actions", () => {
   const embedded = portal.split("// BEGIN_MM_ORDER_CARDS\n")[1]?.split("// END_MM_ORDER_CARDS")[0]?.trim();

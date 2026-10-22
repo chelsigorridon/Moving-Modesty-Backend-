@@ -103,6 +103,22 @@ test("sessions are revocable, environment-bound and fail closed; login limits pe
     const token3 = await auth.issueAdminApiToken("owner@example.test");
     await database.update(schema.adminUsers).set({ active: false });
     assert.equal(await auth.verifyAdminApiToken(token3), null);
+    // Checkout shares durable storage, but not the login counters. Spoofable
+    // forwarded headers cannot bypass a trusted client bucket.
+    const checkoutLimit = load("lib/checkout-rate-limit.ts");
+    const checkoutRequest = () => new Request("https://api.test", { headers: { "x-vercel-forwarded-for": "CHECKOUT-CLIENT", "x-forwarded-for": Math.random().toString() } });
+    const attempts = await Promise.all(Array.from({ length: 65 }, () => checkoutLimit.consumeCheckoutAttempt(checkoutRequest(), "save")));
+    assert.equal(attempts.filter(value => value.allowed).length, 60);
+    assert.ok(attempts.filter(value => !value.allowed).every(value => value.retryAfter > 0 && value.retryAfter <= 900));
+    cache.delete(resolve(root, "lib/checkout-rate-limit.ts"));
+    assert.equal((await load("lib/checkout-rate-limit.ts").consumeCheckoutAttempt(checkoutRequest(), "save")).allowed, false);
+    assert.equal((await checkoutLimit.consumeCheckoutAttempt(checkoutRequest(), "recover")).allowed, true);
+    assert.doesNotMatch(JSON.stringify(await database.select().from(schema.diagnosticRateLimits)), /CHECKOUT-CLIENT/);
+    await database.update(schema.diagnosticRateLimits).set({ expiresAt: new Date(0) });
+    assert.equal((await checkoutLimit.consumeCheckoutAttempt(checkoutRequest(), "save")).allowed, true);
+    databaseAvailable = false;
+    await assert.rejects(checkoutLimit.consumeCheckoutAttempt(checkoutRequest(), "save"), /outage/);
+    databaseAvailable = true;
     await assert.rejects(auth.issueAdminApiToken("owner@example.test"), /disabled/);
     await database.update(schema.adminUsers).set({ active: true });
     databaseAvailable = false;

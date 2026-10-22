@@ -1,6 +1,8 @@
 import { apiJson, apiOptions } from "@/lib/api-response";
 import { getPayFastCheckoutReadiness } from "@/lib/integrations/payfast/configuration";
 import { reportFailure, resolveFailures } from "@/lib/monitoring";
+import { readLimitedJson, RequestBodyError } from "@/lib/request-body";
+import { consumeCheckoutAttempt } from "@/lib/checkout-rate-limit";
 import {
   createPayFastCheckout,
   PayFastCheckoutError,
@@ -21,7 +23,18 @@ export function OPTIONS() {
 }
 
 export async function POST(request: Request) {
-  const parsed = payFastCheckoutSchema.safeParse(await request.json().catch(() => null));
+  let body: unknown;
+  try {
+    body = await readLimitedJson(request, 2_048);
+    const limit = await consumeCheckoutAttempt(request, "payment");
+    if (!limit.allowed) return apiJson({ error: "Please wait a few minutes before trying payment again." },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfter) } });
+  } catch (error) {
+    if (error instanceof RequestBodyError) return apiJson({ error: error.message }, { status: error.status });
+    const incident = await reportFailure(error, { operation: "payment_start" });
+    return apiJson({ error: "Payment is temporarily unavailable. Please try again shortly.", errorRef: incident.reference }, { status: 503 });
+  }
+  const parsed = payFastCheckoutSchema.safeParse(body);
   if (!parsed.success) {
     return apiJson({ error: "The payment request is invalid." }, { status: 400 });
   }

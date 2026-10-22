@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   addresses,
@@ -127,7 +127,73 @@ export function getDemoAdminSnapshot(): AdminSnapshot {
   };
 }
 
-export async function getAdminSnapshot(): Promise<AdminSnapshot> {
+/** Read-only summary. No parcel, address, catalogue, email body or history downloads. */
+export async function getAdminOverview(includeOrders = true): Promise<AdminSnapshot> {
+  if (!db) {
+    if (process.env.NODE_ENV === "development") return includeOrders ? getDemoAdminSnapshot() : { orders: [], products: [] };
+    throw new Error("DATABASE_URL is not configured.");
+  }
+  // Group once, rather than rescanning email/return/refund history per card.
+  const emailSummary = db.select({ orderId: emailEvents.orderId,
+    failed: sql<boolean>`bool_or(${emailEvents.status} = 'failed')`.as("has_failed_email") })
+    .from(emailEvents).groupBy(emailEvents.orderId).as("email_summary");
+  const returnSummary = db.select({ orderId: orderReturns.orderId,
+    open: sql<boolean>`bool_or(${orderReturns.status} <> 'received')`.as("has_open_return") })
+    .from(orderReturns).groupBy(orderReturns.orderId).as("return_summary");
+  const refundSummary = db.select({ orderId: orderRefunds.orderId,
+    total: sql<string>`sum(${orderRefunds.amount})`.as("refunded_total") })
+    .from(orderRefunds).groupBy(orderRefunds.orderId).as("refund_summary");
+  const [rows, incidents] = await Promise.all([
+    includeOrders ? db.select({
+      id: ordersTable.id, orderNumber: ordersTable.orderNumber, status: ordersTable.status,
+      paymentStatus: ordersTable.paymentStatus, deliveryMethod: ordersTable.deliveryMethod,
+      total: ordersTable.total, createdAt: ordersTable.createdAt, customerSnapshot: ordersTable.customerSnapshot,
+      firstName: customers.firstName, lastName: customers.lastName, email: customers.email,
+      paymentProvider: payments.provider, shipmentStatus: shipments.status,
+      cancellationPending: sql<boolean>`exists (select 1 from ${orderDeliveryHistory} where ${orderDeliveryHistory.orderId} = ${ordersTable.id}
+        and ${orderDeliveryHistory.action} = 'waybill_cancel_requested'
+        and ${orderDeliveryHistory.after}->>'providerShipmentId' = ${shipments.providerShipmentId}
+        and ${orderDeliveryHistory.after}->>'trackingNumber' = ${shipments.trackingNumber}
+        and ${orderDeliveryHistory.after}->>'provider' = ${shipments.provider})`,
+      emailFailed: sql<boolean>`coalesce(${emailSummary.failed}, false)`,
+      returnOpen: sql<boolean>`coalesce(${returnSummary.open}, false)`,
+      canRefund: sql<boolean>`${payments.status} = 'paid' and ${payments.providerPaymentId} <> '' and ${payments.verifiedAt} is not null
+        and least(${ordersTable.total}, ${payments.amount}) > coalesce(${refundSummary.total}, 0)
+        and (${ordersTable.status} = 'cancelled' or (${returnSummary.orderId} is not null and not ${returnSummary.open}))`,
+    }).from(ordersTable).leftJoin(customers, eq(ordersTable.customerId, customers.id))
+      .leftJoin(payments, eq(ordersTable.id, payments.orderId)).leftJoin(shipments, eq(ordersTable.id, shipments.orderId))
+      .leftJoin(emailSummary, eq(ordersTable.id, emailSummary.orderId)).leftJoin(returnSummary, eq(ordersTable.id, returnSummary.orderId))
+      .leftJoin(refundSummary, eq(ordersTable.id, refundSummary.orderId))
+      .where(isNull(ordersTable.archivedAt)).orderBy(desc(ordersTable.createdAt), desc(ordersTable.id)) : Promise.resolve([]),
+    getOperationalIssues().catch(() => null),
+  ]);
+  return {
+    products: [],
+    operationalNotice: incidents === null ? "Error monitoring is temporarily unavailable. Ask website support to check it."
+      : incidents.some(incident => !incident.orderId && incident.severity === "error") ? "Recorded website issues need review. Open Technical alerts under Account." : undefined,
+    orders: rows.map(order => {
+      const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.firstName || "", lastName: order.lastName || "", email: order.email || "", phone: "" });
+      const status = statusLabels[order.status], paid = order.paymentStatus === "paid";
+      const shippingStatus = order.cancellationPending && order.shipmentStatus !== "cancelled" ? "booking" : order.shipmentStatus;
+      const actionNeeded = [
+        ...(order.emailFailed ? [{ message: "An email notification needs attention." }] : []),
+        ...(incidents || []).filter(incident => incident.orderId === order.id && incident.severity === "error" && incident.source !== "email"
+          && !(incident.source === "payment" && paid)).map(incident => ({ message: incidentAction(incident.source, incident.code), reference: incident.reference })),
+      ];
+      return { id: order.orderNumber, customer: `${customer.firstName} ${customer.lastName}`.trim() || "Guest customer", email: customer.email, phone: "",
+        placedAt: dateFormatter.format(order.createdAt), placedDate: order.createdAt.toISOString(), total: Number(order.total),
+        paymentStatus: paymentLabels[order.paymentStatus], payment: { provider: "PayFast", environment: paymentEnvironmentFromProvider(order.paymentProvider) },
+        status, deliveryMethod: deliveryLabels[order.deliveryMethod], items: [], detailsLoaded: false, actionNeeded,
+        listNeedsAttention: Boolean(actionNeeded.length || order.returnOpen || order.canRefund || paid &&
+          (["New", "Confirmed"].includes(status) || status === "Ready" && !["booking", "booked"].includes(shippingStatus || "")
+          || !["Collected", "Delivered", "Cancelled"].includes(status) && shippingStatus === "failed")),
+        listInProgress: paid && (["Preparing", "Dispatched"].includes(status) || status === "Ready" && ["booking", "booked"].includes(shippingStatus || "")),
+      };
+    }),
+  };
+}
+
+export async function getAdminSnapshot(options: { orderNumber?: string; includeProducts?: boolean } = {}): Promise<AdminSnapshot> {
   if (!db) {
     if (process.env.NODE_ENV === "development") return getDemoAdminSnapshot();
     throw new Error("DATABASE_URL is not configured.");
@@ -135,6 +201,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
 
   const syncConfiguration = getOrderSyncConfiguration();
   const bobGo = getBobGoConfiguration();
+  const orderCondition = and(isNull(ordersTable.archivedAt), options.orderNumber ? eq(ordersTable.orderNumber, options.orderNumber) : undefined);
+  const scope = db.select({ id: ordersTable.id }).from(ordersTable).where(orderCondition);
   const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows, senderSettings, syncRows, deliveryHistory] = await Promise.all([
     db
       .select({
@@ -178,7 +246,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
       .leftJoin(customers, eq(ordersTable.customerId, customers.id))
       .leftJoin(addresses, eq(ordersTable.deliveryAddressId, addresses.id))
       .leftJoin(payments, eq(ordersTable.id, payments.orderId))
-      .where(isNull(ordersTable.archivedAt))
+      .where(orderCondition)
       .orderBy(desc(ordersTable.createdAt)),
     db
       .select({
@@ -191,8 +259,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         price: orderItems.unitPrice,
         productSnapshot: orderItems.productSnapshot,
       })
-      .from(orderItems),
-    db
+      .from(orderItems).where(inArray(orderItems.orderId, scope)),
+    options.includeProducts !== false ? db
       .select({
         id: productsTable.id,
         slug: productsTable.slug,
@@ -203,8 +271,8 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         image: productsTable.primaryImageUrl,
       })
       .from(productsTable)
-      .orderBy(desc(productsTable.createdAt)),
-    db
+      .orderBy(desc(productsTable.createdAt)) : Promise.resolve([]),
+    options.includeProducts !== false ? db
       .select({
         id: productVariants.id,
         productId: productVariants.productId,
@@ -215,7 +283,7 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         price: productVariants.price,
         lowStockThreshold: productVariants.lowStockThreshold,
       })
-      .from(productVariants),
+      .from(productVariants) : Promise.resolve([]),
     db
       .select({
         orderId: shipments.orderId,
@@ -236,16 +304,16 @@ export async function getAdminSnapshot(): Promise<AdminSnapshot> {
         providerShipmentId: shipments.providerShipmentId,
         shipmentProvider: shipments.provider,
       })
-      .from(shipments),
-    db.select().from(emailEvents).orderBy(desc(emailEvents.createdAt)),
+      .from(shipments).where(inArray(shipments.orderId, scope)),
+    db.select().from(emailEvents).where(inArray(emailEvents.orderId, scope)).orderBy(desc(emailEvents.createdAt)),
     getOperationalIssues().catch(() => null),
-    db.select().from(orderReturns),
-    db.select().from(orderRefunds).orderBy(desc(orderRefunds.createdAt)),
+    db.select().from(orderReturns).where(inArray(orderReturns.orderId, scope)),
+    db.select().from(orderRefunds).where(inArray(orderRefunds.orderId, scope)).orderBy(desc(orderRefunds.createdAt)),
     db.select({ orderId: inventoryMovements.orderId, variantId: inventoryMovements.variantId,
-      type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements),
+      type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements).where(inArray(inventoryMovements.orderId, scope)),
     db.select().from(courierSettings).where(eq(courierSettings.id, "sender")).limit(1),
-    db.select().from(bobgoOrderSync).where(eq(bobgoOrderSync.environment, bobGo.environment)),
-    db.select().from(orderDeliveryHistory).orderBy(desc(orderDeliveryHistory.createdAt)),
+    db.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.environment, bobGo.environment), inArray(bobgoOrderSync.orderId, scope))),
+    db.select().from(orderDeliveryHistory).where(inArray(orderDeliveryHistory.orderId, scope)).orderBy(desc(orderDeliveryHistory.createdAt)),
   ]);
 
   const shipmentByOrder = new Map(shipmentRows.map((shipment) => [shipment.orderId, shipment]));

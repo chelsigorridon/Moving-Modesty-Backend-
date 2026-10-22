@@ -5,6 +5,8 @@ import { requireDatabase } from "@/lib/db";
 import { addresses, customers, orderItems, orders } from "@/lib/db/schema";
 import { readOrderCustomer } from "@/lib/checkout-safety";
 import { reportFailure } from "@/lib/monitoring";
+import { readLimitedJson, RequestBodyError } from "@/lib/request-body";
+import { consumeCheckoutAttempt } from "@/lib/checkout-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -18,9 +20,12 @@ export function OPTIONS() { return apiOptions(); }
 // The random checkout token is a bearer secret. An order number alone must
 // never reveal a customer's details. POST keeps that secret out of URL logs.
 export async function POST(request: Request) {
-  const parsed = sessionInput.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return apiJson({ error: "This checkout session is unavailable." }, { status: 400 });
   try {
+    const parsed = sessionInput.safeParse(await readLimitedJson(request, 2_048));
+    if (!parsed.success) return apiJson({ error: "This checkout session is unavailable." }, { status: 400 });
+    const limit = await consumeCheckoutAttempt(request, "recover");
+    if (!limit.allowed) return apiJson({ error: "Please wait a few minutes before restoring checkout again." },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfter) } });
     const database = requireDatabase();
     const [order] = await database.select({
       id: orders.id, orderNumber: orders.orderNumber, paymentStatus: orders.paymentStatus,
@@ -48,6 +53,7 @@ export async function POST(request: Request) {
       discountSnapshot: order.discountSnapshot, discountAmount: Number(order.discountAmount),
     } });
   } catch (error) {
+    if (error instanceof RequestBodyError) return apiJson({ error: error.message }, { status: error.status });
     const incident = await reportFailure(error, { operation: "checkout_recover" });
     return apiJson({ error: "We couldn't restore checkout. Please try again shortly.", errorRef: incident.reference }, { status: 503 });
   }
