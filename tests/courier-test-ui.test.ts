@@ -56,7 +56,12 @@ test("the private test never presets a drop-off point or measurements and cannot
     const button = [...doc.querySelectorAll("button")].find((item: any) => item.textContent === "Refresh TEST order");
     await React.act(async () => button.click());
     const numbers = [...doc.querySelectorAll('.mm-admin__parcel-editor input[type="number"]')];
-    assert.equal(numbers.length, 4); assert.ok(numbers.every((input: any) => input.value === ""));
+    assert.equal(numbers.length, 3); assert.ok(numbers.every((input: any) => input.value === ""));
+    const weightChoice = doc.querySelector('select[name="packedWeightPreset"]');
+    assert.equal(weightChoice.value, "", "The private test cannot select a weight automatically");
+    await React.act(async () => { weightChoice.value = "manual"; weightChoice.dispatchEvent(new window.Event("change", { bubbles: true })); });
+    const manualNumbers = [...doc.querySelectorAll('.mm-admin__parcel-editor input[type="number"]')];
+    assert.equal(manualNumbers.length, 4); assert.ok(manualNumbers.every((input: any) => input.value === ""));
     const quote = [...doc.querySelectorAll("button")].find((item: any) => /Get live courier quotes/.test(item.textContent));
     assert.equal(quote.disabled, true);
     assert.ok(![...doc.querySelectorAll("button")].some((item: any) => /Book real TEST waybill/.test(item.textContent)));

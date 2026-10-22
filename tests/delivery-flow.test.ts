@@ -195,8 +195,40 @@ test("the Moving Modesty box works offline, preserves actual weight and stays av
     await act(async () => ([...doc.querySelectorAll("summary")].find(node => node.textContent === "Other saved boxes (optional)") as HTMLElement).click());
     await act(async () => button("Load saved Bob Go boxes"));
     assert.equal(loads, 1); assert.ok(doc.querySelector('option[value="moving-modesty-scarf-box"]'));
-    assert.match(doc.querySelector('.mm-admin__packing-reference')?.textContent || "", /393g/);
+    assert.match(doc.querySelector('option[value="393"]')?.textContent || "", /393 g/);
     assert.match(doc.body.textContent || "", /extra boxes must also be included/);
+  });
+});
+
+test("packed weights are selectable, keep box dimensions and expose manual entry without reusing a preset silently", async () => {
+  let value = { weightGrams: "", lengthCm: "25", widthCm: "20", heightCm: "3" }, loads = 0;
+  const props = { value, change: (next: any) => { value = next; }, loadPackages: async () => { loads++; return []; } };
+  await harness("../components/parcel-editor.tsx", props, async (doc, _button, rerender) => {
+    const select = () => [...doc.querySelectorAll('select')].find(node => node.closest('label')?.textContent?.startsWith('Choose a packed weight'))!;
+    const pick = async (choice: string) => {
+      await act(async () => { select().value = choice; select().dispatchEvent(new doc.defaultView!.Event('change', { bubbles: true })); });
+      await rerender({ ...props, value });
+    };
+    assert.equal(select().value, ""); assert.equal(select().required, true);
+    assert.equal(doc.querySelector('input[inputmode="numeric"]'), null);
+    assert.equal([...doc.querySelectorAll('summary')].some(node => node.textContent === 'Need a weight guide?'), false);
+    for (const weight of ["183", "200", "267", "305", "335", "393"]) {
+      await pick(weight); assert.equal(value.weightGrams, weight);
+      assert.deepEqual([value.lengthCm, value.widthCm, value.heightCm], ["25", "20", "3"]);
+      assert.equal(doc.querySelector('input[inputmode="numeric"]'), null);
+      assert.equal(Boolean(doc.querySelector('[role="status"]')), weight === "305");
+    }
+    await pick('manual'); assert.equal(value.weightGrams, "", 'Manual entry cannot accidentally keep the preset');
+    assert.equal(select().value, 'manual');
+    const input = doc.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+    assert.equal(input.required, true); assert.equal(input.min, "1"); assert.equal(input.max, "30000");
+    const setter = Object.getOwnPropertyDescriptor(doc.defaultView!.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setter.call(input, '267'); input.dispatchEvent(new doc.defaultView!.Event('input', { bubbles: true })); });
+    await rerender({ ...props, value });
+    assert.equal(value.weightGrams, "267"); assert.equal(select().value, 'manual', 'A typed preset number must not hide the manual input');
+    await pick('183'); assert.equal(value.weightGrams, "183");
+    await rerender({ ...props, value, disabled: true });
+    assert.equal(select().disabled, true); assert.equal(loads, 0, 'Weight selection is entirely local');
   });
 });
 

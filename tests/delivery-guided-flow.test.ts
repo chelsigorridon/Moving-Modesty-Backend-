@@ -52,7 +52,7 @@ const quotes = { environment: "production", expires: Date.now() + 600000, rates:
   { providerName: "TEST D", serviceName: "Road", serviceCode: "R", amount: 99, quoteToken: "mock-d" },
 ] };
 async function compare(ctx: any) {
-  await ctx.input('input[inputmode="numeric"]', "393");
+  await ctx.input('select[name="packedWeightPreset"]', "393");
   await act(async () => (ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).click());
   await ctx.click("Compare couriers");
 }
@@ -74,7 +74,8 @@ test("each slide shows one step without completed cards, and Back never contacts
   await harness(sample(), async ({ doc, step, click, calls }) => {
     assert.equal(step(), "2"); assert.equal(doc.querySelector('.mm-admin__delivery-editor'), null);
     assert.equal((doc.querySelector('select') as HTMLSelectElement).value, "moving-modesty-scarf-box");
-    assert.equal((doc.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value, "");
+    assert.equal((doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "");
+    assert.equal(doc.querySelector('input[inputmode="numeric"]'), null);
     assert.equal(doc.querySelector('.mm-delivery__completed'), null);
     const change = doc.querySelector('[aria-label="Back to delivery details"]') as HTMLButtonElement;
     await act(async () => change.click()); assert.equal(step(), "1");
@@ -98,7 +99,7 @@ test("quotes advance to one courier step, show every returned service and are in
     assert.equal(ctx.calls.length, 1, "Review is not booking");
     await act(async () => (ctx.doc.querySelector('[aria-label="Back to parcel"]') as HTMLButtonElement).click());
     assert.equal(ctx.step(), "2"); assert.equal(ctx.doc.querySelector('.mm-admin__quote'), null);
-    assert.equal((ctx.doc.querySelector('input[inputmode="numeric"]') as HTMLInputElement).value, "393");
+    assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "393");
     assert.equal((ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).checked, false);
     assert.equal(ctx.calls.length, 1);
   }, action => action === "quote" ? quotes : {});
@@ -124,6 +125,7 @@ test("an empty rate response explains the next action instead of silently return
 
 test("invalid packed weights cannot advance the slide or request quotes", async () => {
   await harness(sample(), async ctx => {
+    await ctx.input('select[name="packedWeightPreset"]', "manual");
     for (const value of ["-1", "0", "0.5", "30001"]) {
       await ctx.input('input[inputmode="numeric"]', value);
       await act(async () => (ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).click());
