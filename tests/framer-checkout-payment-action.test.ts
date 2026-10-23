@@ -20,14 +20,18 @@ function compiled(file: string) {
   }).outputText;
 }
 const flush = () => new Promise(resolve => setTimeout(resolve, 10));
-function controller(failPayment = false) {
+function controller(failPayment = false, width = 390) {
   const names = ["1. Contact details", "2. Fulfilment method", "3. Delivery address", "4. Payment"];
   const inputs = (keys: string[]) => keys.map(name => `<input name="${name}" value="${fields[name as keyof typeof fields]}">`).join("");
   const html = `<form id="checkout">${names.map((name, i) => `<section data-framer-name="${name}"><h2>${name}</h2>${i === 0 ? inputs(Object.keys(fields).slice(0, 4)) : i === 1 ? '<div><div data-framer-name="Delivery">Delivery</div><div data-framer-name="Collection">Collection</div></div>' : i === 2 ? inputs(Object.keys(fields).slice(4)) : ""}</section>`).join("")}</form><div id="summary"></div>`;
   const dom = new JSDOM(html, { url: "https://store.test.invalid/checkout", runScripts: "outside-only" });
   const window = dom.window as any, calls: any[] = [], hosted: any[] = [];
   window.AbortSignal = AbortSignal; window.AbortController = AbortController;
-  window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  let viewportWidth = width;
+  const mediaListeners = new Set<() => void>();
+  window.matchMedia = (query: string) => ({ get matches() { return query.includes("prefers-reduced-motion") || viewportWidth < 1200; },
+    addEventListener(_event: string, listener: () => void) { mediaListeners.add(listener); },
+    removeEventListener(_event: string, listener: () => void) { mediaListeners.delete(listener); } });
   window.HTMLElement.prototype.scrollIntoView = () => {}; window.HTMLElement.prototype.getAnimations = () => [];
   window.HTMLFormElement.prototype.submit = function () { hosted.push({ action: this.action, method: this.method }); };
   window.localStorage.setItem("moving-modesty-cart-v1", JSON.stringify(cart));
@@ -46,7 +50,8 @@ function controller(failPayment = false) {
   window.addEventListener(STATE, (event: any) => { state = event.detail; });
   const cleanup = window.exports.testSetup(root);
   const next = async () => { root.querySelector(`[data-mm-checkout-step="${root.dataset.mmActiveStep}"] .mm-checkout-next`).click(); await flush(); };
-  return { dom, window, root, calls, hosted, next, get state() { return state; }, close() { cleanup(); dom.window.close(); } };
+  return { dom, window, root, calls, hosted, next, resize(width: number) { viewportWidth = width; mediaListeners.forEach(listener => listener()); },
+    get state() { return state; }, close() { cleanup(); dom.window.close(); } };
 }
 
 test("the summary action preserves the collection flow and submits one hosted PayFast POST, never a duplicate", async () => {
@@ -157,8 +162,8 @@ test("controller cleanup disconnects the external action and removes its request
   page.close(); assert.equal(page.state.connected, false); assert.equal(page.state.disabled, true);
 });
 
-test("mobile summary keeps one real payment button outside its collapsed content, with plain security reassurance", async () => {
-  const page = controller();
+async function summaryHarness(options: { failPayment?: boolean; width?: number } = {}) {
+  const page = controller(options.failPayment, options.width);
   const names = ["window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Event", "IS_REACT_ACT_ENVIRONMENT"];
   const original = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   for (const name of names) Object.defineProperty(globalThis, name, { value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : page.window[name], configurable: true, writable: true });
@@ -166,28 +171,126 @@ test("mobile summary keeps one real payment button outside its collapsed content
   runInNewContext(compiled("CheckoutOrderSummary.tsx"), { exports, window: page.window, CustomEvent: page.window.CustomEvent, AbortController, AbortSignal, URLSearchParams,
     require: (name: string) => name === "framer" ? { addPropertyControls() {}, ControlType: {}, useIsStaticRenderer: () => false } : require(name),
     fetch: () => { throw new Error("Summary must delegate payment, not call a payment API itself."); } });
-  const root = require("react-dom/client").createRoot(page.window.document.getElementById("summary"));
+  const summary = require("react-dom/client").createRoot(page.window.document.getElementById("summary"));
+  await act(async () => summary.render(React.createElement(exports.default, {})));
+  return { page, doc: page.window.document, async close() {
+    await act(async () => summary.unmount()); page.close();
+    for (const name of names) { const descriptor = original.get(name); if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); }
+  } };
+}
+
+test("mobile shows the complete compact summary without a toggle; final payment review receives focus at the top", async () => {
+  const review = await summaryHarness(), { page, doc } = review;
   try {
-    await act(async () => root.render(React.createElement(exports.default, {})));
-    const doc = page.window.document, button = doc.querySelector(".mm-checkout-pay");
+    assert.equal(doc.querySelector(".mm-checkout-pay"), null, "no disabled payment button above the unfinished steps");
+    assert.equal(doc.querySelector(".mm-checkout-security-note"), null);
+    assert.equal(doc.querySelector(".mm-checkout-summary-toggle"), null, "no hidden click-to-expand interaction");
+    assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
+    assert.match(doc.querySelector(".mm-checkout-summary-content").textContent, /Amina Tie-Back[\s\S]*Lavender[\s\S]*Qty 1[\s\S]*R420.00[\s\S]*Subtotal[\s\S]*Delivery[\s\S]*Total/);
+    assert.equal(doc.querySelector(".mm-checkout-order-image").getAttribute("role"), "img");
+    assert.equal(doc.querySelector(".mm-checkout-review-title").style.fontSize, "15px");
     const paymentScrolls: any[] = [];
-    button.getBoundingClientRect = () => ({ top: 1200, bottom: 1257, height: 57 });
-    button.scrollIntoView = (options: any) => paymentScrolls.push(options);
-    assert.equal(button.type, "button"); assert.equal(button.disabled, true);
-    assert.equal(doc.querySelector(".mm-checkout-summary-content").dataset.hidden, "true");
-    assert.equal(button.closest(".mm-checkout-summary-content"), null);
+    doc.querySelector(".mm-checkout-summary").scrollIntoView = (options: any) => paymentScrolls.push(options);
+    await act(async () => { await page.next(); page.root.querySelector('[data-framer-name="Collection"]').click(); await page.next(); });
+    const button = doc.querySelector(".mm-checkout-pay");
+    assert.equal(button.type, "button"); assert.equal(button.disabled, false);
+    assert.equal(doc.querySelectorAll(".mm-checkout-pay").length, 1);
+    assert.equal(doc.querySelector(".mm-checkout-summary-toggle"), null, "the final review cannot be collapsed");
+    assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
+    assert.equal(doc.querySelector(".mm-checkout-review-title").style.fontSize, "25px");
+    assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, "payment");
+    assert.equal(doc.activeElement, doc.querySelector(".mm-checkout-review-title"), "customers start at the order review, not the pay button");
+    assert.equal(paymentScrolls.length, 1); assert.equal(paymentScrolls[0].behavior, "auto"); assert.equal(paymentScrolls[0].block, "start");
     const note = doc.querySelector(".mm-checkout-security-note"); assert.equal(note.tagName, "P"); assert.equal(note.getAttribute("role"), null);
     assert.match(note.textContent, /Secure checkout with PayFast/);
-    await act(async () => { await page.next(); page.root.querySelector('[data-framer-name="Collection"]').click(); await page.next(); });
-    assert.equal(button.disabled, false); assert.equal(doc.querySelectorAll(".mm-checkout-pay").length, 1);
-    assert.equal(doc.activeElement, button, "payment action receives focus when the final step is ready");
-    assert.equal(paymentScrolls.length, 1, "an offscreen payment action is brought into view once");
-    assert.equal(paymentScrolls[0].behavior, "auto"); assert.equal(paymentScrolls[0].block, "center");
     await act(async () => { button.click(); button.click(); await flush(); });
     assert.equal(page.hosted.length, 1); assert.equal(button.disabled, true); assert.equal(button.textContent, "Opening PayFast…");
     assert.equal(doc.querySelectorAll("form").length, 2, "only the original checkout form and isolated hidden hosted-payment POST exist");
-  } finally {
-    await act(async () => root.unmount()); page.close();
-    for (const name of names) { const descriptor = original.get(name); if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); }
-  }
+    assert.equal(doc.querySelector(".mm-checkout-edit-details").disabled, true, "editing cannot race a submitted payment");
+  } finally { await review.close(); }
+});
+
+test("compact mobile/tablet summary keeps every product, image, variant, quantity and line total visible", async () => {
+  const review = await summaryHarness(), { page, doc } = review;
+  try {
+    const items = [{ ...cart[0], quantity: 2, image: "/amina-example.jpg" },
+      { id: "HAWA-BLK-S", sku: "HAWA-BLK-S", name: "Hawa Tri-Instant Scarf with a long product name", colour: "Black", size: "Small", quantity: 1, price: 450, image: "/hawa-example.jpg" }];
+    await act(async () => { page.window.localStorage.setItem("moving-modesty-cart-v1", JSON.stringify(items)); page.window.dispatchEvent(new page.window.CustomEvent("moving-modesty-cart-updated")); });
+    for (const width of [320, 390, 810, 1024, 1199]) {
+      await act(async () => page.resize(width));
+      assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, "compact");
+      assert.equal(doc.querySelector(".mm-checkout-summary-toggle"), null);
+      assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
+      const lines = [...doc.querySelectorAll(".mm-checkout-order-item")];
+      assert.equal(lines.length, 2, "larger carts are not truncated to one product");
+      assert.match(lines[0].textContent, /Amina Tie-Back[\s\S]*Lavender[\s\S]*One size fits all[\s\S]*Qty 2[\s\S]*R840.00/);
+      assert.match(lines[1].textContent, /Hawa Tri-Instant Scarf with a long product name[\s\S]*Black[\s\S]*Small[\s\S]*Qty 1[\s\S]*R450.00/);
+      assert.equal(lines[0].querySelector("img").getAttribute("src"), "/amina-example.jpg");
+      assert.equal(lines[1].querySelector("img").getAttribute("alt"), items[1].name);
+      assert.equal(lines[1].querySelector("h3").style.fontSize, "13px");
+      assert.match(doc.querySelector(".mm-checkout-summary-content").textContent, /TotalR1290.00/);
+      assert.equal(doc.querySelector(".mm-checkout-pay"), null);
+    }
+    assert.equal(page.calls.length, 0, "rendering a summary does not create an order or start payment");
+  } finally { await review.close(); }
+});
+
+test("tablet also defers payment until all required delivery fields are valid", async () => {
+  const review = await summaryHarness({ width: 1024 }), { page, doc } = review;
+  try {
+    assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, "compact");
+    const phone = page.root.querySelector('[name="checkoutPhone"]'); phone.value = "";
+    await act(async () => page.next()); assert.equal(page.root.dataset.mmActiveStep, "1");
+    assert.equal(doc.querySelector(".mm-checkout-pay"), null);
+    phone.value = "0821234567";
+    await act(async () => page.next());
+    await act(async () => page.next()); assert.equal(page.root.dataset.mmActiveStep, "2", "a fulfilment method is required");
+    await act(async () => { page.root.querySelector('[data-framer-name="Delivery"]').click(); await page.next(); });
+    const postal = page.root.querySelector('[name="checkoutPostal"]'); postal.value = "";
+    await act(async () => page.next()); assert.equal(page.root.dataset.mmActiveStep, "3");
+    assert.equal(doc.querySelector(".mm-checkout-pay"), null);
+    postal.value = "0081";
+    await act(async () => page.next());
+    assert.equal(page.root.dataset.mmActiveStep, "4");
+    assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, "payment");
+    assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
+    assert.equal(doc.querySelector(".mm-checkout-pay").disabled, false);
+    assert.equal(page.hosted.length, 0, "reaching review does not submit a payment");
+  } finally { await review.close(); }
+});
+
+test("payment errors stay visible inside the standalone review; Edit details preserves fields and re-hides payment", async () => {
+  const review = await summaryHarness({ failPayment: true }), { page, doc } = review;
+  try {
+    await act(async () => { await page.next(); page.root.querySelector('[data-framer-name="Collection"]').click(); await page.next(); });
+    await act(async () => { doc.querySelector(".mm-checkout-pay").click(); await flush(); });
+    assert.match(doc.querySelector(".mm-checkout-review-message").textContent, /Payment unavailable.*TEST-REF/);
+    assert.equal(doc.querySelector(".mm-checkout-pay").disabled, false);
+    const callsBefore = page.calls.length;
+    await act(async () => { doc.querySelector(".mm-checkout-edit-details").click(); await flush(); });
+    assert.equal(page.root.dataset.mmActiveStep, "1"); assert.equal(doc.querySelector(".mm-checkout-pay"), null);
+    assert.equal(page.calls.length, callsBefore, "editing alone does not save or pay");
+    for (const [name, value] of Object.entries(fields)) assert.equal(page.root.querySelector(`[name="${name}"]`).value, value);
+    await act(async () => { await page.next(); await page.next(); });
+    assert.equal(doc.querySelectorAll(".mm-checkout-pay").length, 1);
+    assert.equal(doc.querySelector(".mm-checkout-review-message"), null);
+  } finally { await review.close(); }
+});
+
+test("desktop keeps its expanded summary and responsive resizing never collapses the final review or duplicates Pay", async () => {
+  const review = await summaryHarness({ width: 1440 }), { page, doc } = review;
+  try {
+    assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, "desktop");
+    assert.equal(doc.querySelector(".mm-checkout-summary-toggle"), null);
+    assert.equal(doc.querySelector(".mm-checkout-pay"), null);
+    await act(async () => { await page.next(); page.root.querySelector('[data-framer-name="Collection"]').click(); await page.next(); });
+    assert.equal(doc.querySelector(".mm-checkout-edit-details"), null);
+    for (const width of [1024, 768, 390, 1440, 1199]) {
+      await act(async () => page.resize(width));
+      assert.equal(doc.querySelectorAll(".mm-checkout-pay").length, 1);
+      assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
+      assert.equal(doc.querySelector(".mm-checkout-summary-toggle"), null);
+      assert.equal(doc.querySelector(".mm-checkout-summary").dataset.mmSummaryMode, width < 1200 ? "payment" : "desktop");
+    }
+  } finally { await review.close(); }
 });

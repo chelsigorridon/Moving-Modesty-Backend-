@@ -35,11 +35,15 @@ const DISCOUNT_EVENT = "moving-modesty-discount-updated"
 const PAYMENT_ACTION_EVENT = "moving-modesty-checkout-pay"
 const PAYMENT_STATE_EVENT = "moving-modesty-checkout-payment-state"
 const PAYMENT_STATE_REQUEST_EVENT = "moving-modesty-checkout-payment-state-request"
+const PAYMENT_EDIT_EVENT = "moving-modesty-checkout-edit-details"
 interface PaymentActionState {
     connected: boolean
     atPayment: boolean
     disabled: boolean
     label: string
+    canEdit?: boolean
+    message?: string
+    tone?: "error" | "success"
 }
 type DiscountQuote = { subtotal: number; deliveryFee: number; total: number; discountAmount: number; discountSnapshot?: { code: string } | null; fingerprint: string }
 function summarySku(item: CartItem) {
@@ -175,7 +179,6 @@ export default function CheckoutOrderSummary(props: Props) {
     const [items, setItems] = useState<CartItem[]>([])
     const [fulfilmentMethod, setFulfilmentMethod] = useState<FulfilmentMethod>("to_be_confirmed")
     const [compact, setCompact] = useState(false)
-    const [open, setOpen] = useState(true)
     const [code, setCode] = useState("")
     const [appliedCode, setAppliedCode] = useState("")
     const [discountQuote, setDiscountQuote] = useState<DiscountQuote | null>(null)
@@ -183,7 +186,8 @@ export default function CheckoutOrderSummary(props: Props) {
     const [checkingCode, setCheckingCode] = useState(false)
     const [paymentAction, setPaymentAction] = useState<PaymentActionState>({ connected: false, atPayment: false, disabled: true, label: "Pay securely" })
     const discountInputId = useId()
-    const paymentHelpId = useId()
+    const summaryRoot = useRef<HTMLElement | null>(null)
+    const reviewHeading = useRef<HTMLHeadingElement | null>(null)
     const paymentButton = useRef<HTMLButtonElement | null>(null)
     const paymentEntryFocused = useRef(false)
     const discountRequest = useRef<AbortController | null>(null)
@@ -198,7 +202,8 @@ export default function CheckoutOrderSummary(props: Props) {
             const state = (event as CustomEvent<PaymentActionState>).detail
             if (!state || typeof state.label !== "string") return
             setPaymentAction({ connected: state.connected === true, atPayment: state.atPayment === true,
-                disabled: state.disabled !== false, label: state.label })
+                disabled: state.disabled !== false, label: state.label, canEdit: state.canEdit === true,
+                message: typeof state.message === "string" ? state.message : "", tone: state.tone === "success" ? "success" : "error" })
         }
         window.addEventListener(PAYMENT_STATE_EVENT, receivePaymentState)
         // Either component may mount first; request the controller's current state.
@@ -209,15 +214,18 @@ export default function CheckoutOrderSummary(props: Props) {
     useEffect(() => {
         if (!paymentAction.atPayment) { paymentEntryFocused.current = false; return }
         if (isStatic || paymentAction.disabled || !paymentAction.connected || paymentEntryFocused.current) return
-        const button = paymentButton.current
-        if (!button) return
+        const target = compact ? reviewHeading.current : paymentButton.current
+        if (!target) return
         paymentEntryFocused.current = true
-        const rect = button.getBoundingClientRect()
-        if (rect.top < 0 || rect.bottom > window.innerHeight) {
-            button.scrollIntoView({ behavior: "auto", block: "center" })
+        if (compact) {
+            // Start at the order review, not halfway down it at the pay button.
+            summaryRoot.current?.scrollIntoView({ behavior: "auto", block: "start" })
+        } else {
+            const rect = target.getBoundingClientRect()
+            if (rect.top < 0 || rect.bottom > window.innerHeight) target.scrollIntoView({ behavior: "auto", block: "center" })
         }
-        button.focus({ preventScroll: true })
-    }, [isStatic, paymentAction])
+        target.focus({ preventScroll: true })
+    }, [compact, isStatic, paymentAction])
 
     useEffect(() => {
         if (isStatic || typeof window === "undefined") return
@@ -309,11 +317,10 @@ export default function CheckoutOrderSummary(props: Props) {
 
     useEffect(() => {
         if (isStatic || typeof window === "undefined") return
-        const query = window.matchMedia("(max-width: 899px)")
+        const query = window.matchMedia("(max-width: 1199.98px)")
         const update = () => {
             startTransition(() => {
                 setCompact(query.matches)
-                setOpen(!query.matches)
             })
         }
         update()
@@ -334,28 +341,36 @@ export default function CheckoutOrderSummary(props: Props) {
     const validatedQuote = discountQuote?.fingerprint === fingerprint && discountQuote.discountSnapshot?.code === appliedCode ? discountQuote : null
     const discountAmount = validatedQuote?.discountAmount || 0
     const total = validatedQuote?.total ?? subtotal + deliveryFee
+    const finalReview = compact && paymentAction.atPayment
+    const compactSummary = compact && !finalReview
+    const showPayment = isStatic || paymentAction.atPayment
     const css = [
         ".mm-checkout-order-item{display:grid;grid-template-columns:84px minmax(0,1fr);gap:16px;padding:20px 0;border-bottom:1px solid var(--checkout-border)}",
         ".mm-checkout-order-image{width:84px;height:104px}",
-        ".mm-checkout-summary-toggle{width:100%;min-height:48px;align-items:center;justify-content:space-between;padding:0 0 18px;border:0;border-bottom:1px solid var(--checkout-border);background:transparent;color:inherit;font:500 15px/1.2 Jost,Arial,sans-serif;cursor:pointer}",
-        ".mm-checkout-summary-toggle:focus-visible{outline:2px solid currentColor;outline-offset:3px}",
-        ".mm-checkout-summary-content[data-hidden=true]{display:none}",
+        ".mm-checkout-summary{scroll-margin-top:104px}.mm-checkout-review-title:focus{outline:none}",
+        ".mm-checkout-edit-details{display:block;width:100%;min-height:44px;margin-top:18px;padding:10px 14px;border:1px solid var(--checkout-border);border-radius:0;background:transparent;color:inherit;font:500 14px/1.3 Jost,Arial,sans-serif;cursor:pointer}.mm-checkout-edit-details:focus-visible{outline:2px solid currentColor;outline-offset:3px}.mm-checkout-edit-details:disabled{opacity:.55;cursor:not-allowed}",
+        ".mm-checkout-review-message{margin:0 0 18px;padding:12px 14px;border:1px solid rgba(139,62,47,.35);background:rgba(139,62,47,.07);color:#7a352b;font-size:14px;line-height:1.5}.mm-checkout-review-message[data-tone=success]{border-color:rgba(115,128,99,.45);background:rgba(115,128,99,.10);color:#536047}",
         ".mm-checkout-pay{display:flex;width:100%;min-height:53px;box-sizing:border-box;align-items:center;justify-content:center;padding:17px 20px;border:0;border-radius:0;font:700 19px/1.2 Jost,Arial,sans-serif;cursor:pointer;transition:filter .18s ease,transform .18s ease}",
         ".mm-checkout-pay:hover:not(:disabled){filter:brightness(.94)}.mm-checkout-pay:active:not(:disabled){transform:translateY(1px)}.mm-checkout-pay:focus-visible{outline:2px solid currentColor;outline-offset:3px}.mm-checkout-pay:disabled:not([data-preview=true]){opacity:.6;cursor:not-allowed}",
         ".mm-checkout-payment-help,.mm-checkout-security-note{margin:10px 0 0;font-size:13px;line-height:1.45;text-align:center}.mm-checkout-security-note{display:flex;align-items:center;justify-content:center;gap:6px}",
         "@media(prefers-reduced-motion:reduce){.mm-checkout-pay{transition:none}}",
         ".mm-checkout-discount{margin-top:24px;font-size:14px}.mm-checkout-discount label{display:block;margin-bottom:8px}.mm-checkout-discount-controls{display:flex;gap:8px}.mm-checkout-discount input{min-width:0;width:100%;padding:10px;border:1px solid var(--checkout-border);font:inherit;color:inherit;background:transparent}.mm-checkout-discount button{min-height:44px;padding:8px 14px;border:1px solid var(--checkout-border);font:inherit;color:inherit;background:transparent;cursor:pointer}.mm-checkout-discount button:disabled{opacity:.55;cursor:not-allowed}.mm-checkout-discount input:focus-visible,.mm-checkout-discount button:focus-visible{outline:2px solid currentColor;outline-offset:2px}",
         "@container (max-width:420px){.mm-checkout-order-item{grid-template-columns:72px minmax(0,1fr);gap:13px}.mm-checkout-order-image{width:72px;height:88px}}",
+        ".mm-checkout-summary[data-mm-summary-mode=compact] .mm-checkout-order-item{grid-template-columns:44px minmax(0,1fr);gap:12px;padding:10px 0}.mm-checkout-summary[data-mm-summary-mode=compact] .mm-checkout-order-image{width:44px;height:56px}",
+        ".mm-checkout-order-item h3{overflow-wrap:anywhere}",
     ].join("")
 
     return (
         <aside
+            ref={summaryRoot}
+            className="mm-checkout-summary"
+            data-mm-summary-mode={finalReview ? "payment" : compact ? "compact" : "desktop"}
             style={{
                 ...style,
                 position: "relative",
                 width: "100%",
                 containerType: "inline-size",
-                padding: 30,
+                padding: compactSummary ? "16px 20px" : 30,
                 boxSizing: "border-box",
                 border: "1px solid " + borderColor,
                 background: surfaceColor,
@@ -366,28 +381,15 @@ export default function CheckoutOrderSummary(props: Props) {
             aria-label="Your order"
         >
             <style>{css}</style>
-            {compact ? (
-                <button
-                    className="mm-checkout-summary-toggle"
-                    type="button"
-                    aria-expanded={open}
-                    onClick={() => setOpen((current) => !current)}
-                    style={{ display: "flex" }}
-                >
-                    <span>{open ? "Hide" : "Show"} order summary</span>
-                    <strong style={{ fontSize: 17, fontWeight: 500 }}>{formatMoney(total)}</strong>
-                </button>
-            ) : null}
-
-            <div className="mm-checkout-summary-content" data-hidden={compact && !open ? "true" : "false"}>
-                <h2 style={{ margin: compact ? "22px 0 0" : 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: 25, lineHeight: 1.15, fontWeight: 400, letterSpacing: ".055em", textTransform: "uppercase" }}>
+            <div className="mm-checkout-summary-content">
+                <h2 ref={reviewHeading} className="mm-checkout-review-title" tabIndex={-1} style={{ margin: 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: compactSummary ? 15 : 25, lineHeight: 1.15, fontWeight: 400, letterSpacing: ".055em", textTransform: "uppercase" }}>
                     Your order
                 </h2>
 
             {displayedItems.length === 0 ? (
                 <p style={{ margin: "22px 0", fontSize: 15, lineHeight: 1.55 }}>Your cart is currently empty.</p>
             ) : (
-                <div style={{ marginTop: 8 }}>
+                <div style={{ marginTop: compactSummary ? 4 : 8 }}>
                     {displayedItems.map((item) => (
                         <div className="mm-checkout-order-item" key={item.id}>
                             <div
@@ -403,13 +405,13 @@ export default function CheckoutOrderSummary(props: Props) {
                                 )}
                             </div>
                             <div style={{ minWidth: 0 }}>
-                                <h3 style={{ margin: 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: 17, lineHeight: 1.25, fontWeight: 500, letterSpacing: ".025em", textTransform: "uppercase" }}>
+                                <h3 style={{ margin: 0, fontFamily: "Montserrat, Arial, sans-serif", fontSize: compactSummary ? 13 : 17, lineHeight: 1.25, fontWeight: 500, letterSpacing: ".025em", textTransform: "uppercase" }}>
                                     {baseName(item.name)}
                                 </h3>
-                                <p style={{ margin: "7px 0 0", fontSize: 14, lineHeight: 1.4 }}>
+                                <p style={{ margin: compactSummary ? "3px 0 0" : "7px 0 0", fontSize: compactSummary ? 12 : 14, lineHeight: 1.4 }}>
                                     {[item.colour, item.size].filter(Boolean).join(" · ")}
                                 </p>
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 12, fontSize: 14 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: compactSummary ? 5 : 12, fontSize: compactSummary ? 12 : 14 }}>
                                     <span>Qty {item.quantity}</span>
                                     <strong style={{ fontWeight: 500 }}>{formatMoney(item.price * item.quantity)}</strong>
                                 </div>
@@ -419,13 +421,13 @@ export default function CheckoutOrderSummary(props: Props) {
                 </div>
             )}
 
-            {discountsEnabled ? <div className="mm-checkout-discount" role="group" aria-label="Discount code">
+            {discountsEnabled && (!compact || finalReview) ? <div className="mm-checkout-discount" role="group" aria-label="Discount code">
                 <label htmlFor={discountInputId}>Discount code</label><div className="mm-checkout-discount-controls"><input id={discountInputId} value={code} maxLength={40} autoComplete="off" autoCapitalize="characters" spellCheck={false} disabled={checkingCode || isStatic || !items.length}
                     onChange={event => setCode(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!checkingCode && !isStatic && items.length) void checkDiscount(code, items, fulfilmentMethod) } }} /><button type="button" onClick={() => void checkDiscount(code, items, fulfilmentMethod)} disabled={checkingCode || isStatic || !code.trim() || !items.length}>{checkingCode ? "Checking…" : "Apply"}</button></div>
                 {discountError ? <p role="alert" style={{ color: "#8B352B" }}>{discountError}</p> : null}
                 {appliedCode ? <p role="status">{validatedQuote ? `${appliedCode} applied.` : "Checking your discount…"} <button type="button" disabled={checkingCode} onClick={() => { discountRequest.current?.abort(); setDiscountQuote(null); setAppliedCode(""); setCode(""); setDiscountError(""); storeDiscountCode("") }}>Remove</button></p> : null}
             </div> : null}
-            <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 24, fontSize: 15 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: compactSummary ? 6 : 14, marginTop: compactSummary ? 10 : 24, fontSize: compactSummary ? 12 : 15 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 20 }}>
                     <span>Subtotal</span>
                     <span>{formatMoney(validatedQuote?.subtotal ?? subtotal)}</span>
@@ -437,33 +439,32 @@ export default function CheckoutOrderSummary(props: Props) {
                         {fulfilmentMethod === "to_be_confirmed" ? "Choose delivery or collection" : isCollection ? "No delivery fee" : subtotal <= 0 ? "—" : (validatedQuote?.deliveryFee ?? deliveryFee) === 0 ? "Free" : formatMoney(validatedQuote?.deliveryFee ?? deliveryFee)}
                     </span>
                 </div>
-                {isDelivery && !qualifiesForFreeDelivery && subtotal > 0 ? (
+                {isDelivery && !qualifiesForFreeDelivery && subtotal > 0 && !compactSummary ? (
                     <p style={{ margin: 0, color: "rgba(51,43,37,.7)", fontSize: 13, lineHeight: 1.45 }}>
                         Add {formatMoney(FREE_DELIVERY_THRESHOLD - subtotal)} more for free delivery.
                     </p>
                 ) : null}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 20, marginTop: 23, paddingTop: 20, borderTop: "1px solid " + borderColor, fontSize: 21, letterSpacing: ".035em", textTransform: "uppercase" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 20, marginTop: compactSummary ? 10 : 23, paddingTop: compactSummary ? 10 : 20, borderTop: "1px solid " + borderColor, fontSize: compactSummary ? 15 : 21, letterSpacing: ".035em", textTransform: "uppercase" }}>
                 <span>Total</span>
                 <strong style={{ fontWeight: 500 }}>{formatMoney(total)}</strong>
             </div>
             </div>
-            {/* Keep the only payment action outside the collapsible mobile summary. */}
-            <div className="mm-checkout-payment-action" style={{ marginTop: 24 }}>
+            {/* No pay button exists until the controller reaches validated payment. */}
+            {showPayment ? <div className="mm-checkout-payment-action" style={{ marginTop: 24 }}>
+                {finalReview && paymentAction.message ? <p className="mm-checkout-review-message" role="status" aria-live="polite" data-tone={paymentAction.tone}>{paymentAction.message}</p> : null}
                 <button ref={paymentButton} className="mm-checkout-pay" type="button" data-preview={isStatic ? "true" : undefined}
                     style={{ background: accentColor, color: buttonTextColor }}
                     disabled={isStatic || paymentAction.disabled || !paymentAction.connected || checkingCode}
                     aria-label={paymentAction.label === "Pay securely" ? "Pay securely with PayFast" : paymentAction.label}
-                    aria-describedby={!isStatic && !paymentAction.atPayment ? paymentHelpId : undefined}
                     aria-busy={paymentAction.label === "Opening PayFast…" || paymentAction.label === "Checking payment…" || checkingCode}
                     onClick={() => { if (!isStatic && !paymentAction.disabled && paymentAction.connected && !checkingCode) window.dispatchEvent(new CustomEvent(PAYMENT_ACTION_EVENT)) }}>
                     {isStatic ? "Pay securely" : paymentAction.label}
                 </button>
-                {!isStatic && !paymentAction.atPayment ? <p className="mm-checkout-payment-help" id={paymentHelpId}>
-                    {paymentAction.connected ? "Complete your checkout details to unlock payment." : "Preparing secure checkout…"}
-                </p> : null}
                 <p className="mm-checkout-security-note"><LockIcon /> Secure checkout with PayFast</p>
-            </div>
+                {finalReview ? <button className="mm-checkout-edit-details" type="button" disabled={!paymentAction.connected || !paymentAction.canEdit || checkingCode}
+                    onClick={() => { if (paymentAction.connected && paymentAction.canEdit && !checkingCode) window.dispatchEvent(new CustomEvent(PAYMENT_EDIT_EVENT)) }}>Edit checkout details</button> : null}
+            </div> : null}
         </aside>
     )
 }

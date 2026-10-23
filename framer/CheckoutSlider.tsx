@@ -17,6 +17,7 @@ const DISCOUNT_EVENT = "moving-modesty-discount-updated"
 const PAYMENT_ACTION_EVENT = "moving-modesty-checkout-pay"
 const PAYMENT_STATE_EVENT = "moving-modesty-checkout-payment-state"
 const PAYMENT_STATE_REQUEST_EVENT = "moving-modesty-checkout-payment-state-request"
+const PAYMENT_EDIT_EVENT = "moving-modesty-checkout-edit-details"
 function readDiscountCode() {
     try { return window.sessionStorage.getItem(DISCOUNT_CODE_KEY)?.trim().toUpperCase() || "" }
     catch { return "" }
@@ -353,6 +354,11 @@ ${ROOT_SELECTOR} [data-mm-fulfilment-option][data-mm-selected="true"] {
     min-width: 0;
   }
 }
+@media (max-width: 1199.98px) {
+  /* The summary is the entire final review on mobile and tablet. The previous
+     form steps remain mounted, preserving their values for Edit details. */
+  ${ROOT_SELECTOR}[data-mm-active-step="4"] { display: none !important; }
+}
 @media (prefers-reduced-motion: reduce) {
   .mm-checkout-progress-segment,
   .mm-checkout-nav button,
@@ -400,10 +406,14 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     let paymentConfirmed = false
     let openingPayment = false
     let lastPaymentState = ""
+    let feedbackMessage = ""
+    let feedbackTone: "error" | "success" = "error"
     function publishPaymentState() {
         const state = { connected: !disposed, atPayment: activeIndex === 3,
             disabled: disposed || recoveryInFlight || paymentConfirmed || requestInFlight || animating || openingPayment || activeIndex !== 3,
-            label: paymentConfirmed ? "Payment confirmed" : recoveryInFlight ? "Checking payment…" : openingPayment ? "Opening PayFast…" : paymentLocked ? "Check payment status" : "Pay securely" }
+            label: paymentConfirmed ? "Payment confirmed" : recoveryInFlight ? "Checking payment…" : openingPayment ? "Opening PayFast…" : paymentLocked ? "Check payment status" : "Pay securely",
+            canEdit: !disposed && !recoveryInFlight && !paymentConfirmed && !paymentLocked && !requestInFlight && !animating && !openingPayment,
+            message: feedbackMessage, tone: feedbackTone }
         const encoded = JSON.stringify(state)
         if (encoded === lastPaymentState) return
         lastPaymentState = encoded
@@ -630,9 +640,12 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     injectedNodes.push(feedback)
 
     function showFeedback(message: string, tone: "error" | "success" = "error") {
+        feedbackMessage = message
+        feedbackTone = tone
         feedback.textContent = message
         feedback.dataset.visible = String(Boolean(message))
         feedback.dataset.tone = tone
+        publishPaymentState()
     }
 
     // The return URL isn't proof of payment. Only a verified server status
@@ -866,12 +879,16 @@ function setupSlider(root: HTMLElement): Cleanup | null {
         animating = false
         updatePaymentButtons()
 
-        const heading = incoming.firstElementChild as HTMLElement | null
-        if (heading) {
-            heading.tabIndex = -1
-            heading.focus({ preventScroll: true })
+        // The summary owns focus and scrolling when it becomes the only mobile
+        // or tablet screen. Never focus/scroll the now-hidden payment form.
+        if (!(activeIndex === 3 && window.matchMedia("(max-width: 1199.98px)").matches)) {
+            const heading = incoming.firstElementChild as HTMLElement | null
+            if (heading) {
+                heading.tabIndex = -1
+                heading.focus({ preventScroll: true })
+            }
+            root.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" })
         }
-        root.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" })
     }
 
     steps.forEach((step, index) => {
@@ -959,6 +976,11 @@ function setupSlider(root: HTMLElement): Cleanup | null {
         publishPaymentState()
     }
     const onPaymentStateRequest = () => { lastPaymentState = ""; publishPaymentState() }
+    const onSummaryEdit = () => {
+        if (disposed || activeIndex !== 3 || recoveryInFlight || requestInFlight || animating || openingPayment || paymentConfirmed || paymentLocked) return
+        showFeedback("")
+        void goTo(0)
+    }
     const onSummaryPayment = async () => {
         if (disposed || activeIndex !== 3 || recoveryInFlight || requestInFlight || animating || openingPayment || paymentConfirmed) return
         if (paymentLocked) { await recoverReturn(false); return }
@@ -974,7 +996,8 @@ function setupSlider(root: HTMLElement): Cleanup | null {
     }
     window.addEventListener(PAYMENT_ACTION_EVENT, onSummaryPayment)
     window.addEventListener(PAYMENT_STATE_REQUEST_EVENT, onPaymentStateRequest)
-    cleanups.push(() => { window.removeEventListener(PAYMENT_ACTION_EVENT, onSummaryPayment); window.removeEventListener(PAYMENT_STATE_REQUEST_EVENT, onPaymentStateRequest); publishPaymentState() })
+    window.addEventListener(PAYMENT_EDIT_EVENT, onSummaryEdit)
+    cleanups.push(() => { window.removeEventListener(PAYMENT_ACTION_EVENT, onSummaryPayment); window.removeEventListener(PAYMENT_STATE_REQUEST_EVENT, onPaymentStateRequest); window.removeEventListener(PAYMENT_EDIT_EVENT, onSummaryEdit); publishPaymentState() })
     async function recoverReturn(poll = true) {
         recoveryInFlight = true
         updatePaymentButtons()
