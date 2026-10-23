@@ -210,5 +210,46 @@ test("direct tracking and its durable notification queue work with order sync of
       assert.equal((await postgres.query<any>("select status from shipments where id=$1", [localId])).rows[0].status, "cancelled");
       assert.equal((await postgres.query<any>("select status from orders where id=$1", [id])).rows[0].status, "ready");
     });
+    await t.test("two pending cancellation notifications require one verified provider read and do not retry the second", async () => {
+      const eq = require("drizzle-orm").eq;
+      await database.update(schema.shipments).set({ status: "booked", courierStatus: null, courierStatusAt: null }).where(eq(schema.shipments.id, shipmentId));
+      now += 1000; remote = { ...remote, status: "cancelled", time_modified: new Date(now).toISOString() }; response = undefined;
+      await queue.enqueue({ ...event(), id: randomUUID() });
+      await queue.enqueue({ ...event(), id: randomUUID() });
+      const before = calls.length;
+      assert.deepEqual(await queue.drain(), { processed: 2, failed: 0 });
+      assert.equal(calls.length, before + 1);
+      assert.equal((await postgres.query<any>("select status from shipments where id=$1", [shipmentId])).rows[0].status, "cancelled");
+    });
+    await t.test("queued events for cancelled, reset or foreign bookings finish without provider reads or shipment changes", async () => {
+      for (const [status, provider] of [["cancelled", "bobgo-production"], ["not_ready", "bobgo-production"], ["booked", "bobgo-sandbox"]]) {
+        await database.update(schema.shipments).set({ status: "booked", provider: "bobgo-production" }).where(require("drizzle-orm").eq(schema.shipments.id, shipmentId));
+        await queue.enqueue({ ...event(), id: randomUUID() });
+        await database.update(schema.shipments).set({ status, provider }).where(require("drizzle-orm").eq(schema.shipments.id, shipmentId));
+        const before = (await postgres.query<any>("select * from shipments where id=$1", [shipmentId])).rows;
+        const callCount = calls.length;
+        assert.deepEqual(await queue.drain(), { processed: 1, failed: 0 });
+        assert.equal(calls.length, callCount);
+        assert.deepEqual((await postgres.query<any>("select * from shipments where id=$1", [shipmentId])).rows, before);
+      }
+    });
+    await t.test("cancellation or replacement during read-back retires only that obsolete event", async () => {
+      for (const replacement of [false, true]) {
+        await database.update(schema.shipments).set({ status: "booked", provider: "bobgo-production", providerShipmentId: "321" }).where(require("drizzle-orm").eq(schema.shipments.id, shipmentId));
+        const notification = { ...event(), id: randomUUID() };
+        await queue.enqueue(notification);
+        const racingQueue = events.createDeliveryEventQueue(database, "production", async () => {
+          await database.update(schema.shipments).set(replacement ? { providerShipmentId: "REPLACEMENT" } : { status: "cancelled" })
+            .where(require("drizzle-orm").eq(schema.shipments.id, shipmentId));
+          throw new Error("Read-back lost to another worker");
+        }, () => now);
+        assert.deepEqual(await racingQueue.drain(), { processed: 1, failed: 0 });
+        const row = (await postgres.query<any>("select * from bobgo_delivery_events where id=$1", [notification.id])).rows[0];
+        assert.equal(row.status, "processed"); assert.equal(row.last_error_code, null); assert.equal(row.lease_token, null);
+      }
+      assert.equal((await postgres.query<any>("select count(*) from bobgo_delivery_events where status in ('queued','needs_attention')")).rows[0].count, 0);
+      assert.equal((await postgres.query<any>("select status from payments where order_id=$1", [orderId])).rows[0].status, "paid");
+      assert.equal((await postgres.query<any>("select status from orders where id=$1", [orderId])).rows[0].status, "ready");
+    });
   } finally { await postgres.close(); }
 });

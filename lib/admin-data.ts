@@ -96,6 +96,7 @@ const shipmentStatusLabels = {
 } as const;
 
 const dateFormatter = new Intl.DateTimeFormat("en-ZA", {
+  timeZone: "Africa/Johannesburg",
   day: "2-digit",
   month: "short",
   hour: "2-digit",
@@ -182,7 +183,7 @@ export async function getAdminOverview(includeOrders = true): Promise<AdminSnaps
           && !(incident.source === "payment" && paid)).map(incident => ({ message: incidentAction(incident.source, incident.code), reference: incident.reference })),
       ];
       return { id: order.orderNumber, customer: `${customer.firstName} ${customer.lastName}`.trim() || "Guest customer", email: customer.email, phone: "",
-        placedAt: dateFormatter.format(order.createdAt), placedDate: order.createdAt.toISOString(), total: Number(order.total),
+        placedAt: dateFormatter.format(order.createdAt) + " SAST", placedDate: order.createdAt.toISOString(), total: Number(order.total),
         paymentStatus: paymentLabels[order.paymentStatus], payment: { provider: "PayFast", environment: paymentEnvironmentFromProvider(order.paymentProvider) },
         status, deliveryMethod: deliveryLabels[order.deliveryMethod], items: [], detailsLoaded: false, actionNeeded,
         listNeedsAttention: Boolean(actionNeeded.length || order.returnOpen || order.canRefund || paid &&
@@ -424,7 +425,7 @@ export async function getAdminSnapshot(options: { orderNumber?: string; includeP
         "Guest customer",
       email: customer.email,
       phone: customer.phone ?? "",
-      placedAt: dateFormatter.format(order.createdAt),
+      placedAt: dateFormatter.format(order.createdAt) + " SAST",
       placedDate: order.createdAt.toISOString(),
       subtotal: Number(order.subtotal),
       discountAmount: Number(order.discountAmount),

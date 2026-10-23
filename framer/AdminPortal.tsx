@@ -168,10 +168,10 @@ interface AdminPortalProps {
 
 const emptySnapshot: Snapshot = { orders: [] }
 
-async function adminFetch(url: string, init?: RequestInit) {
+async function adminFetch(url: string, init?: RequestInit, reportNetworkFailure = true) {
     try { return await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(45000) }) }
     catch (error) {
-        if (!init?.signal?.aborted && error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
+        if (reportNetworkFailure && !init?.signal?.aborted && error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
             // Do not include tokens, URLs, form fields or customer data in telemetry.
             void fetch(`${new URL(url).origin}/api/diagnostics/browser`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "admin", code: error.name === "TypeError" ? "browser_network" : "browser_timeout" }), signal: AbortSignal.timeout(5000) }).catch(() => undefined)
         }
@@ -209,6 +209,13 @@ function rememberAdminReturnPath() {
 
 function badgeClass(status: string) {
     return `mm-admin__badge mm-admin__badge--${status.toLowerCase().replaceAll(" ", "-")}`
+}
+
+function southAfricanTime(value: string | number | Date) {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? "Not recorded" : new Intl.DateTimeFormat("en-ZA", {
+        dateStyle: "medium", timeStyle: "short", timeZone: "Africa/Johannesburg",
+    }).format(date) + " SAST"
 }
 
 /**
@@ -252,6 +259,14 @@ export default function AdminPortal(props: AdminPortalProps) {
     const alertsReturnFocus = useRef<HTMLElement | null>(null)
     const mutationPending = useRef(false)
     const initialOrderLinkConsumed = useRef(false)
+    const portalRoot = useRef<HTMLElement>(null)
+    const editedFields = useRef(new Set<Element>())
+    const lastBackgroundAttempt = useRef(0)
+    const backgroundContext = useRef({ selectedOrderId, refresh, view })
+    const [backgroundError, setBackgroundError] = useState(false)
+    const [statusCheckedAt, setStatusCheckedAt] = useState("")
+    useEffect(() => { backgroundContext.current = { selectedOrderId, refresh, view } }, [selectedOrderId, refresh, view])
+    useEffect(() => { editedFields.current.clear() }, [selectedOrderId, refresh])
 
     const backendConfigured = Boolean(normalizeBaseUrl(apiBaseUrl))
     const liveEnabled = backendConfigured && !isStatic
@@ -330,6 +345,8 @@ export default function AdminPortal(props: AdminPortalProps) {
                     })
                     if (requested) setOrderFilter("All orders")
                     setLoadState("ready")
+                    setBackgroundError(false)
+                    setStatusCheckedAt(southAfricanTime(Date.now()))
                 })
             })
             .catch((error: Error) => {
@@ -385,6 +402,70 @@ export default function AdminPortal(props: AdminPortalProps) {
         })
         return () => controller.abort()
     }, [apiBaseUrl, liveEnabled, view, loadState, refresh, selectedOrderId, needsDetails, detailRetry])
+
+    // Database reads only: webhooks update tracking; this keeps an open portal
+    // current without requesting quotes, checking Bob Go or changing a booking.
+    useEffect(() => {
+        if (!liveEnabled || !["orders", "dashboard"].includes(view) || loadState !== "ready" || loading || needsDetails || deliverySettingsOpen || technicalAlertsOpen) return
+        const controller = new AbortController()
+        const context = backgroundContext.current
+        let pending = false
+        const canRefresh = () => {
+            const root = portalRoot.current
+            const focused = document.activeElement
+            for (const field of editedFields.current) if (!root?.contains(field)) editedFields.current.delete(field)
+            return !controller.signal.aborted && document.visibilityState !== "hidden" && !mutationPending.current &&
+                backgroundContext.current === context && editedFields.current.size === 0 &&
+                !root?.querySelector("dialog[open], [data-mm-editing='true']") &&
+                !(focused && root?.contains(focused) && focused.matches("input, textarea, select, [contenteditable='true']"))
+        }
+        async function readStatus() {
+            if (pending || !canRefresh() || Date.now() - lastBackgroundAttempt.current < 5000) return
+            pending = true
+            lastBackgroundAttempt.current = Date.now()
+            const base = snapshot
+            try {
+                const read = async (query: string): Promise<Snapshot> => {
+                    const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?${query}`, {
+                        // Existing published password-only bearer authentication.
+                        headers: { Authorization: `Bearer ${token()}` },
+                        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
+                    }, false)
+                    if (response.status === 401) { rememberAdminReturnPath(); route("/admin/login"); throw new Error("Please sign in again.") }
+                    const data = await response.json().catch(() => null)
+                    if (!response.ok || !Array.isArray(data?.orders)) throw new Error("Status refresh failed")
+                    return data
+                }
+                const [summary, detail] = await Promise.all([
+                    read(`view=${encodeURIComponent(view)}`),
+                    selectedOrderId ? read(`order=${encodeURIComponent(selectedOrderId)}`) : Promise.resolve(null),
+                ])
+                const fullOrder = detail?.orders.find(order => order.id === selectedOrderId)
+                if (selectedOrderId && !fullOrder) throw new Error("Order status unavailable")
+                if (!canRefresh()) return
+                startTransition(() => {
+                    setSnapshot(current => current !== base || !canRefresh() ? current : {
+                        ...current, ...summary,
+                        orders: summary.orders.map(order => order.id === selectedOrderId && fullOrder ? { ...order, ...fullOrder, detailsLoaded: true } : order),
+                    })
+                    setBackgroundError(false)
+                    setStatusCheckedAt(southAfricanTime(Date.now()))
+                })
+            } catch {
+                if (canRefresh()) startTransition(() => setBackgroundError(true))
+            } finally { pending = false }
+        }
+        const whenVisible = () => { if (document.visibilityState !== "hidden") void readStatus() }
+        const timer = window.setInterval(() => { void readStatus() }, 60_000)
+        window.addEventListener("focus", whenVisible)
+        document.addEventListener("visibilitychange", whenVisible)
+        return () => {
+            controller.abort()
+            window.clearInterval(timer)
+            window.removeEventListener("focus", whenVisible)
+            document.removeEventListener("visibilitychange", whenVisible)
+        }
+    }, [apiBaseUrl, liveEnabled, view, loadState, refresh, selectedOrderId, needsDetails, loading, deliverySettingsOpen, technicalAlertsOpen, snapshot])
 
     async function updateOrderStatus(order: AdminOrder, status: OrderStatus) {
         if (mutationPending.current) return
@@ -514,7 +595,7 @@ export default function AdminPortal(props: AdminPortalProps) {
             if (!response.ok || !data?.connected) throw new Error(data?.error || "The Bob Go account connection could not be verified.")
             startTransition(() => setCourierCheck({ status: "connected", location: data.target,
                 message: data.bookingEnabled ? "Account access verified. Manual booking is enabled; each order still needs valid delivery details and a courier quote." : "Account access verified. Courier booking is currently paused.",
-                checkedAt: new Date().toLocaleString("en-ZA") }))
+                checkedAt: southAfricanTime(Date.now()) }))
         } catch (error) {
             startTransition(() => setCourierCheck({ status: "error", message: error instanceof Error ? error.message : "Connection check failed." }))
         } finally {
@@ -613,7 +694,13 @@ export default function AdminPortal(props: AdminPortalProps) {
     } as CSSProperties
 
     return (
-        <section className="mm-admin" style={cssVariables} aria-busy={loading}>
+        <section className="mm-admin" style={cssVariables} aria-busy={loading} ref={portalRoot} onChangeCapture={event => {
+            const field = event.target as Element
+            if (field.matches("input, textarea, select") && field.closest(".mm-admin__detail")) editedFields.current.add(field)
+        }} onInputCapture={event => {
+            const field = event.target as Element
+            if (field.matches("input, textarea, select, [contenteditable='true']") && field.closest(".mm-admin__detail")) editedFields.current.add(field)
+        }}>
             {/* Static repository CSS: raw-text output keeps Framer's React 18 SSR and hydration identical. */}
             <style dangerouslySetInnerHTML={{ __html: styles + technicalAlertsCss }} />
             {view === "login" ? (
@@ -635,6 +722,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                             </details>
                         </div>
                     </div>
+                    {backgroundError ? <p className="mm-admin__helper" role="status">Automatic status check unavailable. Use Refresh orders to try again.</p> : statusCheckedAt ? <p className="mm-admin__helper">Status checked: {statusCheckedAt}</p> : null}
                     {notice ? <div className="mm-admin__notice" role="status">{notice}</div> : null}
                     {snapshot.operationalNotice ? <div className="mm-admin__notice" role="status"><p style={{ margin: 0 }}>{snapshot.operationalNotice}</p><button type="button" className="mm-admin__text-button" ref={alertsBannerRef} aria-haspopup="dialog" onClick={() => openTechnicalAlerts(true)}>Review technical alerts</button></div> : null}
                     {view === "discounts" ? (
@@ -1138,8 +1226,7 @@ function OrderSupportTrace({ order, request }: { order: AdminOrder; request: (or
     useEffect(() => () => { sequence.current++ }, [])
     const timestamp = (value?: string) => {
         if (!value) return "Not recorded"
-        const date = new Date(value)
-        return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" })
+        return southAfricanTime(value)
     }
     async function load(open: boolean) {
         if (!open) { sequence.current++; return }
@@ -2301,7 +2388,7 @@ function DiscountManager({ demo = false, apiBaseUrl = "", enabled = true, produc
       <footer><button type="submit" className="mm-discounts__primary" disabled={busy}>{busy ? "Saving…" : "Save discount"}</button><button type="button" className="mm-discounts__secondary" disabled={busy} onClick={closeEditor}>Cancel</button></footer>
     </form> : loading ? <p role="status">Loading discounts…</p> : ready && !records.length ? <div className="mm-discounts__empty"><h2>No discounts yet</h2><p>When you’re ready to run a special, choose Create discount.</p><span>No codes or specials are active.</span></div>
       : <div className="mm-discounts__list">{records.map(record => <article key={record.id} className="mm-discounts__row"><div><h2>{record.code}</h2><p>{record.type === "percentage" ? `${record.value}% off` : `${discountMoney.format(record.value)} off`} · {record.productIds.length ? "Selected products" : "All products"}</p>
-        {discountStatus(record) === "Scheduled" || discountStatus(record) === "Expired" ? <span>{discountStatus(record)}{record.endsAt ? ` · Ends ${new Date(record.endsAt).toLocaleString("en-ZA")}` : ""}</span> : null}</div><div className="mm-discounts__actions">
+        {discountStatus(record) === "Scheduled" || discountStatus(record) === "Expired" ? <span>{discountStatus(record)}{record.endsAt ? ` · Ends ${southAfricanTime(record.endsAt)}` : ""}</span> : null}</div><div className="mm-discounts__actions">
         <button type="button" className="mm-discounts__secondary" disabled={busy} onClick={() => editDiscount(record)}>Edit<span className="mm-discounts__sr"> {record.code}</span></button>
         <button type="button" className="mm-discounts__switch" role="switch" aria-label={`${record.code} active`} aria-checked={record.active} disabled={busy} onClick={() => void persistDiscount({ ...record, expectedRevision: record.revision, value: String(record.value), minimumSpend: String(record.minimumSpend), active: !record.active })}><span aria-hidden="true" />{record.active ? "ON" : "OFF"}</button>
       </div></article>)}</div>}
@@ -2539,7 +2626,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     </button>
     {changeError ? <p role="alert" className="mm-admin__error">{changeError}</p> : null}
   </form> : null;
-  return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
+  return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes" data-mm-editing={editing ? "true" : undefined}>
     <style dangerouslySetInnerHTML={{ __html: deliveryEditorCss }} />
     <div className="mm-delivery__heading"><strong>{inlineSide ? inlineSide === "schedule" ? "Collection date & hours" : inlineSide === "collection" ? "Edit collection details" : "Edit delivery address" : details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!inlineSide && (!guided || !details.canEdit) ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}

@@ -46,7 +46,7 @@ test("admin summaries preserve filters while detail reads are scoped and never m
     ];
     const ids: string[] = [];
     for (const [index, [status, paymentStatus, shipmentStatus]] of scenarios.entries()) {
-      const [order] = await database.insert(schema.orders).values({ orderNumber: `MM-TEST-${index}`, status, paymentStatus, deliveryMethod: "courier", subtotal: "420", total: "519",
+      const [order] = await database.insert(schema.orders).values({ orderNumber: `MM-TEST-${index}`, status, paymentStatus, deliveryMethod: "courier", subtotal: "420", total: "519", createdAt: new Date("2026-10-22T23:15:00Z"),
         customerSnapshot: { firstName: "Test", lastName: String(index), email: "test@example.invalid", phone: "PRIVATE-PHONE" } }).returning();
       ids.push(order.id);
       await database.insert(schema.payments).values({ orderId: order.id, merchantPaymentId: order.orderNumber, provider: "payfast-production", status: paymentStatus, amount: "519", providerPaymentId: paymentStatus === "paid" ? `TEST-${index}` : null, verifiedAt: paymentStatus === "paid" ? new Date() : null });
@@ -71,6 +71,9 @@ test("admin summaries preserve filters while detail reads are scoped and never m
         || order.paymentStatus === "Paid" && (["New", "Confirmed"].includes(order.status) || order.status === "Ready" && !["Booking", "Booked"].includes(order.shipping?.status)
         || !["Collected", "Delivered", "Cancelled"].includes(order.status) && order.shipping?.status === "Failed"));
       const light = summary.orders.find((row: any) => row.id === order.id);
+      assert.equal(light.placedAt, order.placedAt, "Summary and full detail use the same South African time");
+      assert.match(order.placedAt, /23 Oct.*01:15 SAST$/, "UTC timestamp crosses midnight in South Africa");
+      assert.equal(light.placedDate, "2026-10-22T23:15:00.000Z", "Stored timestamp is not shifted");
       assert.equal(light.listNeedsAttention, expectedAttention, order.id);
       assert.equal(light.listInProgress, order.paymentStatus === "Paid" && (["Preparing", "Dispatched"].includes(order.status) || order.status === "Ready" && ["Booking", "Booked"].includes(order.shipping?.status)), order.id);
     }

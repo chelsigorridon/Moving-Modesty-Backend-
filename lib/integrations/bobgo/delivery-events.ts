@@ -7,6 +7,12 @@ import type { DeliveryEvent } from "./webhook-policy";
 
 export function createDeliveryEventQueue(database: ReturnType<typeof requireDatabase>, environment: "production" | "sandbox",
   refresh: (shipmentId: string) => Promise<unknown>, clock = () => Date.now()) {
+  async function currentBooking(shipmentId: string) {
+    const [row] = await database.select({ provider: shipments.provider, status: shipments.status,
+      remote: shipments.providerShipmentId, tracking: shipments.trackingNumber, reference: shipments.waybillReference })
+      .from(shipments).where(eq(shipments.id, shipmentId)).limit(1);
+    return row?.provider === `bobgo-${environment}` && ["booking", "booked"].includes(row.status) ? row : null;
+  }
   async function enqueue(event: DeliveryEvent) {
     const matches = await database.select({ id: shipments.id, tracking: shipments.trackingNumber, remote: shipments.providerShipmentId }).from(shipments)
       .where(and(eq(shipments.provider, `bobgo-${environment}`), inArray(shipments.status, ["booking", "booked"]),
@@ -33,14 +39,28 @@ export function createDeliveryEventQueue(database: ReturnType<typeof requireData
         return row;
       });
       if (!job) break;
+      const complete = () => database.update(bobgoDeliveryEvents).set({ status: "processed", processedAt: new Date(clock()), lastErrorCode: null,
+        leaseToken: null, leaseExpiresAt: null, updatedAt: new Date(clock()) })
+        .where(and(eq(bobgoDeliveryEvents.id, job.id), eq(bobgoDeliveryEvents.leaseToken, lease)));
+      let before: Awaited<ReturnType<typeof currentBooking>> | undefined;
       try {
-        // Always GET the provider's current record; never apply webhook status.
-        await refresh(job.shipmentId);
-        await database.update(bobgoDeliveryEvents).set({ status: "processed", processedAt: new Date(clock()), lastErrorCode: null,
-          leaseToken: null, leaseExpiresAt: null, updatedAt: new Date(clock()) })
-          .where(and(eq(bobgoDeliveryEvents.id, job.id), eq(bobgoDeliveryEvents.leaseToken, lease)));
+        before = await currentBooking(job.shipmentId);
+        // Cancelled/reset bookings can still have queued notifications. Completing
+        // those events changes only the queue, not the shipment or its order.
+        // Active bookings always use verified provider GET, never webhook status.
+        if (before) await refresh(job.shipmentId);
+        await complete();
         processed++;
       } catch {
+        // Another worker may cancel or replace the booking during read-back.
+        // Only retire that obsolete event; real failures on the same active
+        // booking retain the existing retry/backoff and attention threshold.
+        const after = before ? await currentBooking(job.shipmentId) : undefined;
+        if (before && (!after || after.remote !== before.remote || after.tracking !== before.tracking || after.reference !== before.reference)) {
+          await complete();
+          processed++;
+          continue;
+        }
         await database.update(bobgoDeliveryEvents).set({ status: job.attempts >= 7 ? "needs_attention" : "queued", lastErrorCode: "shipment_readback_failed",
           nextAttemptAt: new Date(clock() + Math.min(24 * 60 * 60_000, 15 * 60_000 * 2 ** Math.min(job.attempts, 7))),
           leaseToken: null, leaseExpiresAt: null, updatedAt: new Date(clock()) })
