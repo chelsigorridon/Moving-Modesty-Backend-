@@ -1,14 +1,18 @@
 {
   "status": "published",
-  "publishedVersion": "acc2e4876",
+  "publishedVersion": "15a61c867",
   "publishedUrl": "https://movingmodesty.com",
   "projectId": "HSoQpURWMbVB013b2Lkg",
   "description": "Public website image scheduling and responsive image hints only; no design changes.",
   "carousel": {
     "codeFileId": "PKQMgK1",
-    "amina": {"pagePath": "/amina", "instanceId": "nZ_1mD8fT", "collectionId": "B9AnDkKQg", "imageSizes": "(min-width: 1200px) 276px, (min-width: 768px) calc((100vw - 152px) / 2), (min-width: 388px) 316px, calc(100vw - 72px)"},
-    "hawa": {"pagePath": "/hawa", "instanceId": "u0ltwLvj0", "collectionId": "rSeI2ffJY", "imageSizes": "(min-width: 1200px) 276px, (min-width: 768px) calc((100vw - 152px) / 2), (min-width: 388px) 316px, calc(100vw - 72px)"},
-    "priority": "Bind collectionIndex to Framer's one-based collection Item Index. First item's initial image eager/high; later cards native-lazy/auto. User-selected slides eager/auto. Unbound uses eager/auto.",
+    "amina": {"pagePath": "/amina", "instanceId": "nZ_1mD8fT", "collectionId": "B9AnDkKQg", "tabletId": "f6pii73my", "mobileId": "X0j9SMQ67", "imageSizes": {"desktop": "276px", "tablet": "calc((100vw - 152px) / 2)", "mobile": "min(316px, calc(100vw - 72px))"}},
+    "hawa": {"pagePath": "/hawa", "instanceId": "u0ltwLvj0", "collectionId": "rSeI2ffJY", "tabletId": "w8fCQao2A", "mobileId": "EC7BuEX3H", "imageSizes": {"desktop": "276px", "tablet": "calc((100vw - 152px) / 2)", "mobile": "min(316px, calc(100vw - 72px))"}},
+    "priority": "Desktop collectionIndex uses the collection Item Index. Framer's responsive export does not forward that virtual binding on mobile/tablet; these retain the safe unbound eager/auto behavior. Do not claim mobile lazy/priority scheduling is applied.",
+    "exportImageSizesByBreakpoint": {"desktop": "276px", "tablet": "calc((100vw - 152px) / 2)", "mobile": "min(316px, calc(100vw - 72px))"},
+    "exportSizeHintNote": "Apply each plain size only to its breakpoint. Framer prefixes media conditions during export; a whole responsive sizes list here creates invalid nested media conditions.",
+    "responsiveIndexBinding": 0,
+    "mobilePriorityBindingOutstanding": true,
     "imageSourcesAndCropsUnchanged": true,
     "carouselCssAndControlsUnchanged": true
   },
@@ -41,6 +45,6 @@
     "reviewType": "Read-only mirror of current public HTML/runtime with bounded loading-attribute changes. Checkout and form sending disabled; live stock checks are not part of this image review.",
     "checkedViewportWidthsPx": [390, 768, 1280],
     "newPageSpeedScore": null,
-    "performanceNote": "Live Lighthouse speed comparison awaits publication. Do not claim a measured LCP improvement from local attribute checks alone."
+    "performanceNote": "Live PageSpeed tests run after publication; results are recorded in the release report. Mobile/tablet product image priority and lazy scheduling are not fully applied by Framer's exporter despite isolated component tests passing."
   }
 }
