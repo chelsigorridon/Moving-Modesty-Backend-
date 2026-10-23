@@ -114,6 +114,21 @@ function snapshotImage(value: unknown) {
   return typeof image === "string" ? image : "";
 }
 
+/** Checkout attempts stay private until PayFast has verified a full payment.
+ * Keep that sale visible through later cancellation/refund, without changing
+ * or deleting the underlying payment/recovery records. Shared by all reads. */
+function confirmedSaleCondition() {
+  return and(inArray(ordersTable.paymentStatus, ["paid", "refunded"]), sql`exists (
+    select 1 from ${payments}
+    where ${payments.orderId} = ${ordersTable.id}
+      and ${payments.status} in ('paid', 'refunded')
+      and ${payments.provider} in ('payfast', 'payfast-live', 'payfast-production', 'payfast-sandbox')
+      and ${payments.verifiedAt} is not null
+      and ${payments.providerPaymentId} is not null and btrim(${payments.providerPaymentId}) <> ''
+      and ${payments.amount} = ${ordersTable.total}
+  )`);
+}
+
 export function getDemoAdminSnapshot(): AdminSnapshot {
   return {
     orders: demoOrders,
@@ -166,7 +181,7 @@ export async function getAdminOverview(includeOrders = true): Promise<AdminSnaps
       .leftJoin(payments, eq(ordersTable.id, payments.orderId)).leftJoin(shipments, eq(ordersTable.id, shipments.orderId))
       .leftJoin(emailSummary, eq(ordersTable.id, emailSummary.orderId)).leftJoin(returnSummary, eq(ordersTable.id, returnSummary.orderId))
       .leftJoin(refundSummary, eq(ordersTable.id, refundSummary.orderId))
-      .where(isNull(ordersTable.archivedAt)).orderBy(desc(ordersTable.createdAt), desc(ordersTable.id)) : Promise.resolve([]),
+      .where(and(isNull(ordersTable.archivedAt), confirmedSaleCondition())).orderBy(desc(ordersTable.createdAt), desc(ordersTable.id)) : Promise.resolve([]),
     getOperationalIssues().catch(() => null),
   ]);
   return {
@@ -203,7 +218,7 @@ export async function getAdminSnapshot(options: { orderNumber?: string; includeP
 
   const syncConfiguration = getOrderSyncConfiguration();
   const bobGo = getBobGoConfiguration();
-  const orderCondition = and(isNull(ordersTable.archivedAt), options.orderNumber ? eq(ordersTable.orderNumber, options.orderNumber) : undefined);
+  const orderCondition = and(isNull(ordersTable.archivedAt), confirmedSaleCondition(), options.orderNumber ? eq(ordersTable.orderNumber, options.orderNumber) : undefined);
   const scope = db.select({ id: ordersTable.id }).from(ordersTable).where(orderCondition);
   const [orderRows, itemRows, productRows, variantRows, shipmentRows, notificationRows, incidents, returnRows, refundRows, stockRows, senderSettings, syncRows, deliveryHistory] = await Promise.all([
     db

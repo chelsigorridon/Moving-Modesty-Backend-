@@ -54,9 +54,10 @@ test("durable incidents, capped alerts, signed delivery webhooks and browser tel
     for (const { tag: migration } of JSON.parse(readFileSync(resolve(root, "drizzle/meta/_journal.json"), "utf8")).entries) {
       for (const statement of readFileSync(resolve(root, `drizzle/${migration}.sql`), "utf8").split("--> statement-breakpoint")) if (statement.trim()) await postgres.exec(statement);
     }
-    const { orders, emailEvents, systemErrors, errorAlerts } = load("lib/db/schema.ts");
+    const { orders, payments, emailEvents, systemErrors, errorAlerts } = load("lib/db/schema.ts");
     const { eq } = require("drizzle-orm");
     const [order] = await database.insert(orders).values({ orderNumber: "MM-TEST-MONITORING", subtotal: "420", total: "420", paymentStatus: "paid", status: "ready", deliveryMethod: "collection" }).returning();
+    await database.insert(payments).values({ orderId: order.id, merchantPaymentId: order.orderNumber, provider: "payfast-production", status: "paid", amount: "420", providerPaymentId: "TEST-MONITORING-PAYMENT", verifiedAt: new Date() });
     const monitoring = load("lib/monitoring.ts");
     const first = await monitoring.reportFailure({ status: 403, message: "SECRET test@example.com 10 Private Street" }, { operation: "courier_quote", orderId: order.id });
     const second = await monitoring.reportFailure({ status: 403, message: "SECRET duplicate" }, { operation: "courier_quote", orderId: order.id });

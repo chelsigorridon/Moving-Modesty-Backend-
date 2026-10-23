@@ -44,10 +44,11 @@ test("recorded dispatch emails contain tracking, survive failure, retry safely a
     for (const { tag: migration } of JSON.parse(readFileSync(resolve(root, "drizzle/meta/_journal.json"), "utf8")).entries) {
       for (const statement of readFileSync(resolve(root, `drizzle/${migration}.sql`), "utf8").split("--> statement-breakpoint")) if (statement.trim()) await postgres.exec(statement);
     }
-    const { customers, orders, shipments, emailEvents } = load("lib/db/schema.ts");
+    const { customers, orders, payments, shipments, emailEvents } = load("lib/db/schema.ts");
     const { eq } = require("drizzle-orm");
     const [customer] = await database.insert(customers).values({ firstName: "TEST", lastName: "Customer", email: "test@example.com" }).returning();
     const [record] = await database.insert(orders).values({ orderNumber: "MM-TEST-EMAIL", customerId: customer.id, subtotal: "420", deliveryFee: "99", total: "519", deliveryMethod: "courier", paymentStatus: "paid", status: "ready" }).returning();
+    await database.insert(payments).values({ orderId: record.id, merchantPaymentId: record.orderNumber, provider: "payfast-production", status: "paid", amount: "519", providerPaymentId: "TEST-EMAIL-PAYMENT", verifiedAt: new Date() });
     await database.insert(shipments).values({ orderId: record.id, status: "booked", provider: "bobgo-production" });
     const { getAdminSnapshot, updateOrderStatus } = load("lib/admin-data.ts");
     const { sendOrderStatusEmail, retryOrderNotification } = load("lib/email.ts");

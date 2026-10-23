@@ -23,7 +23,7 @@ test("checkout summary does not default to delivery when storage is empty, inval
 });
 
 test("actual storefront totals agree with backend policy before and after choosing fulfilment", () => {
-  const calculation = summary.slice(summary.indexOf("    const isCollection ="), summary.indexOf("    const css ="));
+  const calculation = summary.slice(summary.indexOf("    const isCollection ="), summary.indexOf("    const finalReview ="));
   const quote = new Function("subtotal", "fulfilmentMethod", "FREE_DELIVERY_THRESHOLD", "STANDARD_DELIVERY_FEE",
     `const discountQuote = null, fingerprint = "", appliedCode = ""; ${calculation}; return {deliveryFee, total};`);
   const storefrontThreshold = Number(summary.match(/const FREE_DELIVERY_THRESHOLD = (\d+)/)?.[1]);

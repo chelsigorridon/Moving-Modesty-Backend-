@@ -34,7 +34,7 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
       }
       return require(name);
     };
-    new Function("require", "module", "exports", compiled)(localRequire, compiledModule, compiledModule.exports);
+    new Function("require", "module", "exports", "process", compiled)(localRequire, compiledModule, compiledModule.exports, { env: { ...process.env, AUTH_SECRET: "CHECKOUT-TEST-ONLY-NOT-A-LIVE-SECRET" } });
     return compiledModule.exports;
   }
   try {
@@ -49,19 +49,29 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     const { createPayFastNotificationSignature } = load("lib/integrations/payfast/signature.ts");
     const { GET: paymentReturn } = load("app/api/payments/payfast/return/route.ts");
     const { POST: restoreSession } = load("app/api/checkout/session/route.ts");
-    const { getAdminSnapshot, updateOrderStatus } = load("lib/admin-data.ts");
+    const { getAdminSnapshot, getAdminOverview, updateOrderStatus } = load("lib/admin-data.ts");
     const customer = { firstName: "Original", lastName: "Customer", email: "test@example.com", phone: "0821234567" };
     const input = checkoutOrderSchema.parse({ checkoutToken: "c4c5b18e-4e64-4d3b-845e-d6432157f723", stage: "complete", fulfilmentMethod: "delivery", customer: { ...customer, email: " TEST@EXAMPLE.COM " },
       address: { line1: "10 Test Street", suburb: "Test Suburb", city: "Cape Town", province: " western cape ", postalCode: " 0081 " },
       items: [{ sku: "AMINA-LAV-OS", quantity: 1 }] });
     const order = await upsertCheckoutOrder(input, database);
     assert.equal(order.total, 519);
+    const assertUnpaidHidden = async () => {
+      assert.equal((await getAdminOverview()).orders.length, 0, "checkout attempts never enter dashboard/list counts");
+      assert.equal((await getAdminSnapshot()).orders.length, 0, "unpaid checkout attempts stay out of admin");
+      assert.equal((await getAdminSnapshot({ orderNumber: order.orderNumber, includeProducts: false })).orders.length, 0, "a direct order link cannot expose an unpaid attempt");
+    };
+    await assertUnpaidHidden();
     const checkout = { orderNumber: order.orderNumber, checkoutToken: input.checkoutToken };
-    await createPayFastCheckout(checkout, "https://test.invalid/api/payments/payfast/checkout");
+    const firstCheckout = await createPayFastCheckout(checkout, "https://test.invalid/api/payments/payfast/checkout");
+    assert.equal(firstCheckout.fields.notify_url, "https://test.invalid/api/payments/payfast/notify");
+    assert.equal(firstCheckout.action, configuration.processUrl);
+    await assertUnpaidHidden();
     const cancelled = await paymentReturn(new Request(`https://test.invalid/api/payments/payfast/return?state=cancelled&order=${order.orderNumber}&token=${input.checkoutToken}`));
     assert.equal(cancelled.status, 302);
     assert.equal(new URL(cancelled.headers.get("location")!).searchParams.get("payment"), "cancelled");
     assert.equal(new URL(cancelled.headers.get("location")!).searchParams.has("token"), false);
+    await assertUnpaidHidden();
     assert.equal((await upsertCheckoutOrder(input, database)).created, false);
     await assert.rejects(upsertCheckoutOrder({ ...input, items: [{ sku: "AMINA-LAV-OS", quantity: 2 }] }, database), /new checkout/);
     // A second order updates the shared profile, never the first order's snapshot.
@@ -70,6 +80,8 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
     const retried = await createPayFastCheckout(checkout, "https://test.invalid/api/payments/payfast/checkout");
     assert.equal(retried.fields.name_first, "Original");
     assert.equal(retried.fields.cell_number, "0821234567");
+    await paymentReturn(new Request(retried.fields.return_url));
+    await assertUnpaidHidden(); // A browser success/return URL is never proof of payment.
     const sessionRequest = (checkoutToken: string) => new Request("https://test.invalid/api/checkout/session", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ checkoutToken, orderNumber: order.orderNumber }),
     });
@@ -83,15 +95,32 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response("VALID");
-    const notify = async (status: string) => {
+    const notify = async (status: string, amount = "519.00", validSignature = true) => {
       const params = new URLSearchParams({ merchant_id: configuration.merchantId, m_payment_id: order.orderNumber,
-        pf_payment_id: "TEST-TRANSACTION", payment_status: status, amount_gross: "519.00" });
-      params.append("signature", createPayFastNotificationSignature(params, configuration.passphrase));
+        pf_payment_id: "TEST-TRANSACTION", payment_status: status, amount_gross: amount });
+      params.append("signature", validSignature ? createPayFastNotificationSignature(params, configuration.passphrase) : "invalid-signature");
       return processPayFastNotification(new Request("https://test.invalid/notify", { method: "POST" }), params.toString());
     };
     try {
+      assert.equal((await notify("PENDING")).paymentStatus, "pending");
+      await assertUnpaidHidden();
+      await assert.rejects(notify("COMPLETE", "519.00", false), /signature/);
+      await assert.rejects(notify("COMPLETE", "1.00"), /amount/);
+      await assertUnpaidHidden();
+      globalThis.fetch = async () => new Response("INVALID");
+      await assert.rejects(notify("COMPLETE"), /PayFast rejected/);
+      await assertUnpaidHidden();
+      globalThis.fetch = async () => { throw new TypeError("TEST validation offline"); };
+      await assert.rejects(notify("COMPLETE"), /validation is temporarily unavailable/);
+      await assertUnpaidHidden();
+      globalThis.fetch = async () => new Response("VALID");
+      assert.equal((await notify("FAILED")).paymentStatus, "failed");
+      await assertUnpaidHidden();
       const result = await notify("COMPLETE");
       assert.equal(result.paymentStatus, "paid");
+      assert.deepEqual((await getAdminOverview()).orders.map((entry: { id: string }) => entry.id), [order.orderNumber]);
+      assert.equal((await notify("COMPLETE")).duplicate, true);
+      assert.equal((await getAdminOverview()).orders.length, 1, "duplicate/late confirmations never duplicate the admin order");
       await assert.rejects(upsertCheckoutOrder({ ...input, customer: { ...customer, firstName: "Tampered" } }, database), /paid or closed/);
       await assert.rejects(createPayFastCheckout(checkout, "https://test.invalid/checkout"), /paid or closed/);
       await recordPayFastCheckoutFailure(checkout, "Delayed setup failure");
@@ -108,11 +137,11 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
       assert.equal(savedOrder.paymentStatus, "Paid");
       assert.equal(savedOrder.deliveryMethod, "Courier");
       // Archiving is recoverable and never deletes items/payment history or
-      // changes the paid status. Fresh orders stay visible in the same portal.
+      // changes the paid status. Other unpaid attempts must remain hidden.
       await postgres.query("update orders set archived_at = now(), archive_reason = $2 where order_number = $1", [order.orderNumber, "TEST cleanup"]);
       const cleaned = await getAdminSnapshot();
       assert.equal(cleaned.orders.some((entry: { id: string }) => entry.id === order.orderNumber), false);
-      assert.equal(cleaned.orders.length, 1, "the newer checkout remains visible");
+      assert.equal(cleaned.orders.length, 0, "the newer unpaid checkout stays hidden");
       assert.equal((await postgres.query("select * from order_items where order_id = (select id from orders where order_number = $1)", [order.orderNumber])).rows.length, 1);
       assert.equal((await postgres.query<{ status: string }>("select status from payments where merchant_payment_id = $1", [order.orderNumber])).rows[0].status, "paid");
       assert.equal((await restoreSession(sessionRequest(input.checkoutToken))).status, 404);
@@ -127,7 +156,7 @@ test("checkout/payment/return safeguards operate on actual PostgreSQL tables wit
       assert.equal((await getAdminSnapshot()).orders.length, 0);
       const fresh = await upsertCheckoutOrder({ ...input, checkoutToken: "f9ffec76-a82c-4d9b-a988-09dcd45e01f1" }, database);
       assert.equal(fresh.created, true);
-      assert.deepEqual((await getAdminSnapshot()).orders.map((entry: { id: string }) => entry.id), [fresh.orderNumber]);
+      assert.deepEqual((await getAdminSnapshot()).orders, [], "a fresh attempt is not a confirmed paid order");
       await postgres.query("update orders set archived_at = null, archive_reason = null where order_number = $1", [order.orderNumber]);
       assert.equal((await getAdminSnapshot()).orders.find((entry: { id: string }) => entry.id === order.orderNumber).paymentStatus, "Paid");
     } finally { globalThis.fetch = originalFetch; }

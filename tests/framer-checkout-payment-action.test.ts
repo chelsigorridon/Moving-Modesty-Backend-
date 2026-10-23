@@ -62,6 +62,7 @@ test("the summary action preserves the collection flow and submits one hosted Pa
     assert.equal(page.calls.length, 0, "payment cannot bypass earlier checkout steps");
     await page.next();
     page.root.querySelector('[data-framer-name="Collection"]').click(); await page.next();
+    assert.equal(page.calls.length, 0, "contact and fulfilment Continue never create an order");
     assert.equal(page.root.dataset.mmActiveStep, "4"); assert.equal(page.state.disabled, false);
     assert.equal(page.root.querySelector('[data-mm-checkout-step="4"] .mm-checkout-next'), null, "no duplicate payment button remains under the form");
     page.window.dispatchEvent(new page.window.CustomEvent(PAY)); page.window.dispatchEvent(new page.window.CustomEvent(PAY)); await flush();
@@ -134,7 +135,7 @@ test("frontend province matching agrees with the server and clears stale errors 
     assert.equal(province.validity.customError, true);
     province.value = "western cape"; await page.next();
     assert.equal(page.root.dataset.mmActiveStep, "4"); assert.equal(province.validity.customError, false);
-    assert.equal(page.calls.find(call => call.body.stage === "address").body.address.province, "Western Cape");
+    assert.equal(page.calls.length, 0, "completing the address never saves an order before Pay securely");
     const callsBefore = page.calls.length;
     const phone = page.root.querySelector('[name="checkoutPhone"]'); phone.value = "invalid";
     page.window.dispatchEvent(new page.window.CustomEvent(PAY)); await flush();
@@ -256,6 +257,7 @@ test("tablet also defers payment until all required delivery fields are valid", 
     assert.equal(doc.querySelector(".mm-checkout-summary-content").hasAttribute("data-hidden"), false);
     assert.equal(doc.querySelector(".mm-checkout-pay").disabled, false);
     assert.equal(page.hosted.length, 0, "reaching review does not submit a payment");
+    assert.equal(page.calls.length, 0, "all delivery steps are local until Pay securely is clicked");
   } finally { await review.close(); }
 });
 

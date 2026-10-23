@@ -936,11 +936,9 @@ function setupSlider(root: HTMLElement): Cleanup | null {
                         showFeedback(error instanceof Error ? error.message : "Please complete this step.")
                         return
                     }
-                    // Save each completed checkout stage to Neon. An order is
-                    // therefore visible in admin even if PayFast never opens or
-                    // the customer leaves the checkout before paying.
-                    const saved = await syncOrder(stage)
-                    if (!saved) return
+                    // Earlier steps only validate locally. Save the complete
+                    // payment attempt when Pay securely is clicked; the admin
+                    // backend exposes it only after verified payment.
                 }
                 const nextIndex = index === 1 && fulfilmentMethod === "collection" ? 3 : index + 1
                 void goTo(nextIndex)
