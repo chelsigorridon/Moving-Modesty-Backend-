@@ -44,7 +44,13 @@
     "reviewUrl": "http://127.0.0.1:4192/",
     "reviewType": "Read-only mirror of current public HTML/runtime with bounded loading-attribute changes. Checkout and form sending disabled; live stock checks are not part of this image review.",
     "checkedViewportWidthsPx": [390, 768, 1280],
-    "newPageSpeedScore": null,
+    "livePageSpeed": {
+      "testedAtSast": "2026-10-23 11:50-11:52",
+      "conditions": "One Lighthouse 13.5.0 lab run per device/page. Mobile emulated Moto G Power with slow 4G. No CrUX field data; results vary between runs.",
+      "homepage": {"mobileBefore": 71, "mobileAfter": 76, "desktopBefore": 95, "desktopAfter": 96, "mobileLcpBeforeSeconds": 6.2, "mobileLcpAfterSeconds": 4.7, "desktopLcpAfterSeconds": 1.1, "report": "https://pagespeed.web.dev/analysis/https-movingmodesty-com/7aqo9qwman?form_factor=mobile"},
+      "amina": {"mobileBefore": 64, "mobileAfter": 75, "desktopBefore": 97, "desktopAfter": 98, "mobileLcpBeforeSeconds": 8.3, "mobileLcpAfterSeconds": 5.3, "desktopLcpAfterSeconds": 1.0, "report": "https://pagespeed.web.dev/analysis/https-movingmodesty-com-amina/q6yndwf5j6?form_factor=mobile"},
+      "remaining": ["Mobile product priority/index override is not forwarded by Framer; images currently retain eager/auto on mobile.", "Homepage image delivery still has about 93 KiB estimated savings in this mobile lab run.", "About 100 KiB of unused platform JavaScript remains."]
+    },
     "performanceNote": "Live PageSpeed tests run after publication; results are recorded in the release report. Mobile/tablet product image priority and lazy scheduling are not fully applied by Framer's exporter despite isolated component tests passing."
   }
 }
