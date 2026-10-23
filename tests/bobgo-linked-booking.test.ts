@@ -135,7 +135,7 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
           collection_location_type: row.order_fulfillment_presets.collection_address_book_id === 91 ? "locker" : "door", delivery_location_type: body.pickup_point_location_id ? "counter" : "door",
           ...(row.order_fulfillment_presets.collection_address_book_id === 91 ? { collection_pickup_point_location_id: 90 } : {}),
           ...(body.pickup_point_location_id ? { delivery_pickup_point_location_id: body.pickup_point_location_id } : {}),
-          collection_address: mode === "wrong-collection" ? { ...providerAddress, code: "9999" } : providerAddress, collection_contact_name: "TEST", collection_contact_surname: "Sender", collection_contact_email: contact.email, collection_contact_mobile_number: contact.phone,
+          collection_address: mode === "wrong-collection" ? { ...providerAddress, code: "9999" } : row.order_fulfillment_presets.collection_address_book_id === 91 ? null : providerAddress, collection_contact_name: "TEST", collection_contact_surname: "Sender", collection_contact_email: contact.email, collection_contact_mobile_number: contact.phone,
           collection_min_date: mode === "wrong-shipment-date" ? "2099-07-17T08:00:00+02:00" : body.order_fulfillment_presets.requested_collection_date,
           instructions_collection: mode === "wrong-shipment-preference" ? "Test collection note" : body.order_fulfillment_presets.instructions_collection,
           delivery_address: { ...row.delivery_address, country: "South Africa", zone: "WC" }, delivery_contact_name: "TEST", delivery_contact_surname: "Buyer", delivery_contact_email: "buyer@example.invalid", delivery_contact_mobile_number: contact.phone });
@@ -380,6 +380,41 @@ test("linked quotes, booking and timeout reconciliation are isolated and fenced 
         if (collectionPoint) assert.equal(remote.get(row.remoteId).order_fulfillment_presets.requested_collection_date, null);
         assert.equal((await service.book(row.number, result.rates[0].quoteToken)).booked, true);
       }
+    });
+    await t.test("an existing sender-locker waybill with a null collection address links by GET only and keeps its booking fence against mismatches", async () => {
+      const selected: any = { ...plan, collectionSchedule: undefined, collection: { kind: "pickup_point", contact, point: { id: "90", providerSlug: "demo-b", name: "TEST Collection Locker" } } };
+      const row = await seed(selected), token = await quote(row), beforeBookings = bookings();
+      mode = "timeout-accepted";
+      try { await assert.rejects(service.book(row.number, token), /Do not book again/); } finally { mode = "normal"; }
+      const entry = fulfillments.get(row.remoteId).order_fulfillments[0].order_fulfillment;
+      const raw = remoteShipments.get(String(entry.method_id));
+      assert.equal(raw.collection_address, null);
+      assert.equal((await localShipment(row)).status, "booking");
+      const before = calls.length;
+      for (const change of [
+        { collection_pickup_point_location_id: undefined }, { collection_pickup_point_location_id: 999 },
+        { provider_slug: "other" }, { service_level_code: "OTHER" }, { collection_location_type: "door" },
+        { collection_address: { ...providerAddress, code: "9999" } },
+        { collection_contact_mobile_number: "0829999999" }, { custom_tracking_reference: "FOREIGN" },
+        { delivery_address: { ...raw.delivery_address, code: "9999" } }, { delivery_contact_email: "other@example.invalid" },
+      ]) {
+        const original = structuredClone(raw); Object.assign(raw, change);
+        await assert.rejects(service.reconcile(row.number));
+        assert.equal((await localShipment(row)).status, "booking", "Mismatches never unlock or overwrite the existing booking");
+        Object.assign(raw, original);
+      }
+      assert.equal((await service.reconcile(row.number)).booked, true);
+      assert.equal((await service.reconcile(row.number)).booked, true, "Repeat checks are idempotent");
+      const linked = await localShipment(row);
+      assert.equal(linked.status, "booked"); assert.equal(linked.provider_shipment_id, String(entry.method_id));
+      assert.equal(linked.tracking_number, raw.tracking_reference); assert.equal(linked.last_error, null);
+      const order = (await pg.query<any>("select status,payment_status,total,delivery_fee,tracking_number from orders where id=$1", [row.id])).rows[0];
+      assert.equal(order.status, "ready"); assert.equal(order.payment_status, "paid"); assert.equal(Number(order.total), 549); assert.equal(Number(order.delivery_fee), 99);
+      assert.equal(order.tracking_number, raw.tracking_reference);
+      assert.equal(bookings(), beforeBookings + 1, "The simulated prior booking is never repeated");
+      assert.ok(calls.slice(before).every(call => ["readOrder", "fulfillments", "shipmentRead"].includes(call)), "Reconciliation uses only provider GET operations");
+      await assert.rejects(service.book(row.number, token), /already exists/);
+      assert.equal(bookings(), beforeBookings + 1);
     });
     await t.test("sender-locker pickup-point-labelled door rates become selectable on the same linked order without booking", async () => {
       const selected: any = { ...plan, collectionSchedule: undefined, collection: { kind: "pickup_point", contact, point: { id: "90", providerSlug: "demo-b", name: "TEST Collection Locker" } } };

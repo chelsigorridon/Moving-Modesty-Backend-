@@ -13,7 +13,8 @@ import { assertNoFulfillments, collectionBookId, expectedFingerprint, linkedFulf
 import type { LinkedBookingProvider } from "./linked-booking-transport";
 import { fingerprint, parcelInput, record, signQuote, textValue, verifyQuote, type CourierBookingSnapshot, type PackedParcel } from "./protocol";
 import { readLinkedRates, linkedRateRequestMatches } from "./linked-rates";
-import { bobGoAddressesMatch, normalizeBobGoText } from "./address-policy";
+import { normalizeBobGoText } from "./address-policy";
+import { linkedCollectionAddressMatches } from "./linked-shipment-policy";
 import { courierContactInput } from "../../delivery-input";
 import { activeLinkedFulfillments, retiredLinkedFulfillments, retiredFingerprint, verifyRetiredShipments } from "./linked-fulfillment-policy";
 import { linkedCollectionDateMatches, linkedCollectionInstructions, linkedCollectionProblem, linkedCollectionShipmentMatches } from "./linked-collection";
@@ -225,7 +226,7 @@ export function createLinkedBookingService(database: Database, provider: LinkedB
     if (raw.custom_tracking_reference !== local.waybillReference && local.status !== "booked"
       || candidate.providerSlug !== snapshot.providerSlug || candidate.serviceCode !== snapshot.serviceCode
       || candidate.collectionKind !== snapshot.collection.kind || candidate.deliveryKind !== snapshot.delivery.kind
-      || !bobGoAddressesMatch(record(raw.collection_address), snapshot.collection.address)
+      || !linkedCollectionAddressMatches(raw, snapshot)
       || normalizeBobGoText([raw.collection_contact_name, raw.collection_contact_surname].filter(Boolean).join(" ")) !== normalizeBobGoText(snapshot.collection.contact.name)
       || normalizeBobGoText(raw.collection_contact_email) !== normalizeBobGoText(snapshot.collection.contact.email)
       || courierContactInput.shape.phone.safeParse(raw.collection_contact_mobile_number).data !== snapshot.collection.contact.phone
