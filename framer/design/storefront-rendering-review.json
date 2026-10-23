@@ -1,0 +1,56 @@
+{
+  "kind": "framer-canvas-change-record",
+  "schemaVersion": 1,
+  "status": "published",
+  "publishedVersion": "dc30883eb",
+  "publishedUrl": "https://movingmodesty.com",
+  "description": "Customer-facing rendering repairs only. No admin, checkout, privacy/security draft, order, waybill or sync-setting changes.",
+  "projectId": "HSoQpURWMbVB013b2Lkg",
+  "pageId": "augiA20Il",
+  "pagePath": "/",
+  "gallery": {
+    "tickerId": "h5cvzXaFj",
+    "wrapperId": "AB_Ei3Ko7",
+    "name": "Responsive scarf gallery item",
+    "childrenInOrder": ["vACHrfc3F", "YWGPqr_9U", "LtH97lbQK"],
+    "layout": "stack",
+    "stackDirection": "horizontal",
+    "stackDistribution": "start",
+    "stackAlignment": "start",
+    "gap": "16px",
+    "width": "auto",
+    "height": "auto",
+    "overflow": "visible",
+    "mobileWrapperId": "HAmG8z5xhAB_Ei3Ko7",
+    "mobileWidth": "100%",
+    "reason": "Keep the native ticker item count stable when Framer removes breakpoint-hidden image variants before hydration.",
+    "existingImageAttributesUnchanged": true,
+    "originalTickerSettingsUnchanged": true,
+    "originalImagesRemoved": false
+  },
+  "codeFiles": [
+    {
+      "path": "ContactForm.tsx",
+      "id": "nDpIzhA",
+      "sha256Lf": "325a38a3c845d49e0467b8b4013cdb0ef30dd22cf57324cacc41ac7cf5cb1567"
+    },
+    {
+      "path": "CMSProductCarousel.tsx",
+      "id": "PKQMgK1",
+      "sha256Lf": "28d1cf81ed2fbdeed1f567da4fc33a38d88480095bc06245ec0d2d1caeadd2e4"
+    }
+  ],
+  "verification": {
+    "isolatedRegressionTestsPassed": 461,
+    "isolatedProductionBuildPassed": true,
+    "framerPreviewStatus": "ready",
+    "framerTypeErrors": [],
+    "homepageRenderingMismatchesInLocalReview": 0,
+    "productRenderingMismatchesInLocalReview": 0,
+    "checkedViewportWidthsPx": [390, 768, 1280],
+    "unrelatedFramerCodeFilesUnchanged": true,
+    "localIntegrationsDisabled": true,
+    "localReview": "http://127.0.0.1:4191/",
+    "reviewDescription": "Captured public page with bounded CSS/gallery repairs and original Framer runtime/assets; form sending and checkout disabled. Not a published deployment."
+  }
+}

@@ -234,7 +234,8 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
             aria-roledescription="carousel"
             aria-label="Product images"
         >
-            <style>{css}</style>
+            {/* Keep CSS as raw text in Framer's React 18 server output; colours cannot close the style element. */}
+            <style dangerouslySetInnerHTML={{ __html: css.replace(/</g, "\\3c ") }} />
             {active?.src ? (
                 <AnimatePresence initial={false}>
                     <motion.img
