@@ -1,0 +1,57 @@
+Lower homepage fade-up effect — review and publication, 23 October 2026
+
+User-approved scope: apply the existing fade-in / 12px slide-up to Follow Our
+Journey, Join the Movement, Women’s Health, Get in Touch and the footer on desktop,
+tablet and mobile. Keep design unchanged; build for review, do not publish.
+
+Native Framer appearEffect was copied exactly from Featured Header i_z0HuH60:
+onInView, threshold 0.15, replay false, opacity 0, y 12, 0.46 seconds, easing
+cubic-bezier(0.44,0,0.56,1), no delay. Six content groups across three sizes = 18
+targets. Section surfaces remain static; gallery ticker, forms and links retain
+their existing implementation. Footer content is part of the shared component.
+
+Read-back verified every target matches the reference. Entire homepage, shared
+template and footer were compared against captured pre-edit trees: node counts,
+child order, text, images and every non-appearEffect attribute are unchanged.
+All twelve Framer code files have identical before/after hashes.
+
+Canvas screenshots captured for Desktop, Tablet and Mobile. Framer's existing
+gallery/ticker hover clipping, fixed contact height and replica geometry warnings
+were reviewed against unchanged layout attributes, not expanded into unrelated
+design changes. No parse or command errors were reported.
+
+Local animation review: http://127.0.0.1:3033/fade-up-review
+This mirrors current public HTML with a sending-disabled demo of the exact effect
+parameters. It is not a production Framer export. Native effect settings are saved
+in Framer as an unpublished draft; export verification waits for publish approval.
+Desktop scrolling verified six groups wait then reveal, without replaying on
+return. Tablet 810px and Mobile 390px reviewed visually; footer remains visible.
+Review has Desktop/Tablet/Mobile, Before/Updated and Replay controls. Forms,
+checkout, outbound network connections and link navigation are disabled locally.
+
+During the initial review phase, no Git commit/push, Framer publication, backend
+deployment, payment, live order, waybill, sync-setting, security/privacy draft or
+account change was performed.
+Declarative record: framer/design/lower-section-fade-up-review.json.
+Detailed state: .tmp/fade-up-review-before.json and fade-up-review-after.json.
+
+Approved publication
+The user then explicitly requested pushing and publishing only these effects.
+Framer draft rechecked against the exact reviewed after-state: no changed node
+counts, child order, design/content attributes or code hashes. Publication preview
+reported ready, no errors/warnings, and exactly two changed items: Home and Footer.
+Published successfully to https://movingmodesty.com, version 0c8b2c59d.
+
+Live HTML returned HTTP 200. Ten exported target elements (including responsive
+footer variants) retain their previous text/structure and have the native initial
+opacity 0 / translateY(12px) styles. On-scroll effects do not use the on-load-only
+data-framer-appear-id marker; validation checks their actual initial styles.
+Live desktop browser inspection confirmed all six rendered groups reach opacity 1
+and transform none after scrolling, and remain visible when returning. No forms
+were submitted. The normal free-delivery popup was dismissed for inspection.
+Live screenshot and browser DOM verification saved under .tmp/fade-up-live-*.
+
+Git release scope: this audit and the declarative animation record only. No backend
+deployment is needed or performed for native Framer canvas effects. Existing
+security/privacy/recovery drafts, checkout/PayFast code, orders, waybills and sync
+settings remain untouched.

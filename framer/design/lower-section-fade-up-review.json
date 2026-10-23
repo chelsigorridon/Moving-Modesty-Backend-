@@ -1,0 +1,56 @@
+{
+  "status": "published",
+  "published": true,
+  "publishedVersion": "0c8b2c59d",
+  "publishedUrl": "https://movingmodesty.com",
+  "projectId": "HSoQpURWMbVB013b2Lkg",
+  "pagePath": "/",
+  "reviewUrl": "http://127.0.0.1:3033/fade-up-review",
+  "effect": {
+    "threshold": 0.15,
+    "trigger": "onInView",
+    "replay": false,
+    "enter": {
+      "opacity": 0, "x": 0, "y": 12, "scale": 1,
+      "rotate": 0, "rotateX": 0, "rotateY": 0, "skewX": 0, "skewY": 0,
+      "transition": "tween 0.44,0,0.56,1 0.46s 0s",
+      "stagger": "0s"
+    }
+  },
+  "referenceNodeId": "i_z0HuH60",
+  "homeContentTargets": [
+    {"section": "Follow Our Journey", "id": "WW9tl7ZLG"},
+    {"section": "Join the Movement", "id": "lWC7OnkXZ"},
+    {"section": "Women’s Health Feature", "id": "C2kj0KLz7"},
+    {"section": "Get in Touch", "id": "vz3JTVkF7"}
+  ],
+  "homeBreakpointPrefixes": ["", "EdALR6kOD", "HAmG8z5xh"],
+  "sharedFooterTargets": ["KcJ955UWJ", "P8bnvPAYT"],
+  "footerVariantPrefixes": ["", "EwsbN6qjA", "mPvKxS44b"],
+  "implementation": "Native Framer appearEffect only, applied to content containers rather than section backgrounds. Shared footer remains a shared component.",
+  "verification": {
+    "matchingEffectTargets": 18,
+    "designAndContentAttributesUnchanged": true,
+    "nodeCountsAndChildOrderUnchanged": true,
+    "allFramerCodeFilesUnchanged": true,
+    "desktopTabletMobileDraftScreenshotsCaptured": true,
+    "localResponsiveWidthsPx": [1280, 810, 390],
+    "localPreviewDesktopAllGroupsRevealedOnScroll": true,
+    "localPreviewTabletAndMobileVisuallyChecked": true,
+    "localPreviewSendingAndCheckoutDisabled": true,
+    "liveOrdersChanged": 0,
+    "waybillsChanged": 0,
+    "syncSettingsChanged": false,
+    "framerPublishErrors": [],
+    "framerPublishWarnings": [],
+    "publishedChangesOnly": ["Home", "Footer"],
+    "liveHomepageStatus": 200,
+    "liveInitialFadeUpStylesPresent": true,
+    "liveTargetTextAndStructureUnchanged": true,
+    "liveDesktopAllSixGroupsRevealedAfterScrolling": true,
+    "published": true
+  },
+  "reviewCaveat": "The local mirror was used for review. After user approval, the native Framer effects were published and the production HTML plus desktop scrolling behavior were verified read-only.",
+  "diagnostics": "Framer reported existing gallery/ticker hover clipping and fixed contact-height/replica geometry warnings. No layout, size, overflow, hover or content attributes were changed to address unrelated issues. Full before/after comparison confirms only the approved appearEffect settings changed.",
+  "evidence": [".tmp/fade-up-review-before.json", ".tmp/fade-up-review-after.json", ".tmp/fade-up-tablet-review.png", ".tmp/fade-up-publication.json", ".tmp/fade-up-published-verification.json", ".tmp/fade-up-live-browser-check.json", ".tmp/fade-up-live-published.png"]
+}
