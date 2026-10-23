@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState, type FormEvent } from "react";
 import type { AdminOrder } from "@/lib/admin-types";
+import { adminRequest } from "@/lib/admin-client";
 import DeliveryEditor from "./delivery-editor";
 import ParcelEditor from "./parcel-editor";
 
@@ -10,7 +11,7 @@ type Action = { order?: AdminOrder; message?: string };
 const money = (amount: number) => `R${amount.toFixed(2)}`;
 
 export default function CourierTest() {
-  // Keep owner credentials/session in memory only. Sandbox payment opens in a
+  // The owner session uses an HttpOnly cookie. Sandbox payment opens in a
   // separate tab, so returning from it cannot accidentally submit a live form.
   const [token, setToken] = useState(""), [showPassword, setShowPassword] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [busy, setBusy] = useState(false), busyRef = useRef(false);
@@ -21,9 +22,9 @@ export default function CourierTest() {
   const [archiveConfirmed, setArchiveConfirmed] = useState(false);
   const order = snapshot?.order, selected = rates.find(rate => rate.quoteToken === choice);
   function clearQuotes() { setRates([]); setChoice(""); setApproved(""); }
-  async function request<T>(path: string, body?: unknown, method = "POST", session = token): Promise<T> {
-    const response = await fetch(path, { method: body === undefined ? "GET" : method, cache: "no-store",
-      headers: { "Content-Type": "application/json", ...(session ? { Authorization: `Bearer ${session}` } : {}) },
+  async function request<T>(path: string, body?: unknown, method = "POST"): Promise<T> {
+    const response = await adminRequest(path, { method: body === undefined ? "GET" : method, cache: "no-store",
+      headers: { "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The request could not be confirmed. Refresh before continuing.");
@@ -35,12 +36,13 @@ export default function CourierTest() {
     try { await callback(); } catch (caught) { setError(caught instanceof Error ? caught.message : "Request failed. Refresh before continuing."); }
     finally { busyRef.current = false; setBusy(false); }
   }
-  async function refresh(session = token) { setSnapshot(await request<Snapshot>("/api/admin/courier-test", undefined, "GET", session)); clearQuotes(); setMeasured(false); }
+  async function refresh() { setSnapshot(await request<Snapshot>("/api/admin/courier-test", undefined, "GET")); clearQuotes(); setMeasured(false); }
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
     await run(async () => {
-      const result = await request<{ token: string }>("/api/admin/login", { email: String(data.get("email") || ""), password: String(data.get("password") || "") });
-      setToken(result.token); await refresh(result.token);
+      const result = await request<{ authenticated: boolean }>("/api/admin/login", { email: String(data.get("email") || ""), password: String(data.get("password") || "") });
+      if (!result.authenticated) throw new Error("Please sign in again.");
+      setToken("authenticated"); await refresh();
     });
   }
   async function create(event: FormEvent<HTMLFormElement>) {

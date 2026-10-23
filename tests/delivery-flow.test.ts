@@ -163,14 +163,13 @@ test("a saved package fills dimensions but never sets weight; custom measurement
 
 test("the collection schedule can be edited on its own, reads silent autofill, and cannot save reversed hours", async () => {
   const writes: any[] = [];
-  await harness("../components/delivery-editor.tsx", { details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: true }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) }, async (doc, button) => {
-    await act(async () => button("Change collection date / time"));
+  await harness("../components/delivery-editor.tsx", { guided: true, inlineSide: "schedule", details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: true }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) }, async (doc) => {
     assert.equal(doc.querySelector('[name="collection.line1"]'), null); assert.equal(doc.querySelector('[name="delivery.line1"]'), null);
     assert.equal(doc.querySelector('[name="remember"]'), null, "A per-order schedule cannot silently become a sender default");
     (doc.querySelector('[name="collectionSchedule.date"]') as HTMLInputElement).value = "2099-07-17";
     (doc.querySelector('[name="collectionSchedule.after"]') as HTMLInputElement).value = "16:00";
     (doc.querySelector('[name="collectionSchedule.before"]') as HTMLInputElement).value = "15:00";
-    await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
+    assert.equal(doc.querySelector('[name="confirmed"]'), null);
     await act(async () => doc.querySelector('fieldset')!.closest('form')!.dispatchEvent(new doc.defaultView!.Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(writes.length, 0); assert.match(doc.querySelector('[role="alert"]')?.textContent || "", /end after the start/);
     (doc.querySelector('[name="collectionSchedule.after"]') as HTMLInputElement).value = "10:00";
@@ -235,20 +234,51 @@ test("packed weights are selectable, keep box dimensions and expose manual entry
 
 test("linked collection hours are clearly labelled as a preferred driver note and remain editable", async () => {
   const writes: any[] = [];
-  await harness("../components/delivery-editor.tsx", { guided: true, details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: true, collectionTimeMode: "preferred_instructions" }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) }, async (doc, button) => {
-    assert.match(doc.body.textContent || "", /Hours are sent as a preferred driver note, not a booked time slot/);
-    await act(async () => button("Change collection date / time"));
+  await harness("../components/delivery-editor.tsx", { guided: true, inlineSide: "schedule", details: { revision: 3, plan, draftPlan: plan, privateNote: "", canEdit: true, collectionTimeMode: "preferred_instructions" }, save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }) }, async (doc) => {
     const section = doc.querySelector('[aria-label="Requested collection schedule"]')!;
     assert.match(section.textContent || "", /driver note, not a booked time slot/);
     assert.match(section.textContent || "", /Preferred from.*Preferred until/);
     assert.equal(doc.querySelector('[name="collectionSchedule.after"]')?.getAttribute("type"), "time");
     assert.equal(doc.querySelector('[name="remember"]'), null);
     (doc.querySelector('[name="collectionSchedule.after"]') as HTMLInputElement).value = "10:00";
-    await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
+    assert.equal(doc.querySelector('[name="confirmed"]'), null, "Do not ask to reconfirm addresses in the courier schedule editor");
     await act(async () => doc.querySelector('fieldset')!.closest('form')!.dispatchEvent(new doc.defaultView!.Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(writes.length, 1);
     assert.equal(writes[0].plan.collectionSchedule.after, "10:00");
     assert.equal(writes[0].plan.collectionInstructions, "", "The backend adds the preference; saving the form must not accumulate generated notes");
+  });
+});
+
+test("address confirmation and address edits never ask for collection dates or block on a missing schedule", async () => {
+  const withoutSchedule = { ...plan, collectionSchedule: undefined };
+  for (const inlineSide of [undefined, "collection", "delivery"]) {
+    const writes: any[] = [];
+    await harness("../components/delivery-editor.tsx", {
+      guided: true, inlineSide,
+      details: { revision: 2, plan: inlineSide ? withoutSchedule : null, draftPlan: withoutSchedule, privateNote: "", canEdit: true },
+      save: async (value: any) => writes.push(value), searchPoints: async () => ({ points: [] }),
+    }, async (doc) => {
+      assert.equal(doc.querySelectorAll('[name^="collectionSchedule."]').length, 0);
+      assert.doesNotMatch(doc.body.textContent || "", /Choose collection date|When can the courier collect/);
+      if (!inlineSide) await act(async () => (doc.querySelector('[name="confirmed"]') as HTMLInputElement).click());
+      await act(async () => doc.querySelector('fieldset')!.closest('form')!.dispatchEvent(new doc.defaultView!.Event('submit', { bubbles: true, cancelable: true })));
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].plan.collectionSchedule, undefined);
+      assert.equal(writes[0].plan.delivery.address.line1, "20 Customer Street");
+    });
+  }
+});
+
+test("the courier schedule editor has one date/window and locker drop-off has none", async () => {
+  const locker = { ...plan, collection: { kind: "pickup_point", contact: plan.collection.contact, point: { id: "91001", providerSlug: "demo", name: "DEMO locker" } }, collectionSchedule: undefined };
+  for (const value of [plan, locker]) await harness("../components/delivery-editor.tsx", {
+    guided: true, inlineSide: "schedule", details: { revision: 1, plan: value, draftPlan: value, privateNote: "", canEdit: true },
+    save: async () => {}, searchPoints: async () => ({ points: [] }),
+  }, async (doc) => {
+    assert.equal(doc.querySelectorAll('input[type="date"]').length, value.collection.kind === "door" ? 1 : 0);
+    assert.equal(doc.querySelectorAll('input[type="time"]').length, value.collection.kind === "door" ? 2 : 0);
+    assert.equal(doc.querySelector('[name="collection.line1"]'), null);
+    assert.equal(doc.querySelector('[name="delivery.line1"]'), null);
   });
 });
 

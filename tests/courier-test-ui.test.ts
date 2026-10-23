@@ -6,12 +6,14 @@ import { createRequire } from "node:module";
 import ts from "typescript";
 import React from "react";
 import { JSDOM } from "jsdom";
+import { adminClientFixture } from "./helpers/admin-client.ts";
 
 test("the private test never presets a drop-off point or measurements and cannot book on mount or refresh", async () => {
   const require = createRequire(import.meta.url), dom = new JSDOM('<div id="root"></div>', { url: "https://offline.test.invalid/courier-test", runScripts: "outside-only" });
   const window = dom.window as any, cache = new Map<string, any>(), calls: string[] = [];
   window.structuredClone = structuredClone;
   function load(name: string): any {
+    if (name === "@/lib/admin-client") return adminClientFixture(window.fetch, window);
     if (name === "../lib/shipping/owner-measurements") return require("../lib/shipping/owner-measurements.ts");
     if (name === "../lib/shipping/collection-schedule") return require("../lib/shipping/collection-schedule.ts");
     if (!name.startsWith("./")) return require(name);
@@ -31,7 +33,7 @@ test("the private test never presets a drop-off point or measurements and cannot
       delivery, collectionInstructions: "", deliveryInstructions: "", customerApprovedPickup: false } } };
   window.fetch = async (path: string, options: any) => {
     calls.push(path);
-    if (path === "/api/admin/login") { assert.equal(JSON.parse(options.body).password, "OFFLINE-not-a-real-password"); return { ok: true, json: async () => ({ token: "OFFLINE-session-only" }) }; }
+    if (path === "/api/admin/login") { assert.equal(JSON.parse(options.body).password, "OFFLINE-not-a-real-password"); return { ok: true, json: async () => ({ authenticated: true }) }; }
     assert.equal(path, "/api/admin/courier-test"); assert.equal(options.method, "GET");
     return { ok: true, json: async () => ({ order: structuredClone(order), enabled: true, archived: false }) };
   };

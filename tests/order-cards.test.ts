@@ -21,6 +21,7 @@ const fixtures = ["One", "Two", "Three"].map((name, i) => ({
 async function harness(check: (context: any) => Promise<void>, query = "", initial: any[] = fixtures, options: { summary?: boolean; failDetail?: boolean; deferDetails?: boolean } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: `https://store.test.invalid/admin/orders${query}`, runScripts: "outside-only" });
   const win = dom.window as any, originals = new Map<string, PropertyDescriptor | undefined>();
+  win.Headers = Headers; win.AbortSignal = AbortSignal; win.AbortController = AbortController;
   for (const [name, value] of Object.entries({ window: win, document: win.document, HTMLElement: win.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { value, configurable: true });

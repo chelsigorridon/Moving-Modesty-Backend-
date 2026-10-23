@@ -17,7 +17,7 @@ export default function TrackingReliabilityReview({ source }: { source: string }
     const mod = { exports: {} as { default: React.ComponentType<{ view: string; apiBaseUrl: string }> } };
     const dependencies: Record<string, unknown> = { react: React, "react/jsx-runtime": jsxRuntime,
       framer: { addPropertyControls() {}, ControlType: {}, useIsStaticRenderer: () => false } };
-    new Function("require", "module", "exports", "fetch", source + '\ntoken = () => "LOCAL-REVIEW-ONLY";')((name: string) => {
+    new Function("require", "module", "exports", "fetch", source)((name: string) => {
       if (!(name in dependencies)) throw new Error("Unexpected preview dependency"); return dependencies[name];
     }, mod, mod.exports, async (url: string, init: RequestInit = {}) => {
       const parsed = new URL(url);

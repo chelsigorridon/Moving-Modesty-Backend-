@@ -169,7 +169,7 @@ interface AdminPortalProps {
 const emptySnapshot: Snapshot = { orders: [] }
 
 async function adminFetch(url: string, init?: RequestInit, reportNetworkFailure = true) {
-    try { return await fetch(url, { ...init, signal: init?.signal || AbortSignal.timeout(45000) }) }
+    try { return await adminRequest(url, { ...init, signal: init?.signal || AbortSignal.timeout(45000) }) }
     catch (error) {
         if (reportNetworkFailure && !init?.signal?.aborted && error instanceof Error && ["TypeError", "TimeoutError", "AbortError"].includes(error.name)) {
             // Do not include tokens, URLs, form fields or customer data in telemetry.
@@ -190,11 +190,6 @@ const money = new Intl.NumberFormat("en-ZA", {
 })
 function normalizeBaseUrl(value: string) {
     return value.trim().replace(/\/$/, "")
-}
-
-function token() {
-    if (typeof window === "undefined") return ""
-    return window.sessionStorage.getItem("moving_modesty_admin_token") || ""
 }
 
 function route(path: string) {
@@ -281,7 +276,7 @@ export default function AdminPortal(props: AdminPortalProps) {
     const loadTechnicalAlerts = useCallback(async (status: "open" | "resolved", page: number): Promise<TechnicalAlertsData> => {
         if (!liveEnabled) throw new Error("Open the live admin portal to review technical alerts.")
         const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/diagnostics?status=${status}&page=${page}`, {
-            headers: { Authorization: `Bearer ${token()}` },
+            headers: { },
         })
         const data = await response.json().catch(() => null)
         if (response.status === 401) { rememberAdminReturnPath(); route("/admin/login") }
@@ -294,7 +289,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         mutationPending.current = true
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/diagnostics`, {
-                method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                method: "PATCH", headers: { "Content-Type": "application/json", },
                 body: JSON.stringify({ id: incident.id, expectedOccurrences: incident.occurrences, confirmed: true }),
             })
             const data = await response.json().catch(() => null)
@@ -313,16 +308,10 @@ export default function AdminPortal(props: AdminPortalProps) {
 
     useEffect(() => {
         if (!liveEnabled || view === "login") return
-        const adminToken = token()
-        if (!adminToken) {
-            rememberAdminReturnPath()
-            route("/admin/login")
-            return
-        }
         let active = true
         startTransition(() => { setLoading(true); setLoadState("loading") })
         adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?view=${encodeURIComponent(view)}`, {
-            headers: { Authorization: `Bearer ${adminToken}` },
+            headers: { },
         })
             .then(async (response) => {
                 if (response.status === 401) {
@@ -388,7 +377,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         const controller = new AbortController()
         startTransition(() => setDetailError(""))
         adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?order=${encodeURIComponent(selectedOrderId)}`, {
-            headers: { Authorization: `Bearer ${token()}` },
+            headers: { },
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
         }).then(async response => {
             if (response.status === 401) { rememberAdminReturnPath(); route("/admin/login"); throw new Error("Please sign in again.") }
@@ -427,8 +416,8 @@ export default function AdminPortal(props: AdminPortalProps) {
             try {
                 const read = async (query: string): Promise<Snapshot> => {
                     const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/data?${query}`, {
-                        // Existing published password-only bearer authentication.
-                        headers: { Authorization: `Bearer ${token()}` },
+                        // Session authentication is handled by the shared cookie transport.
+                        headers: {},
                         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]),
                     }, false)
                     if (response.status === 401) { rememberAdminReturnPath(); route("/admin/login"); throw new Error("Please sign in again.") }
@@ -480,7 +469,6 @@ export default function AdminPortal(props: AdminPortalProps) {
                 method: "PATCH",
                 headers: {
                     "Content-Type": "application/json",
-                    Authorization: `Bearer ${token()}`,
                 },
                 body: JSON.stringify({ status }),
             })
@@ -517,7 +505,7 @@ export default function AdminPortal(props: AdminPortalProps) {
                 : `${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/${endpoint}`
             const response = await adminFetch(url, {
                 method: lookup ? "GET" : action === "save_delivery" ? "PATCH" : "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                headers: { "Content-Type": "application/json", },
                 ...(lookup ? {} : { body: JSON.stringify(action === "book" ? { ...payload, confirm: true } : action === "save_delivery" ? payload : { ...payload, action }) }),
             })
             const data = await response.json().catch(() => null)
@@ -549,7 +537,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/aftersales`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                headers: { "Content-Type": "application/json", },
                 body: JSON.stringify(payload),
             })
             const data = await response.json().catch(() => null)
@@ -575,7 +563,7 @@ export default function AdminPortal(props: AdminPortalProps) {
 
     async function requestTrace(order: AdminOrder): Promise<OrderTrace> {
         const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${encodeURIComponent(order.id)}/trace`, {
-            headers: { Authorization: `Bearer ${token()}` },
+            headers: { },
         })
         const data = await response.json().catch(() => null)
         if (!response.ok) {
@@ -590,7 +578,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         mutationPending.current = true
         startTransition(() => { setLoading(true); setCourierCheck({ status: "checking" }) })
         try {
-            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { Authorization: `Bearer ${token()}` } })
+            const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/locations`, { headers: { } })
             const data = await response.json().catch(() => null)
             if (!response.ok || !data?.connected) throw new Error(data?.error || "The Bob Go account connection could not be verified.")
             startTransition(() => setCourierCheck({ status: "connected", location: data.target,
@@ -616,7 +604,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         startTransition(() => setLoading(true))
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/bobgo/weights`, {
-                method: changes ? "PATCH" : "GET", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                method: changes ? "PATCH" : "GET", headers: { "Content-Type": "application/json", },
                 ...(changes ? { body: JSON.stringify({ changes, confirmed: true }) } : {}),
             })
             const data = await response.json().catch(() => null)
@@ -640,7 +628,7 @@ export default function AdminPortal(props: AdminPortalProps) {
         try {
             const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/orders/${order.id}/notifications`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                headers: { "Content-Type": "application/json", },
                 body: JSON.stringify({ notificationId }),
             })
             const data = await response.json().catch(() => null)
@@ -660,9 +648,9 @@ export default function AdminPortal(props: AdminPortalProps) {
         mutationPending.current = true
         startTransition(() => setLoading(true))
         try {
-            if (liveEnabled && token()) {
+            if (liveEnabled) {
                 const response = await adminFetch(`${normalizeBaseUrl(apiBaseUrl)}/api/admin/logout`, {
-                    method: "POST", headers: { Authorization: `Bearer ${token()}` },
+                    method: "POST", headers: { },
                 })
                 const data = await response.json().catch(() => null)
                 if (!response.ok || data?.revoked !== true) throw new Error(apiErrorMessage(data, "Sign-out could not be confirmed. Please try again."))
@@ -850,12 +838,11 @@ function LoginView({ apiBaseUrl, liveEnabled, backendConfigured }: { apiBaseUrl:
                 body: JSON.stringify({ email, password }),
             })
             const data = await response.json()
-            if (!response.ok || !data.token) throw new Error(data.error || "Sign-in failed.")
+            if (!response.ok || data.authenticated !== true) throw new Error(data.error || "Sign-in failed.")
             if (typeof window !== "undefined") {
-                window.sessionStorage.setItem("moving_modesty_admin_token", data.token)
                 const returnPath = window.sessionStorage.getItem("moving_modesty_admin_return") || "/admin"
                 window.sessionStorage.removeItem("moving_modesty_admin_return")
-                route(returnPath)
+                route(/^\/admin(?:\/|\?|$)/.test(returnPath) ? returnPath : "/admin")
                 return
             }
             route("/admin")
@@ -1940,14 +1927,11 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
   const isNew = current !== null && !current.id;
   const document = current?.document;
 
-  const headers = useCallback((): Record<string, string> => {
-    if (framerTrial) return { "Content-Type": "application/json" };
-    return { "Content-Type": "application/json", Authorization: `Bearer ${window.sessionStorage.getItem("moving_modesty_admin_token") || ""}` };
-  }, [framerTrial]);
+  const headers = useCallback((): Record<string, string> => ({ "Content-Type": "application/json" }), []);
   useEffect(() => {
     if (demo) return;
     const controller = new AbortController();
-    fetch(`${base}${endpoint}`, { headers: headers(), signal: controller.signal, cache: "no-store" })
+    adminRequest(`${base}${endpoint}`, { headers: headers(), signal: controller.signal, cache: "no-store" })
       .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Products could not be loaded."); return data; })
       .then(data => { setProducts(data.products); setNeedsSetup(data.needsSetup === true); })
       .catch(error => { if (!controller.signal.aborted) setError(error.message); })
@@ -2029,7 +2013,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
         saved = { ...current, id: current.id || crypto.randomUUID(), revision: current.revision + 1 };
       } else {
         const checked = current.document;
-        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
+        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
         if (!response.ok) throw new Error(`${data.error || "Your changes could not be saved."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         if (framerTrial && (data.cmsSynced !== true || data.published !== false || !data.product?.cmsVersion)) throw new Error("Framer has not confirmed this TEST draft save. Your changes remain here; reload to check CMS before retrying.");
@@ -2039,7 +2023,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
       setCurrent(saved); setDirty(false);
       setProducts(previous => previous.some(product => product.id === saved.id) ? previous.map(product => product.id === saved.id ? saved : product) : [...previous, saved]);
       if (publish && live) {
-        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
+        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
         if (!response.ok || data.published !== true || data.cmsSynced !== true) throw new Error(`${data.error || "Publication could not be verified. Your saved draft is retained."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         saved = data.product;
@@ -2070,7 +2054,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
         if (!live) { const url = URL.createObjectURL(file); objectUrls.current.push(url); photos.push({ url, alt: file.name }); }
         else {
           const body = new FormData(); body.set("photo", file);
-          const response = await fetch(`${base}${endpoint}/photos`, { method: "POST", headers: { Authorization: headers().Authorization }, body, signal: AbortSignal.timeout(60000) });
+          const response = await adminRequest(`${base}${endpoint}/photos`, { method: "POST", body, signal: AbortSignal.timeout(60000) });
           const data = await response.json();
           if (!response.ok || !data.photo?.url) throw new Error(data.error || "Photo upload failed.");
           photos.push(data.photo);
@@ -2084,7 +2068,7 @@ function LiveCatalogueEditor({ demo = false, initialProducts = [], apiBaseUrl = 
   }
   async function initialize() {
     setBusy(true); setError("");
-    try { const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(60000) });
+    try { const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(60000) });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || "Existing products could not be connected.");
       setProducts(data.products); setNeedsSetup(false);
     } catch (error) { setError(error instanceof Error ? error.message : "Connection failed."); } finally { setBusy(false); }
@@ -2296,12 +2280,8 @@ function DiscountManager({ demo = false, apiBaseUrl = "", enabled = true, produc
   const createButton = useRef<HTMLButtonElement>(null);
   const base = apiBaseUrl.trim().replace(/\/$/, "");
   async function requestDiscounts(payload?: unknown, signal?: AbortSignal) {
-    let session = "";
-    try { session = window.sessionStorage.getItem("moving_modesty_admin_token") || ""; } catch { /* Cookie auth is available in the backend portal. */ }
-    // Framer uses the explicit bearer session, not cross-site cookies. The native
-    // backend portal still sends its cookie on same-origin requests.
-    const response = await fetch(`${base}/api/admin/discounts`, { method: payload ? "POST" : "GET", credentials: "same-origin",
-      headers: { ...(payload ? { "Content-Type": "application/json" } : {}), ...(session ? { Authorization: `Bearer ${session}` } : {}) },
+    const response = await adminRequest(`${base}/api/admin/discounts`, { method: payload ? "POST" : "GET",
+      headers: { ...(payload ? { "Content-Type": "application/json" } : {}) },
       body: payload ? JSON.stringify(payload) : undefined, signal: signal || AbortSignal.timeout(20000) });
     const result = await response.json().catch(() => null);
     if (!response.ok) throw new Error(`${result?.error || "Discounts could not be loaded."}${result?.errorRef ? ` Reference: ${result.errorRef}` : ""}`);
@@ -2415,6 +2395,47 @@ const discountStyles = `
 `;
 
 // END GENERATED DISCOUNT MANAGER
+
+// BEGIN GENERATED ADMIN CLIENT
+// Browser-only session transport. The session secret is never exposed to JS.
+// This file is mechanically embedded in the Framer single-file portal.
+const adminCsrfSessions = new Map<string, { token: string; until: number }>();
+const adminCsrfPending = new Map<string, Promise<Response>>();
+
+async function adminRequest(url: string, init: RequestInit = {}): Promise<Response> {
+  const target = new URL(url, typeof window === "undefined" ? "http://localhost" : window.location.origin);
+  if (!target.pathname.startsWith("/api/admin/")) return fetch(url, init);
+  const headers = new Headers(init.headers);
+  headers.delete("Authorization");
+  const method = (init.method || "GET").toUpperCase();
+  const base = target.origin;
+  if (typeof window !== "undefined") {
+    try { window.sessionStorage.removeItem("moving_modesty_admin_token"); } catch { /* Storage is not required for sign-in. */ }
+  }
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && target.pathname !== "/api/admin/login") {
+    let csrf = adminCsrfSessions.get(base);
+    if (!csrf || csrf.until <= Date.now()) {
+      let pending = adminCsrfPending.get(base);
+      if (!pending) {
+        pending = fetch(`${base}/api/admin/session`, { credentials: "include", cache: "no-store", referrerPolicy: "no-referrer", signal: AbortSignal.timeout(10000) });
+        adminCsrfPending.set(base, pending);
+      }
+      let response: Response;
+      try { response = await pending; } finally { adminCsrfPending.delete(base); }
+      if (!response.ok) return response.clone(); // Never send the mutation after failed authentication.
+      const data = await response.clone().json();
+      if (typeof data.csrfToken !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(data.csrfToken)) throw new Error("Please sign in again.");
+      csrf = { token: data.csrfToken, until: Date.now() + 10 * 60 * 1000 };
+      adminCsrfSessions.set(base, csrf);
+    }
+    headers.set("X-MM-CSRF", csrf.token);
+  }
+  const response = await fetch(url, { ...init, headers, credentials: "include", cache: "no-store", referrerPolicy: "no-referrer" });
+  if (response.status === 401 || target.pathname === "/api/admin/login" || target.pathname === "/api/admin/logout") adminCsrfSessions.delete(base);
+  return response;
+}
+
+// END GENERATED ADMIN CLIENT
 
 // BEGIN_MM_PACKING_REFERENCE
 // Supplied by Zarina, 22 October 2026. Product weights exclude packaging.
@@ -2573,9 +2594,10 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     event.preventDefault(); setError(""); setMessage("");
     // Read this component's own form at submit time, including silent autofill.
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
+    setPlan(next); // Keep autofilled values visible if validation needs a correction.
     if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "door" && (!inlineSide || inlineSide === "schedule")) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
+    if (next.collection.kind === "door" && (inlineSide === "schedule" || !guided && !inlineSide)) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
       await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: inlineSide ? true : form.has("confirmed"), rememberCollection: form.has("remember") });
@@ -2632,9 +2654,8 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
-      {side === "collection" && shownPlan.collection.kind === "door" && (!guided || details.plan) ? <div className="mm-delivery__schedule-summary"><p><strong>Requested collection:</strong> {shownPlan.collectionSchedule ? collectionScheduleLabel(shownPlan.collectionSchedule) : "Choose a date and time."}</p>
+      {side === "collection" && shownPlan.collection.kind === "door" && !details.canEdit && shownPlan.collectionSchedule ? <div className="mm-delivery__schedule-summary"><p><strong>Requested collection:</strong> {collectionScheduleLabel(shownPlan.collectionSchedule)}</p>
         {details.collectionTimeMode === "preferred_instructions" ? <p className="mm-admin__helper">Hours are sent as a preferred driver note, not a booked time slot.</p> : null}
-        {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled || saving} onClick={() => edit("collection", undefined, true)}>{shownPlan.collectionSchedule ? "Change collection date / time" : "Choose collection date / time"}</button> : null}
         {!guided ? <p className="mm-admin__helper">Requested window, not a guaranteed appointment. Courier cut-offs and business days apply.</p> : null}</div> : null}
       {details.canEdit && !editing && !guided && side === "collection" ? <>
         <div className="mm-delivery__method-choices" role="group" aria-label={side === "collection" ? "How Zarina sends the parcel" : "How the customer receives the parcel"}>
@@ -2683,7 +2704,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         <label className="mm-admin__field">Delivery instructions<textarea name="deliveryInstructions" maxLength={1000} rows={3} value={plan.deliveryInstructions}
           onChange={event => setPlan(current => ({ ...current, deliveryInstructions: event.target.value }))} placeholder="Gate, access or delivery instructions" /></label>
       </div></details></> : null}
-      {plan.collection.kind === "door" && (!inlineSide || inlineSide === "schedule") ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
+      {plan.collection.kind === "door" && (inlineSide === "schedule" || !guided && !inlineSide) ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
         <h4>When can the courier collect?</h4>
         <p className="mm-admin__helper">{details.collectionTimeMode === "preferred_instructions" ? "Choose preferred hours between 08:00 and 17:00 (SAST). These are sent as a driver note, not a booked time slot." : "Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed."}</p>
         <div className="mm-delivery__grid">
@@ -2701,7 +2722,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
       <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !inlineSide && !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
         {editing ? <button type="button" className="mm-admin__secondary-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); onClose?.(); }}>Cancel editing</button> : null}</div>
     </fieldset></form> : null}
-    {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled || Boolean(shownPlan.collection.kind === "door" && collectionScheduleProblem(shownPlan.collectionSchedule, true))} onClick={onContinue}>Continue to parcel</button></div> : null}
+    {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled} onClick={onContinue}>Continue to parcel</button></div> : null}
     {!inlineSide ? <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
       <form onSubmit={savePrivateNote}><label className="mm-admin__field">Private note<textarea name="privateNote" rows={3} maxLength={3000} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} /></label>
         <button type="submit" className="mm-admin__secondary-button" disabled={disabled || note === details.privateNote}>Save private note</button></form>

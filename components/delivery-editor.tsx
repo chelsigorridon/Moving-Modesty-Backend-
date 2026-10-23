@@ -88,9 +88,10 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     event.preventDefault(); setError(""); setMessage("");
     // Read this component's own form at submit time, including silent autofill.
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
+    setPlan(next); // Keep autofilled values visible if validation needs a correction.
     if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "door" && (!inlineSide || inlineSide === "schedule")) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
+    if (next.collection.kind === "door" && (inlineSide === "schedule" || !guided && !inlineSide)) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
       await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: inlineSide ? true : form.has("confirmed"), rememberCollection: form.has("remember") });
@@ -147,9 +148,8 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
-      {side === "collection" && shownPlan.collection.kind === "door" && (!guided || details.plan) ? <div className="mm-delivery__schedule-summary"><p><strong>Requested collection:</strong> {shownPlan.collectionSchedule ? collectionScheduleLabel(shownPlan.collectionSchedule) : "Choose a date and time."}</p>
+      {side === "collection" && shownPlan.collection.kind === "door" && !details.canEdit && shownPlan.collectionSchedule ? <div className="mm-delivery__schedule-summary"><p><strong>Requested collection:</strong> {collectionScheduleLabel(shownPlan.collectionSchedule)}</p>
         {details.collectionTimeMode === "preferred_instructions" ? <p className="mm-admin__helper">Hours are sent as a preferred driver note, not a booked time slot.</p> : null}
-        {details.canEdit && !editing ? <button type="button" className="mm-admin__text-button" disabled={disabled || saving} onClick={() => edit("collection", undefined, true)}>{shownPlan.collectionSchedule ? "Change collection date / time" : "Choose collection date / time"}</button> : null}
         {!guided ? <p className="mm-admin__helper">Requested window, not a guaranteed appointment. Courier cut-offs and business days apply.</p> : null}</div> : null}
       {details.canEdit && !editing && !guided && side === "collection" ? <>
         <div className="mm-delivery__method-choices" role="group" aria-label={side === "collection" ? "How Zarina sends the parcel" : "How the customer receives the parcel"}>
@@ -198,7 +198,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
         <label className="mm-admin__field">Delivery instructions<textarea name="deliveryInstructions" maxLength={1000} rows={3} value={plan.deliveryInstructions}
           onChange={event => setPlan(current => ({ ...current, deliveryInstructions: event.target.value }))} placeholder="Gate, access or delivery instructions" /></label>
       </div></details></> : null}
-      {plan.collection.kind === "door" && (!inlineSide || inlineSide === "schedule") ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
+      {plan.collection.kind === "door" && (inlineSide === "schedule" || !guided && !inlineSide) ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
         <h4>When can the courier collect?</h4>
         <p className="mm-admin__helper">{details.collectionTimeMode === "preferred_instructions" ? "Choose preferred hours between 08:00 and 17:00 (SAST). These are sent as a driver note, not a booked time slot." : "Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed."}</p>
         <div className="mm-delivery__grid">
@@ -216,7 +216,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
       <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !inlineSide && !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
         {editing ? <button type="button" className="mm-admin__secondary-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); onClose?.(); }}>Cancel editing</button> : null}</div>
     </fieldset></form> : null}
-    {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled || Boolean(shownPlan.collection.kind === "door" && collectionScheduleProblem(shownPlan.collectionSchedule, true))} onClick={onContinue}>Continue to parcel</button></div> : null}
+    {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled} onClick={onContinue}>Continue to parcel</button></div> : null}
     {!inlineSide ? <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
       <form onSubmit={savePrivateNote}><label className="mm-admin__field">Private note<textarea name="privateNote" rows={3} maxLength={3000} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} /></label>
         <button type="submit" className="mm-admin__secondary-button" disabled={disabled || note === details.privateNote}>Save private note</button></form>

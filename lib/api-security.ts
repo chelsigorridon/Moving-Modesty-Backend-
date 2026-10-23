@@ -29,7 +29,8 @@ export function apiSecurityHeaders(request: Request) {
   if (origin && apiOriginAllowed(request)) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-MM-CSRF");
+    if (new URL(request.url).pathname.startsWith("/api/admin/")) headers.set("Access-Control-Allow-Credentials", "true");
   }
   return headers;
 }

@@ -5,9 +5,9 @@ import { redirect } from "next/navigation";
 import { requireDatabase } from "./db";
 import { adminSessions, adminUsers, diagnosticRateLimits } from "./db/schema";
 import { reportFailure } from "./monitoring";
+import { ADMIN_SESSION_SECONDS, adminCookieName, adminCookieOptions, adminMutationAllowed, requestAdminCookie } from "./admin-cookie";
 
-const COOKIE_NAME = "moving_modesty_admin";
-const SESSION_LENGTH_SECONDS = 60 * 60 * 12;
+const SESSION_LENGTH_SECONDS = ADMIN_SESSION_SECONDS;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 type AdminSession = { email: string; role: "owner" | "manager" | "fulfilment" };
 
@@ -39,7 +39,7 @@ function sessionHash(token: string) {
   if (!isAuthConfigured() || !/^mm2_[A-Za-z0-9_-]{43}$/.test(token)) return null;
   // Bind sessions to the environment and credentials; credential changes invalidate them.
   return createHmac("sha256", values.secret!).update(JSON.stringify([
-    "admin-session-v2", process.env.VERCEL_ENV || process.env.NODE_ENV || "local",
+    "admin-session-cookie-v3", process.env.VERCEL_ENV || process.env.NODE_ENV || "local",
     values.email, values.passwordHash, token,
   ])).digest("hex");
 }
@@ -63,11 +63,12 @@ export async function verifyAdminApiToken(token: string): Promise<AdminSession |
   return session?.active && session.email === config().email && session.role === "owner" ? { email: session.email, role: session.role } : null;
 }
 function requestToken(request: Request) {
-  const authorization = request.headers.get("authorization") ?? "";
-  return authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  return requestAdminCookie(request);
 }
 export async function getRequestAdmin(request: Request): Promise<AdminSession | null> {
-  try { return await verifyAdminApiToken(requestToken(request)); }
+  const token = requestToken(request);
+  if (!adminMutationAllowed(request, token)) return null;
+  try { return await verifyAdminApiToken(token); }
   catch (error) { await reportFailure(error, { operation: "admin_auth" }); return null; }
 }
 export async function revokeAdminApiToken(token: string) {
@@ -105,17 +106,17 @@ export async function consumeAdminLoginAttempt(request: Request, email: string) 
 }
 export async function createAdminSession(email: string) {
   const token = await issueAdminApiToken(email);
-  (await cookies()).set(COOKIE_NAME, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: SESSION_LENGTH_SECONDS });
+  (await cookies()).set(adminCookieName(), token, adminCookieOptions());
 }
 export async function destroyAdminSession() {
   const cookieStore = await cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
+  const token = cookieStore.get(adminCookieName())?.value;
   if (token) await revokeAdminApiToken(token);
-  cookieStore.delete(COOKIE_NAME);
+  cookieStore.set(adminCookieName(), "", { ...adminCookieOptions(), maxAge: 0 });
 }
 export async function getCurrentAdmin(): Promise<AdminSession | null> {
   if (!isAuthConfigured()) return process.env.NODE_ENV === "development" ? { email: "local@movingmodesty.test", role: "owner" } : null;
-  const token = (await cookies()).get(COOKIE_NAME)?.value;
+  const token = (await cookies()).get(adminCookieName())?.value;
   return token ? verifyAdminApiToken(token) : null;
 }
 export async function requireAdmin() {

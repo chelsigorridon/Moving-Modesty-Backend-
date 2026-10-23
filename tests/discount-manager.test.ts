@@ -7,6 +7,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import React, { act } from "react";
 import { JSDOM } from "jsdom";
+import { adminClientFixture } from "./helpers/admin-client.ts";
 
 const require = createRequire(import.meta.url);
 async function mount(options: any, fetcher: any, run: (doc: Document, root: any) => Promise<void>, sessionToken = "") {
@@ -19,7 +20,9 @@ async function mount(options: any, fetcher: any, run: (doc: Document, root: any)
   const compiled = ts.transpileModule(readFileSync(new URL("../components/discount-manager.tsx", import.meta.url), "utf8"), { compilerOptions: {
     module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
   } }).outputText;
-  runInNewContext(compiled, { exports, require, crypto: globalThis.crypto, window: dom.window, AbortController, AbortSignal, fetch: fetcher });
+  const transport = adminClientFixture((async (url: string, init: RequestInit) => new URL(url, dom.window.location.origin).pathname === "/api/admin/session"
+    ? Response.json({ csrfToken: "A".repeat(43) }) : fetcher(url, init)) as typeof fetch, dom.window);
+  runInNewContext(compiled, { exports, require: (name: string) => name === "@/lib/admin-client" ? transport : require(name), crypto: globalThis.crypto, window: dom.window, AbortController, AbortSignal, fetch: fetcher });
   const root = require("react-dom/client").createRoot(dom.window.document.getElementById("root"));
   try { await act(async () => root.render(React.createElement(exports.default, options))); await run(dom.window.document, root); }
   finally {
@@ -91,12 +94,13 @@ test("connected manager retains failed edits and only changes a switch after a c
     assert.match(doc.querySelector('[role="alert"]')?.textContent || "", /Save not confirmed/);
   });
 });
-test("Framer discount requests use bearer authentication without requiring cross-site cookie CORS", async () => {
+test("Framer discount requests use cookies and CSRF without exposing a bearer session", async () => {
   const methods: string[] = [];
   await mount({ apiBaseUrl: "https://backend.example.test" }, async (url: string, options: any) => {
     assert.equal(url, "https://backend.example.test/api/admin/discounts");
-    assert.equal(options.credentials, "same-origin");
-    assert.equal(options.headers.Authorization, "Bearer TEST-NOT-A-REAL-SESSION");
+    assert.equal(options.credentials, "include");
+    assert.equal(options.headers.get("Authorization"), null);
+    if (options.method === "POST") assert.equal(options.headers.get("X-MM-CSRF"), "A".repeat(43));
     methods.push(options.method);
     if (options.method === "GET") return Response.json({ discounts: [], products: [] });
     return Response.json({ discount: { ...JSON.parse(options.body), id: "TEST", revision: 1 } });

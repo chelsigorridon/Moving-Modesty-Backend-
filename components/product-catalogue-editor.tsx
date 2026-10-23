@@ -3,6 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- CMS and browser-only photo previews retain their exact image source. */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { catalogueDocumentSchema, type CatalogueDocument } from "@/lib/catalogue-input";
+import { adminRequest } from "@/lib/admin-client";
 import {
   addProductSize, catalogueEditorErrors, changeUsualPrice, newProductColour, productAddress,
   productAvailability, productSizes, renameProductSize, usualProductPrice, variantAvailable, withProductColours,
@@ -56,14 +57,11 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
   const isNew = current !== null && !current.id;
   const document = current?.document;
 
-  const headers = useCallback((): Record<string, string> => {
-    if (framerTrial) return { "Content-Type": "application/json" };
-    return { "Content-Type": "application/json", Authorization: `Bearer ${window.sessionStorage.getItem("moving_modesty_admin_token") || ""}` };
-  }, [framerTrial]);
+  const headers = useCallback((): Record<string, string> => ({ "Content-Type": "application/json" }), []);
   useEffect(() => {
     if (demo) return;
     const controller = new AbortController();
-    fetch(`${base}${endpoint}`, { headers: headers(), signal: controller.signal, cache: "no-store" })
+    adminRequest(`${base}${endpoint}`, { headers: headers(), signal: controller.signal, cache: "no-store" })
       .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Products could not be loaded."); return data; })
       .then(data => { setProducts(data.products); setNeedsSetup(data.needsSetup === true); })
       .catch(error => { if (!controller.signal.aborted) setError(error.message); })
@@ -145,7 +143,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
         saved = { ...current, id: current.id || crypto.randomUUID(), revision: current.revision + 1 };
       } else {
         const checked = catalogueDocumentSchema.parse(current.document);
-        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
+        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
         if (!response.ok) throw new Error(`${data.error || "Your changes could not be saved."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         if (framerTrial && (data.cmsSynced !== true || data.published !== false || !data.product?.cmsVersion)) throw new Error("Framer has not confirmed this TEST draft save. Your changes remain here; reload to check CMS before retrying.");
@@ -155,7 +153,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
       setCurrent(saved); setDirty(false);
       setProducts(previous => previous.some(product => product.id === saved.id) ? previous.map(product => product.id === saved.id ? saved : product) : [...previous, saved]);
       if (publish && live) {
-        const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
+        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
         if (!response.ok || data.published !== true || data.cmsSynced !== true) throw new Error(`${data.error || "Publication could not be verified. Your saved draft is retained."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         saved = data.product;
@@ -186,7 +184,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
         if (!live) { const url = URL.createObjectURL(file); objectUrls.current.push(url); photos.push({ url, alt: file.name }); }
         else {
           const body = new FormData(); body.set("photo", file);
-          const response = await fetch(`${base}${endpoint}/photos`, { method: "POST", headers: { Authorization: headers().Authorization }, body, signal: AbortSignal.timeout(60000) });
+          const response = await adminRequest(`${base}${endpoint}/photos`, { method: "POST", body, signal: AbortSignal.timeout(60000) });
           const data = await response.json();
           if (!response.ok || !data.photo?.url) throw new Error(data.error || "Photo upload failed.");
           photos.push(data.photo);
@@ -200,7 +198,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
   }
   async function initialize() {
     setBusy(true); setError("");
-    try { const response = await fetch(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(60000) });
+    try { const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(60000) });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || "Existing products could not be connected.");
       setProducts(data.products); setNeedsSetup(false);
     } catch (error) { setError(error instanceof Error ? error.message : "Connection failed."); } finally { setBusy(false); }

@@ -22,6 +22,7 @@ async function harness(check: (ctx: any) => Promise<void>, options: any = {}) {
   win.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   win.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   win.Error = Error;
+  win.Headers = Headers; win.AbortSignal = AbortSignal;
   win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   win.require = (name: string) => name === "framer" ? { addPropertyControls() {}, ControlType: {}, useIsStaticRenderer: () => false } : require(name);
   win.exports = {};
@@ -131,7 +132,10 @@ test("Account and the banner open the actual bundled screen; only the diagnostic
     await click("Close"); assert.equal(doc.activeElement, doc.querySelector('.mm-admin__account > summary'));
   }, { portal: true, fetch: async (url: string, init: any = {}) => {
     const path = new URL(url).pathname, method = init.method || "GET";
-    assert.equal(init.headers.Authorization, "Bearer TEST-only-fake-session");
+    assert.equal(new Headers(init.headers).get("Authorization"), null);
+    assert.equal(init.credentials, "include");
+    if (path === "/api/admin/session") return Response.json({ csrfToken: "A".repeat(43) });
+    if (method === "PATCH") assert.equal(init.headers.get("X-MM-CSRF"), "A".repeat(43));
     requests.push({ path, method, body: init.body ? JSON.parse(init.body) : undefined });
     if (path === "/api/admin/data") return Response.json({ orders: [], ...(!resolved ? { operationalNotice: "A website service needs attention." } : {}) });
     assert.equal(path, "/api/admin/diagnostics");

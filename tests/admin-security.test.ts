@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- Isolated authentication tests; no production keys or live provider requests. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scryptSync } from "node:crypto";
+import { createHmac, scryptSync } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -52,6 +52,7 @@ test("sessions are revocable, environment-bound and fail closed; login limits pe
   const database = require("drizzle-orm/pglite").drizzle(postgres);
   const cache = new Map<string, any>();
   const fakeProcess = { env: { NODE_ENV: "test", VERCEL_ENV: "production", ADMIN_EMAIL: "owner@example.test",
+    STORE_URL: "https://store.example.test", ADMIN_API_URL: "https://api.store.example.test",
     AUTH_SECRET: "TEST-ONLY-NOT-A-REAL-KEY", ADMIN_PASSWORD_HASH: "test-salt:" + scryptSync("TEST-ONLY-PASSWORD", "test-salt", 64).toString("hex") } };
   let databaseAvailable = true;
   function load(file: string): any {
@@ -85,6 +86,13 @@ test("sessions are revocable, environment-bound and fail closed; login limits pe
     const token = await auth.issueAdminApiToken("owner@example.test");
     assert.match(token, /^mm2_[A-Za-z0-9_-]{43}$/);
     assert.equal((await auth.verifyAdminApiToken(token)).role, "owner");
+    const [ownerRow] = await database.select().from(schema.adminUsers);
+    const retiredToken = "mm2_" + "X".repeat(43);
+    const retiredHash = createHmac("sha256", fakeProcess.env.AUTH_SECRET).update(JSON.stringify([
+      "admin-session-v2", "production", fakeProcess.env.ADMIN_EMAIL, fakeProcess.env.ADMIN_PASSWORD_HASH, retiredToken,
+    ])).digest("hex");
+    await database.insert(schema.adminSessions).values({ adminUserId: ownerRow.id, tokenHash: retiredHash, expiresAt: new Date(Date.now() + 3600000) });
+    assert.equal(await auth.verifyAdminApiToken(retiredToken), null, "Retired browser-readable sessions cannot be repurposed as cookies");
     assert.doesNotMatch(JSON.stringify(await database.select().from(schema.adminSessions)), new RegExp(token));
     assert.equal(await auth.verifyAdminApiToken(token + ".extra"), null);
     assert.equal(await auth.verifyAdminApiToken("old.signed-token"), null);
@@ -139,7 +147,7 @@ test("sessions are revocable, environment-bound and fail closed; login limits pe
     assert.equal(results.filter(result => result.allowed).length, 8);
     const login = load("app/api/admin/login/route.ts");
     const loginBody = JSON.stringify({ email: "owner@example.test", password: "TEST-ONLY-PASSWORD" });
-    const makeLogin = (body = loginBody, ip = "TEST-CONCURRENT") => new Request("https://api.test", { method: "POST", headers: { "content-type": "application/json", "x-vercel-forwarded-for": ip }, body });
+    const makeLogin = (body = loginBody, ip = "TEST-CONCURRENT") => new Request("https://api.store.example.test/api/admin/login", { method: "POST", headers: { origin: "https://store.example.test", "content-type": "application/json", "x-vercel-forwarded-for": ip }, body });
     const limited = await login.POST(makeLogin());
     assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get("Retry-After")) > 0);
@@ -151,16 +159,46 @@ test("sessions are revocable, environment-bound and fail closed; login limits pe
     await database.delete(schema.diagnosticRateLimits);
     const signedIn = await login.POST(makeLogin());
     assert.equal(signedIn.status, 200);
-    assert.equal((await auth.verifyAdminApiToken((await signedIn.json()).token)).role, "owner");
+    const signedInData = await signedIn.json();
+    assert.equal(signedInData.authenticated, true);
+    assert.equal(signedInData.token, undefined);
+    const cookie = signedIn.headers.get("set-cookie")!;
+    assert.match(cookie, /^__Host-moving_modesty_admin=mm2_/);
+    for (const flag of ["HttpOnly", "Secure", "SameSite=Lax", "Max-Age=43200", "Path=/"]) assert.ok(cookie.includes(flag));
+    assert.doesNotMatch(cookie, /Domain=/i);
+    const cookiePair = cookie.split(";")[0], cookieToken = cookiePair.split("=")[1];
+    assert.equal((await auth.verifyAdminApiToken(cookieToken)).role, "owner");
+    const session = load("app/api/admin/session/route.ts");
+    const read = new Request("https://api.store.example.test/api/admin/session", { headers: { cookie: cookiePair, origin: "https://store.example.test" } });
+    const sessionData = await (await session.GET(read)).json();
+    assert.match(sessionData.csrfToken, /^[A-Za-z0-9_-]{43}$/);
+    assert.doesNotMatch(JSON.stringify(sessionData), new RegExp(cookieToken));
+    assert.equal((await auth.getRequestAdmin(read)).role, "owner");
+    assert.equal(await auth.getRequestAdmin(new Request(read.url, { headers: { authorization: `Bearer ${cookieToken}` } })), null);
+    for (const origin of ["https://evil.test", "https://store.example.test.evil.test", "null"]) {
+      assert.equal((await login.POST(new Request(read.url, { method: "POST", headers: { origin }, body: loginBody }))).status, 403);
+      assert.equal(await auth.getRequestAdmin(new Request(read.url, { headers: { cookie: cookiePair, origin } })), null);
+    }
+    assert.equal((await login.POST(new Request(read.url, { method: "POST", body: loginBody }))).status, 403);
+    const unsafe = (extra: Record<string, string> = {}) => new Request(read.url, { method: "POST", headers: { cookie: cookiePair, origin: "https://store.example.test", ...extra } });
+    assert.equal(await auth.getRequestAdmin(unsafe()), null);
+    assert.equal(await auth.getRequestAdmin(unsafe({ "X-MM-CSRF": "A".repeat(43) })), null);
+    assert.equal(await auth.getRequestAdmin(unsafe({ "X-MM-CSRF": sessionData.csrfToken, "Sec-Fetch-Site": "cross-site" })), null);
     databaseAvailable = false;
     const unavailable = await login.POST(makeLogin());
     assert.equal(unavailable.status, 503);
     assert.equal((await unavailable.json()).errorRef, "TEST-REF");
     databaseAvailable = true;
     const logout = load("app/api/admin/logout/route.ts");
-    const response = await logout.POST(new Request("https://api.test", { headers: { authorization: `Bearer ${token3}` } }));
+    assert.equal((await logout.POST(unsafe())).status, 401);
+    assert.equal((await auth.verifyAdminApiToken(cookieToken)).role, "owner");
+    const response = await logout.POST(unsafe({ "X-MM-CSRF": sessionData.csrfToken }));
     assert.equal(response.status, 200);
-    assert.equal(await auth.verifyAdminApiToken(token3), null);
+    assert.match(response.headers.get("set-cookie")!, /Max-Age=0/);
+    assert.equal(await auth.verifyAdminApiToken(cookieToken), null);
+    fakeProcess.env.ADMIN_API_URL = "https://movingmodesty.vercel.app";
+    assert.equal((await login.POST(makeLogin())).status, 503);
+    fakeProcess.env.ADMIN_API_URL = "https://api.store.example.test";
     assert.equal((await load("app/api/admin/orders/[orderNumber]/trace/route.ts").GET(new Request("https://api.test"), { params: Promise.resolve({ orderNumber: "TEST" }) })).status, 401);
     // Unrelated private fields never appear in a per-order support trace.
     const [order] = await database.insert(schema.orders).values({ orderNumber: "MM-TEST-TRACE", subtotal: "420", total: "519", checkoutToken: "PRIVATE-CHECKOUT-TOKEN",

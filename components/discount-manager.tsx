@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { adminRequest } from "@/lib/admin-client";
 
 type DiscountRecord = { id: string; revision: number; code: string; type: "percentage" | "amount"; value: number; active: boolean;
   productIds: string[]; minimumSpend: number; startsAt: string | null; endsAt: string | null };
@@ -39,12 +40,8 @@ export default function DiscountManager({ demo = false, apiBaseUrl = "", enabled
   const createButton = useRef<HTMLButtonElement>(null);
   const base = apiBaseUrl.trim().replace(/\/$/, "");
   async function requestDiscounts(payload?: unknown, signal?: AbortSignal) {
-    let session = "";
-    try { session = window.sessionStorage.getItem("moving_modesty_admin_token") || ""; } catch { /* Cookie auth is available in the backend portal. */ }
-    // Framer uses the explicit bearer session, not cross-site cookies. The native
-    // backend portal still sends its cookie on same-origin requests.
-    const response = await fetch(`${base}/api/admin/discounts`, { method: payload ? "POST" : "GET", credentials: "same-origin",
-      headers: { ...(payload ? { "Content-Type": "application/json" } : {}), ...(session ? { Authorization: `Bearer ${session}` } : {}) },
+    const response = await adminRequest(`${base}/api/admin/discounts`, { method: payload ? "POST" : "GET",
+      headers: { ...(payload ? { "Content-Type": "application/json" } : {}) },
       body: payload ? JSON.stringify(payload) : undefined, signal: signal || AbortSignal.timeout(20000) });
     const result = await response.json().catch(() => null);
     if (!response.ok) throw new Error(`${result?.error || "Discounts could not be loaded."}${result?.errorRef ? ` Reference: ${result.errorRef}` : ""}`);

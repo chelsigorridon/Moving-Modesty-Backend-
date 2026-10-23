@@ -27,7 +27,7 @@ test("the demo has three guided steps, friendly validation and quick existing-pr
   }).outputText;
   runInNewContext(compiled, { exports, crypto: globalThis.crypto, structuredClone, AbortController, AbortSignal, URL, window: dom.window,
     fetch: () => { networkCalls++; throw new Error("The demo must not call any backend"); },
-    require: (name: string) => name === "@/lib/catalogue-input" ? catalogueInput : name === "@/lib/catalogue-editor" ? catalogueEditor : require(name),
+    require: (name: string) => name === "@/lib/admin-client" ? { adminRequest: () => { networkCalls++; throw new Error("The demo must not call any backend"); } } : name === "@/lib/catalogue-input" ? catalogueInput : name === "@/lib/catalogue-editor" ? catalogueEditor : require(name),
   });
   const { createRoot } = require("react-dom/client");
   const root = createRoot(dom.window.document.getElementById("root")!);
@@ -114,8 +114,7 @@ test("connected TEST editor keeps failed edits and accepts success only after CM
   let outcome = "fail"; const requests: any[] = [];
   const exports: Record<string, any> = {};
   const compiled = ts.transpileModule(readFileSync(new URL("../components/product-catalogue-editor.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  runInNewContext(compiled, { exports, crypto: globalThis.crypto, structuredClone, AbortController, AbortSignal, URL, window: dom.window,
-    fetch: async (url: string, options: any) => {
+  const trialFetch = async (url: string, options: any) => {
       assert.equal(url, "/api/product-trial/framer"); assert.equal(options.headers.Authorization, undefined);
       if (!options.method) return Response.json({ products: [draft] });
       const body = JSON.parse(options.body); requests.push(body);
@@ -123,7 +122,9 @@ test("connected TEST editor keeps failed edits and accepts success only after CM
       if (outcome === "unverified") return Response.json({ product: draft, published: false });
       draft = { ...draft, document: body.document, cmsVersion: "b".repeat(64), revision: 1 };
       return Response.json({ product: draft, cmsSynced: true, published: false });
-    }, require: (name: string) => name === "@/lib/catalogue-input" ? catalogueInput : name === "@/lib/catalogue-editor" ? catalogueEditor : require(name),
+    };
+  runInNewContext(compiled, { exports, crypto: globalThis.crypto, structuredClone, AbortController, AbortSignal, URL, window: dom.window,
+    fetch: trialFetch, require: (name: string) => name === "@/lib/admin-client" ? { adminRequest: trialFetch } : name === "@/lib/catalogue-input" ? catalogueInput : name === "@/lib/catalogue-editor" ? catalogueEditor : require(name),
   });
   const { createRoot } = require("react-dom/client"); const root = createRoot(dom.window.document.getElementById("root")!); const doc = dom.window.document;
   function button(text: string) { const element = [...doc.querySelectorAll("button")].find(element => element.textContent === text); assert.ok(element); element.click(); }
