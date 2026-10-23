@@ -4,6 +4,7 @@ import { requireDatabase } from "./db";
 import { addresses, bobgoOrderSync, courierSettings, orderDeliveryHistory, orders, orderStatusHistory, shipments } from "./db/schema";
 import { deliveryEditBlocker, deliveryEditInput } from "./delivery-input";
 import { resolveCourierPlan } from "./integrations/bobgo/delivery";
+import { withCollectionOptions } from "./shipping/collection-options";
 
 export class DeliveryEditConflict extends Error {}
 
@@ -27,6 +28,7 @@ export async function saveOrderDelivery(orderNumber: string, value: unknown, cha
     const blocker = deliveryEditBlocker(order, shipment);
     if (blocker) throw new DeliveryEditConflict(blocker);
     if (!resolved) throw new DeliveryEditConflict("Check the delivery setup before saving.");
+    resolved.plan = withCollectionOptions(resolved.plan, order.courierPlan ? withCollectionOptions(order.courierPlan).collectionOptions : undefined);
     const delivery = resolved.delivery;
     // Insert an order-specific address rather than overwriting a shared customer's
     // address. Billing/customer/payment snapshots and every monetary value stay intact.
@@ -44,8 +46,12 @@ export async function saveOrderDelivery(orderNumber: string, value: unknown, cha
       bookingSnapshot: null, pickupPointLocationId: resolved.collection.point?.id || null,
       senderLocationName: resolved.collection.point?.name || resolved.collection.contact.name,
       lastError: null, updatedAt: new Date() }).where(eq(shipments.id, shipment.id));
-    if (input.rememberCollection) await tx.insert(courierSettings).values({ id: "sender", collection: resolved.plan.collection, updatedBy: changedBy })
-      .onConflictDoUpdate({ target: courierSettings.id, set: { collection: resolved.plan.collection, updatedBy: changedBy, updatedAt: new Date() } });
+    if (input.rememberCollection) {
+      const [previous] = await tx.select().from(courierSettings).where(eq(courierSettings.id, "sender")).for("update");
+      if (previous) await tx.insert(courierSettings).values({ id: `sender-${previous.collection.kind}`, collection: previous.collection, updatedBy: changedBy }).onConflictDoNothing();
+      for (const id of ["sender", `sender-${resolved.plan.collection.kind}`]) await tx.insert(courierSettings).values({ id, collection: resolved.plan.collection, updatedBy: changedBy })
+        .onConflictDoUpdate({ target: courierSettings.id, set: { collection: resolved.plan.collection, updatedBy: changedBy, updatedAt: new Date() } });
+    }
     await tx.insert(orderDeliveryHistory).values({ orderId: order.id, revision, action: input.action,
       before: { plan: order.courierPlan, deliveryAddressId: order.deliveryAddressId, deliveryInstructions: order.deliveryNotes },
       after: { plan: resolved.plan, deliveryAddressId: address.id, collectionRemembered: input.rememberCollection }, changedBy });

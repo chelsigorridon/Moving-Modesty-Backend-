@@ -22,10 +22,10 @@ export const pickupPointInput = z.object({
   providerSlug: z.string().trim().regex(/^[a-z0-9][a-z0-9_-]{0,79}$/i),
   name: z.string().trim().min(1).max(200),
 });
-export const courierEndpointInput = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("door"), contact: courierContactInput, address: courierAddressInput }),
-  z.object({ kind: z.literal("pickup_point"), contact: courierContactInput, point: pickupPointInput }),
-]);
+const doorEndpointInput = z.object({ kind: z.literal("door"), contact: courierContactInput, address: courierAddressInput });
+const pointEndpointInput = z.object({ kind: z.literal("pickup_point"), contact: courierContactInput, point: pickupPointInput });
+export const courierEndpointInput = z.discriminatedUnion("kind", [doorEndpointInput, pointEndpointInput]);
+const scheduleInput = z.object({ date: z.string(), after: z.string(), before: z.string() });
 export const courierPlanInput = z.object({
   version: z.literal(1),
   collection: courierEndpointInput,
@@ -33,8 +33,13 @@ export const courierPlanInput = z.object({
   collectionInstructions: z.string().trim().max(1000).default(""),
   deliveryInstructions: z.string().trim().max(1000).default(""),
   customerApprovedPickup: z.boolean().default(false),
-  collectionSchedule: z.object({ date: z.string(), after: z.string(), before: z.string() }).optional(),
+  collectionSchedule: scheduleInput.optional(),
+  collectionOptions: z.object({ door: doorEndpointInput.optional(), pickupPoint: pointEndpointInput.optional(), doorSchedule: scheduleInput.optional() }).optional(),
 }).superRefine((plan, context) => {
+  if (plan.collectionOptions?.doorSchedule) {
+    const problem = collectionScheduleProblem(plan.collectionOptions.doorSchedule);
+    if (problem) context.addIssue({ code: "custom", path: ["collectionOptions", "doorSchedule"], message: problem });
+  }
   if (plan.collectionSchedule) {
     const problem = plan.collection.kind !== "door" ? "Collection scheduling applies only when a courier collects from an address." : collectionScheduleProblem(plan.collectionSchedule);
     if (problem) context.addIssue({ code: "custom", path: ["collectionSchedule"], message: problem });

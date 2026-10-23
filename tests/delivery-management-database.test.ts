@@ -107,8 +107,26 @@ test("delivery editing and all courier routes preserve payments, quotes and book
       assert.notEqual(after.delivery_address_id, before.delivery_address_id);
       for (const key of ["subtotal", "total", "delivery_fee", "discount_amount", "customer_snapshot", "payment_status"]) assert.deepEqual(after[key], before[key]);
       assert.equal((await postgres.query<{ line_1: string }>("select line_1 from addresses where id=$1", [before.delivery_address_id])).rows[0].line_1, "Original checkout address");
-      assert.equal((await postgres.query<{ count: number }>("select count(*) from courier_settings")).rows[0].count, 1);
+      assert.equal((await postgres.query<{ count: number }>("select count(*) from courier_settings")).rows[0].count, 2);
       assert.equal(calls.length, 0, "Door address saving does not contact Bob Go");
+    });
+    await t.test("saving the locker retains the saved door address and per-order schedule after a database round trip", async () => {
+      const number = "MM-COLLECTION-CHOICES", id = await seed(number);
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 0, confirmed: true, plan }, "owner@example.invalid");
+      await management.saveOrderDelivery(number, { action: "delivery", expectedRevision: 1, confirmed: true,
+        plan: { ...plan, collection: point, collectionSchedule: undefined }, rememberCollection: true }, "owner@example.invalid");
+      const stored = (await postgres.query<Record<string, any>>("select courier_plan, total, payment_status from orders where id=$1", [id])).rows[0];
+      assert.deepEqual(stored.courier_plan.collectionOptions.door.address, { ...door.address, province: "Western Cape" });
+      assert.deepEqual(stored.courier_plan.collectionOptions.doorSchedule, schedule);
+      assert.equal(stored.courier_plan.collectionOptions.pickupPoint.point.id, "1156");
+      assert.equal(stored.courier_plan.collectionSchedule, undefined);
+      assert.equal(stored.payment_status, "paid"); assert.equal(Number(stored.total), 549);
+      const settings = (await postgres.query<Record<string, any>>("select id, collection from courier_settings")).rows;
+      assert.equal(settings.find(row => row.id === "sender-door")?.collection.address.line1, door.address.line1);
+      assert.equal(settings.find(row => row.id === "sender-pickup_point")?.collection.point.id, "1156");
+      assert.equal(settings.find(row => row.id === "sender")?.collection.kind, "pickup_point");
+      assert.equal(calls.filter(call => call.path === "/shipments" || call.path === "/rates").length, 0);
+      calls.length = 0;
     });
     let quote: any;
     await t.test("door-to-door quotes include multiple eligible couriers, with no fixed provider or pickup point", async () => {

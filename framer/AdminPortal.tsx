@@ -1299,23 +1299,26 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
     const [quote, setQuote] = useState<(ShippingResult & { deliveryRevision?: number }) | null>(null)
     const [quoteIndex, setQuoteIndex] = useState(0)
     const [waybill, setWaybill] = useState("")
-    const [editingDelivery, setEditingDelivery] = useState(false)
-    const [reviewDetails, setReviewDetails] = useState(false)
+    const [showCouriers, setShowCouriers] = useState(false)
+    const [inlineEdit, setInlineEdit] = useState<"collection" | "delivery" | "schedule" | null>(null)
+    const [pendingPlan, setPendingPlan] = useState<CourierPlan | null>(null)
     const [error, setError] = useState("")
     const [changingCollection, setChangingCollection] = useState(false)
-    const homeCollection = useRef(order.deliveryDetails?.plan?.collection.kind === "door" ? {
-        endpoint: order.deliveryDetails.plan.collection, schedule: order.deliveryDetails.plan.collectionSchedule,
-    } : null)
+    const plan = pendingPlan || order.deliveryDetails?.plan || order.deliveryDetails?.draftPlan
+    const [knownDropOff, setKnownDropOff] = useState<PickupPoint | null>(null)
+    const collectionOptions = { ...plan?.collectionOptions,
+        ...(plan?.collection.kind === "door" ? { door: plan.collection, ...(plan.collectionSchedule ? { doorSchedule: plan.collectionSchedule } : {}) } : plan ? { pickupPoint: plan.collection } : {}) }
+    if (!collectionOptions.pickupPoint && knownDropOff && plan) collectionOptions.pickupPoint = { kind: "pickup_point", contact: plan.collection.contact, point: knownDropOff }
     const pending = shipping.status === "Booking"
     const booked = shipping.status === "Booked"
     const cancellationPending = order.deliveryDetails?.waybillChange?.action === "check_cancellation"
     const liveBookingForTest = connection?.environment === "production" && order.payment?.environment === "sandbox"
-    const scheduleProblem = order.deliveryDetails?.plan?.collection.kind === "door" ? collectionScheduleProblem(order.deliveryDetails.plan.collectionSchedule, true) : ""
-    const canQuote = !editingDelivery && !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && (connection.configured || order.deliveryDetails?.plan))
+    const scheduleProblem = plan?.collection.kind === "door" ? collectionScheduleProblem(plan.collectionSchedule, true) : ""
+    const canQuote = !liveBookingForTest && order.paymentStatus === "Paid" && order.status === "Ready" && !pending && !booked && shipping.status !== "Cancelled" && Boolean(connection?.enabled && (connection.configured || plan))
     const currentQuote = quote?.deliveryRevision === order.deliveryDetails?.revision ? quote : null
     const rate = currentQuote?.rates?.[quoteIndex]
     const cancelled = shipping.status === "Cancelled" || order.deliveryDetails?.waybillChange?.action === "prepare_replacement"
-    const progressStep = cancelled || cancellationPending || editingDelivery || reviewDetails || !booked && !pending && Boolean(scheduleProblem) ? 1 : booked ? 4 : pending || changingCollection ? 3 : order.deliveryDetails && !order.deliveryDetails.plan ? 1 : rate ? 3 : 2
+    const progressStep = cancelled || cancellationPending ? 1 : booked ? 4 : pending || changingCollection || showCouriers ? 3 : 2
     const quoteHintId = useId()
     const collectionChoiceStyle = (selected: boolean): CSSProperties => ({ minHeight: 48, whiteSpace: "normal", textAlign: "left", lineHeight: 1.4,
         ...(selected ? { background: "var(--mm-soft)", boxShadow: "inset 3px 0 var(--mm-sage)", borderColor: "var(--mm-sage)" } : {}) })
@@ -1330,7 +1333,7 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             const result = await requestShipping(sourceOrder, action, payload)
             if (action === "quote" && !result.rates?.length) throw new Error("No courier services found. Check the address, pickup point and parcel, then try again.")
             startTransition(() => {
-                if (action === "quote") { setQuote({ ...result, deliveryRevision: sourceOrder.deliveryDetails?.revision }); setQuoteIndex(0) }
+                if (action === "quote") { setQuote({ ...result, deliveryRevision: sourceOrder.deliveryDetails?.revision }); setQuoteIndex(0); if (result.collectionDropOff) setKnownDropOff(result.collectionDropOff) }
                 if (action === "book") setQuote(null)
                 if (action === "waybill" && result.url) setWaybill(result.url)
             })
@@ -1338,21 +1341,32 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             startTransition(() => { setError(caught instanceof Error ? caught.message : "Courier request failed."); if (action === "book") setQuote(null) })
         }
     }
-    async function compareCollection(endpoint: CourierEndpoint, schedule?: CollectionSchedule) {
+    async function comparePlan(next = plan) {
         const details = order.deliveryDetails
-        if (!details?.plan || !details.canEdit || loading || changingCollection || booked || pending || cancelled) return
-        if (details.plan.delivery.kind !== "door") { setError("Confirm the customer’s home delivery address before comparing couriers."); return }
-        if (!currentQuote?.expires || currentQuote.expires <= Date.now()) { setError("These prices expired. Compare couriers again."); setQuote(null); return }
-        if (details.plan.collection.kind === "door") homeCollection.current = { endpoint: details.plan.collection, schedule: details.plan.collectionSchedule }
-        setChangingCollection(true); setQuote(null); setError("")
+        if (!canQuote || loading || changingCollection || inlineEdit && inlineEdit !== "schedule" || missingMeasurements || !measured) return
+        setShowCouriers(true); setQuote(null); setError("")
+        if (next?.delivery.kind !== "door") { setInlineEdit("delivery"); setError("Check the customer’s home address."); return }
+        if (next.collection.kind === "door" && collectionScheduleProblem(next.collectionSchedule, true)) { setPendingPlan(next); setInlineEdit("schedule"); return }
+        setChangingCollection(true)
         try {
-            const saved = await requestShipping(order, "save_delivery", { action: "delivery", expectedRevision: details.revision,
-                plan: { ...details.plan, collection: endpoint, collectionSchedule: endpoint.kind === "door" ? schedule : undefined,
-                    delivery: details.plan.delivery, customerApprovedPickup: false }, confirmed: true, rememberCollection: false })
-            if (!saved.order || saved.order.deliveryDetails?.revision === details.revision) throw new Error("Collection details saved. Refresh the order and compare couriers again.")
-            await run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }, saved.order)
-        } catch (caught) { setError(caught instanceof Error ? caught.message : "Collection could not be changed. Refresh and compare again.") }
+            let sourceOrder = order
+            if (details && (!details.plan || JSON.stringify(next) !== JSON.stringify(details.plan))) {
+                const saved = await requestShipping(order, "save_delivery", { action: "delivery", expectedRevision: details.revision, plan: next, confirmed: true, rememberCollection: false })
+                if (!saved.order || saved.order.deliveryDetails?.revision === details.revision) throw new Error("Details saved. Refresh this order before comparing again.")
+                sourceOrder = saved.order
+            }
+            setPendingPlan(null)
+            await run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }, sourceOrder)
+        } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not compare prices. Your parcel details are kept.") }
         finally { setChangingCollection(false) }
+    }
+    function chooseCollection(kind: "door" | "pickup_point") {
+        if (!plan || !order.deliveryDetails?.canEdit || loading || changingCollection || inlineEdit && inlineEdit !== "schedule") return
+        const endpoint = kind === "door" ? collectionOptions.door : collectionOptions.pickupPoint
+        if (!endpoint) { setError(kind === "door" ? "Add the collection address using Edit collection details." : "The saved locker is unavailable. Check collection details."); return }
+        if (plan.collection.kind === kind && rate) return
+        const next = { ...plan, collectionOptions, collection: endpoint, collectionSchedule: kind === "door" ? collectionOptions.doorSchedule : undefined, customerApprovedPickup: false }
+        setInlineEdit(null); setPendingPlan(next); void comparePlan(next)
     }
     function book() {
         if (!rate || !quote?.expires || quote.expires <= Date.now()) { setError("This quote expired. Get a new quote."); setQuote(null); return }
@@ -1367,41 +1381,63 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             run: () => { void run("book", { quoteToken: rate.quoteToken }) } })
     }
     const deliveryEditor = order.deliveryDetails ? <EmbeddedDeliveryEditor key={order.deliveryDetails.revision} guided details={order.deliveryDetails} disabled={loading || changingCollection}
-        onContinue={() => setReviewDetails(false)}
-        onEditingChange={editing => { setEditingDelivery(editing); setReviewDetails(editing); setQuote(null); setMeasured(false) }}
+        onEditingChange={() => { setQuote(null) }}
         changeWaybill={async payload => { setQuote(null); setMeasured(false); setWaybill(""); await requestShipping(order, payload.action as Parameters<ShippingRequest>[1], payload) }}
         save={async payload => { await requestShipping(order, "save_delivery", payload) }}
         searchPoints={async query => { const result = await requestShipping(order, "pickup_points", { query }); return { points: result.points || [], limited: result.limited } }} /> : null
     return <Detail title="Arrange delivery">
         {liveBookingForTest ? <p role="alert">This is a test payment. Live courier booking is blocked so it cannot create a real charge.</p> : null}
         <p><strong>{shipping.environment === "production" ? "LIVE" : "SANDBOX"}</strong> · Status: {shipping.status}</p>
-        <EmbeddedDeliveryProgress current={progressStep} paused={cancelled || cancellationPending} />
+        <EmbeddedDeliveryProgress current={progressStep} paused={cancelled || cancellationPending} parcelFirst={!cancelled && !cancellationPending} />
         {!order.deliveryDetails ? <p>Drop-off: {shipping.senderLocationName} · Deliver to the customer's door.</p> : null}
-        <EmbeddedDeliveryStepFlow current={progressStep} locked={booked || pending || cancelled || cancellationPending || loading || changingCollection} onReview={step => { setReviewDetails(step === 1); setQuote(null); setMeasured(false) }}>
+        <EmbeddedDeliveryStepFlow current={progressStep} parcelFirst locked={booked || pending || cancelled || cancellationPending || loading || changingCollection || Boolean(inlineEdit)} onReview={() => { setShowCouriers(false); setInlineEdit(null); setQuote(null); setError("") }}>
         {deliveryEditor}
-        {canQuote && (!order.deliveryDetails || order.deliveryDetails.plan) ? <div>
+        {canQuote ? <div>
             <EmbeddedParcelEditor value={parcel} disabled={loading} change={value => { setParcel(value); setMeasured(false); setQuote(null) }}
                 loadPackages={async () => { const result = await requestShipping(order, "packages"); return result.packages || [] }} />
             <label className="mm-admin__courier-check"><input type="checkbox" checked={measured} disabled={loading} onChange={event => { setMeasured(event.target.checked); setQuote(null) }} />Dimensions and packed weight checked.</label>
-            <p id={quoteHintId} className="mm-admin__helper mm-delivery__action-hint">{loading ? "Please wait." : scheduleProblem || (missingMeasurements ? "Enter valid box dimensions and a packed weight (1–30,000 g)." : !measured ? "Tick to confirm the parcel." : "Comparing prices does not book a courier.")}</p>
-            <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" aria-describedby={quoteHintId} disabled={loading || !measured || missingMeasurements || Boolean(scheduleProblem)} onClick={() => { setQuote(null); void run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }) }}>{loading ? "Comparing…" : "Compare couriers"}</button></div>
+            <p id={quoteHintId} className="mm-admin__helper mm-delivery__action-hint">{loading ? "Please wait." : missingMeasurements ? "Enter valid box dimensions and a packed weight (1–30,000 g)." : !measured ? "Tick to confirm the parcel." : "Comparing prices does not book a courier."}</p>
+            <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" aria-describedby={quoteHintId} disabled={loading || !measured || missingMeasurements} onClick={() => { void comparePlan() }}>{loading ? "Comparing…" : "Compare couriers"}</button></div>
         </div> : null}
-        <div>{pending ? <><p>Waiting for Bob Go to confirm the booking. Don’t book again.</p><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button></> : changingCollection ? <p role="status">Comparing prices for the new collection method… No waybill is being booked.</p> : rate ? <div className="mm-admin__quote">
-            <h4>3. Choose a courier</h4>
-            {currentQuote?.collectionDropOff && order.deliveryDetails?.plan ? <div className="mm-delivery__method-choices" role="group" aria-label="How Zarina sends the parcel" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8, marginBottom: 4, minWidth: 0 }}>
-                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(order.deliveryDetails.plan.collection.kind === "door")} aria-pressed={order.deliveryDetails.plan.collection.kind === "door"} disabled={loading || !order.deliveryDetails.canEdit}
-                    onClick={() => { if (order.deliveryDetails?.plan?.collection.kind === "door") return; const saved = homeCollection.current; if (saved) void compareCollection(saved.endpoint, saved.schedule); else { setQuote(null); setReviewDetails(true) } }}>Courier collects from Zarina</button>
-                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(order.deliveryDetails.plan.collection.kind === "pickup_point")} aria-pressed={order.deliveryDetails.plan.collection.kind === "pickup_point"} disabled={loading || !order.deliveryDetails.canEdit}
-                    onClick={() => { if (order.deliveryDetails?.plan?.collection.kind === "pickup_point") return; const contact = order.deliveryDetails?.plan?.collection.contact, point = currentQuote.collectionDropOff; if (contact && point) void compareCollection({ kind: "pickup_point", contact, point }) }}>Locker drop-off · {currentQuote.collectionDropOff.name}</button>
-            </div> : null}
-            <p className="mm-admin__helper">{order.deliveryDetails?.plan?.collection.kind === "pickup_point" ? "Zarina takes the parcel to the locker." : "The courier collects from Zarina’s address."} Both options deliver to the customer’s home.</p>
-            <label className="mm-admin__field">Courier and service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{quote?.rates?.map((option, index) => <option value={index} key={`${option.providerName}-${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
+        <div>{pending ? <><p>Waiting for Bob Go to confirm the booking. Don’t book again.</p><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading} onClick={() => { void run("refresh") }}>Check shipment status</button></> : canQuote && plan ? <div className="mm-admin__quote">
+            <h4>Choose how to send it</h4>
+            <div className="mm-delivery__method-choices" role="group" aria-label="How Zarina sends the parcel" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 8, marginBottom: 4, minWidth: 0 }}>
+                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(plan.collection.kind === "door")} aria-pressed={plan.collection.kind === "door"} disabled={loading || changingCollection || Boolean(inlineEdit && inlineEdit !== "schedule") || !order.deliveryDetails?.canEdit}
+                    onClick={() => chooseCollection("door")}>Courier collects from Zarina</button>
+                <button type="button" className="mm-admin__secondary-button" style={collectionChoiceStyle(plan.collection.kind === "pickup_point")} aria-pressed={plan.collection.kind === "pickup_point"} disabled={loading || changingCollection || Boolean(inlineEdit && inlineEdit !== "schedule") || !order.deliveryDetails?.canEdit || !collectionOptions.pickupPoint}
+                    onClick={() => chooseCollection("pickup_point")}>Locker drop-off · {collectionOptions.pickupPoint?.point.name || "Not configured"}</button>
+            </div>
+            <p className="mm-admin__helper">{plan.collection.kind === "pickup_point" ? `Drop off at ${plan.collection.point.name}.` : [plan.collection.address.line1, plan.collection.address.suburb, plan.collection.address.city, plan.collection.address.postalCode].filter(Boolean).join(", ")}</p>
+            <p className="mm-admin__helper">Deliver to: {plan.delivery.kind === "door" ? [plan.delivery.address.line1, plan.delivery.address.suburb, plan.delivery.address.city, plan.delivery.address.postalCode].filter(Boolean).join(", ") : "Check the customer’s home address."}</p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" className="mm-admin__secondary-button" disabled={loading || changingCollection || Boolean(inlineEdit) || !order.deliveryDetails?.canEdit} onClick={() => { setQuote(null); setError(""); setInlineEdit("collection") }}>Edit collection details</button>
+                <button type="button" className="mm-admin__secondary-button" disabled={loading || changingCollection || Boolean(inlineEdit) || !order.deliveryDetails?.canEdit} onClick={() => { setQuote(null); setError(""); setInlineEdit("delivery") }}>Edit delivery address</button>
+            </div>
+            {plan.collection.kind === "door" ? <div><p className="mm-admin__helper">{plan.collectionSchedule ? collectionScheduleLabel(plan.collectionSchedule) : "Choose collection date & hours."}</p>
+                <button type="button" className="mm-admin__secondary-button" disabled={loading || changingCollection || Boolean(inlineEdit)} onClick={() => { setQuote(null); setInlineEdit("schedule") }}>Collection date & hours</button></div> : null}
+            {inlineEdit && order.deliveryDetails ? <EmbeddedDeliveryEditor key={`${order.deliveryDetails.revision}:${inlineEdit}`} guided inlineSide={inlineEdit}
+                details={{ ...order.deliveryDetails, plan, draftPlan: plan }} disabled={loading || changingCollection}
+                onClose={() => setInlineEdit(null)} searchPoints={async query => { const result = await requestShipping(order, "pickup_points", { query }); return { points: result.points || [], limited: result.limited } }}
+                save={async payload => {
+                    const saved = await requestShipping(order, "save_delivery", payload)
+                    if (!saved.order || saved.order.deliveryDetails?.revision === order.deliveryDetails?.revision) throw new Error("Details saved. Refresh this order before comparing again.")
+                    setPendingPlan(null); setInlineEdit(null); setQuote(null)
+                    const savedPlan = saved.order.deliveryDetails?.plan
+                    if (savedPlan && (savedPlan.collection.kind !== "door" || !collectionScheduleProblem(savedPlan.collectionSchedule, true))) {
+                        setChangingCollection(true)
+                        try { await run("quote", { parcel: Object.fromEntries(Object.entries(parcel).map(([key, value]) => [key, Number(value)])), additionalCover: false }, saved.order) }
+                        finally { setChangingCollection(false) }
+                    }
+                }} /> : null}
+            {changingCollection ? <p role="status">Comparing prices…</p> : !inlineEdit && rate ? <>
+            <label className="mm-admin__field">Courier and service<select value={quoteIndex} disabled={loading} onChange={event => setQuoteIndex(Number(event.target.value))}>{currentQuote?.rates?.map((option, index) => <option value={index} key={`${option.providerName}-${option.serviceCode}-${index}`}>{option.providerName} · {option.serviceName} · {courierMoney.format(option.amount)}</option>)}</select></label>
             <p><strong>Courier cost: {courierMoney.format(rate.amount)}</strong></p>
             <p className="mm-admin__helper">Paid by Zarina to Bob Go. Customer paid {order.deliveryFee === undefined ? "delivery at checkout" : order.deliveryFee === 0 ? "no delivery fee" : money.format(order.deliveryFee) + " delivery"}.</p>
-            <details className="mm-admin__technical"><summary>Quote details</summary><p className="mm-admin__helper">All available services returned by Bob Go are shown. Locker choices may limit couriers. Quotes expire after 10 minutes; final courier charges can vary. Standard courier liability only; no additional cover is requested.</p></details>
+            <details className="mm-admin__technical"><summary>Quote details</summary><p className="mm-admin__helper">All available services returned by Bob Go are shown. Quotes expire after 10 minutes; final courier charges can vary. Standard courier liability only; no additional cover is requested.</p></details>
             <button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading} onClick={book}>Review booking · {courierMoney.format(rate.amount)}</button>
+            </> : !inlineEdit ? <button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={loading || Boolean(scheduleProblem)} onClick={() => { void comparePlan() }}>Compare couriers</button> : null}
         </div> : null}</div>
-        <div><h4>4. Print & track</h4>
+        <div><h4>Print & track</h4>
             {shipping.trackingNumber ? <p>Waybill: <strong>{shipping.trackingNumber}</strong></p> : null}
             <p>{shipping.courierName || "Courier details awaiting confirmation"}{shipping.serviceName || shipping.serviceLevelCode ? ` · ${shipping.serviceName || shipping.serviceLevelCode}` : ""}</p>
             <div className="mm-admin__actions mm-admin__courier-actions">
@@ -1414,8 +1450,12 @@ function ShippingPanel({ order, loading, connection, requestShipping, confirm }:
             {deliveryEditor ? <details className="mm-admin__technical"><summary>Delivery details & changes</summary>{deliveryEditor}</details> : null}
         </div>
         </EmbeddedDeliveryStepFlow>
+        {!booked && !cancelled && !cancellationPending && order.deliveryDetails?.previousWaybills?.length ? <details className="mm-delivery__history"><summary>Previous waybills ({order.deliveryDetails.previousWaybills.length})</summary>
+            <p className="mm-admin__helper">Cancelled bookings kept for reference. Do not use these labels for the replacement parcel.</p>
+            <ul>{order.deliveryDetails.previousWaybills.map(old => <li key={`${old.trackingNumber}:${old.replacedAt}`}><strong>{old.trackingNumber}</strong> · {old.courierName} · {old.status}</li>)}</ul>
+        </details> : null}
         {shipping.lastError ? <p role="status">{shipping.lastError}</p> : null}
-        {editingDelivery ? <p>Save or cancel delivery editing before getting a fresh courier quote.</p> : shipping.status === "Cancelled" ? !order.deliveryDetails?.waybillChange ? <p>This cancelled waybill cannot be reused. Check its delivery options above before getting new quotes.</p> : null : !canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
+        {shipping.status === "Cancelled" ? !order.deliveryDetails?.waybillChange ? <p>This cancelled waybill cannot be reused. Check its delivery options above before getting new quotes.</p> : null : !canQuote && !booked && !pending ? <p>Booking requires a paid delivery order marked Ready and a configured courier connection.</p> : null}
         {!booked && !pending && shipping.blockers.length ? <details className="mm-admin__technical"><summary>What is still needed?</summary><ul className="mm-admin__blockers">{shipping.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></details> : null}
         {order.bobGoSync ? <EmbeddedDeliveryAdvancedSettings needsAttention={order.bobGoSync.status === "Needs attention"}><EmbeddedOrderSyncStatus value={order.bobGoSync} /></EmbeddedDeliveryAdvancedSettings> : null}
         {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
@@ -2366,7 +2406,8 @@ type PickupPoint = { id: string; providerSlug: string; name: string };
 type CourierEndpoint = { kind: "door"; contact: CourierContact; address: CourierAddress }
   | { kind: "pickup_point"; contact: CourierContact; point: PickupPoint };
 type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierEndpoint;
-  collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean; collectionSchedule?: CollectionSchedule };
+  collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean; collectionSchedule?: CollectionSchedule;
+  collectionOptions?: { door?: Extract<CourierEndpoint, { kind: "door" }>; pickupPoint?: Extract<CourierEndpoint, { kind: "pickup_point" }>; doorSchedule?: CollectionSchedule } };
 
 type DeliveryPointResult = PickupPoint & { description: string; type: string };
 type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string;
@@ -2382,14 +2423,16 @@ interface DeliveryEditorProps {
   changeWaybill?: (payload: Record<string, unknown>) => Promise<void>;
   guided?: boolean;
   onContinue?: () => void;
+  inlineSide?: "collection" | "delivery" | "schedule";
+  onClose?: () => void;
 }
 const emptyCourierAddress: CourierAddress = { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" };
 const deliveryProvinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"];
 
-function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill, guided = false, onContinue }: DeliveryEditorProps) {
-  const [editing, setEditing] = useState(false);
-  const [scheduleOnly, setScheduleOnly] = useState(false);
-  const [editSide, setEditSide] = useState<"collection" | "delivery">("delivery");
+function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill, guided = false, onContinue, inlineSide, onClose }: DeliveryEditorProps) {
+  const [editing, setEditing] = useState(Boolean(inlineSide));
+  const [scheduleOnly, setScheduleOnly] = useState(inlineSide === "schedule");
+  const [editSide, setEditSide] = useState<"collection" | "delivery">(inlineSide === "collection" || inlineSide === "schedule" ? "collection" : "delivery");
   const [saving, setSaving] = useState(false);
   const [plan, setPlan] = useState<CourierPlan>(() => structuredClone(details.draftPlan));
   const [confirmed, setConfirmed] = useState(false);
@@ -2413,7 +2456,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     } catch (caught) { setChangeError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
     finally { setSaving(false); }
   }
-  const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
+  const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : details.draftPlan.collectionOptions?.door?.address || emptyCourierAddress,
     delivery: details.draftPlan.delivery.kind === "door" ? details.draftPlan.delivery.address : emptyCourierAddress });
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
     setPlan(current => ({ ...current, [side]: endpoint, ...(side === "collection" && endpoint.kind === "pickup_point" ? { collectionSchedule: undefined } : {}) })); setConfirmed(false);
@@ -2433,7 +2476,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
           suburb: text(`${side}.suburb`, current.address.suburb), city: text(`${side}.city`, current.address.city), province: text(`${side}.province`, current.address.province), postalCode: text(`${side}.postalCode`, current.address.postalCode) } };
     }
     return { ...plan, collection: endpoint("collection"), delivery: endpoint("delivery"),
-      collectionSchedule: plan.collection.kind === "door" ? {
+      collectionSchedule: plan.collection.kind === "door" && (plan.collectionSchedule || form.has("collectionSchedule.date")) ? {
         date: text("collectionSchedule.date", plan.collectionSchedule?.date), after: text("collectionSchedule.after", plan.collectionSchedule?.after), before: text("collectionSchedule.before", plan.collectionSchedule?.before),
       } : undefined,
       collectionInstructions: text("collectionInstructions", plan.collectionInstructions), deliveryInstructions: text("deliveryInstructions", plan.deliveryInstructions),
@@ -2445,11 +2488,11 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
     if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "door") { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
+    if (next.collection.kind === "door" && (!inlineSide || inlineSide === "schedule")) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
-      await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: form.has("confirmed"), rememberCollection: form.has("remember") });
-      setEditing(false); onEditingChange?.(false); setConfirmed(false); setMessage("Delivery details saved.");
+      await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: inlineSide ? true : form.has("confirmed"), rememberCollection: form.has("remember") });
+      setEditing(false); onEditingChange?.(false); setConfirmed(false); setMessage("Delivery details saved."); onClose?.();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Delivery details could not be saved."); }
     finally { setSaving(false); }
   }
@@ -2498,7 +2541,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
   </form> : null;
   return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
     <style dangerouslySetInnerHTML={{ __html: deliveryEditorCss }} />
-    <div className="mm-delivery__heading"><strong>{details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!guided || !details.canEdit ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
+    <div className="mm-delivery__heading"><strong>{inlineSide ? inlineSide === "schedule" ? "Collection date & hours" : inlineSide === "collection" ? "Edit collection details" : "Edit delivery address" : details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!inlineSide && (!guided || !details.canEdit) ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
@@ -2516,7 +2559,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         <p className="mm-admin__helper">{side === "collection" ? "Choose a method to check its address or select a drop-off point." : "Only switch to a pickup point if the customer agrees."}</p>
       </> : null}
       <details className="mm-delivery__contact"><summary>Contact details</summary><p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p></details>
-      {details.canEdit && !editing ? <button type="button" className={side === "delivery" ? "mm-admin__secondary-button" : "mm-admin__text-button"} disabled={disabled || saving} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Edit delivery address"}</button> : null}
+      {details.canEdit && !editing ? <button type="button" className="mm-admin__secondary-button" disabled={disabled || saving} onClick={() => edit(side)}>{side === "collection" ? "Edit collection details" : "Edit delivery address"}</button> : null}
     </div>)}</div> : null}
     {details.canEdit && !editing && !guided ? <p className="mm-admin__helper">Courier names, services and prices appear after you confirm the details and compare quotes. Locker or counter choices can limit the eligible couriers.</p> : null}
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
@@ -2545,7 +2588,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
     }}><fieldset disabled={disabled || saving} className="mm-delivery__fieldset">
       {editing ? <><p className="mm-admin__helper">{scheduleOnly ? "Update collection for this parcel." : "The other address stays unchanged."}</p>
       {!scheduleOnly ? <DeliveryEndpointFields key={editSide} side={editSide} value={plan[editSide]}
-        allowCollectionMethodChoice={!guided || details.draftPlan.collection.kind === "pickup_point"}
+        allowCollectionMethodChoice={!inlineSide && (!guided || details.draftPlan.collection.kind === "pickup_point")}
         changeKind={kind => changeKind(editSide, kind)} change={value => changeEndpoint(editSide, value)} searchPoints={searchPoints} /> : null}
       <details><summary>Courier instructions (optional)</summary><div className="mm-delivery__grid">
         <label className="mm-admin__field">Collection instructions<textarea name="collectionInstructions" maxLength={1000} rows={3} value={plan.collectionInstructions}
@@ -2553,7 +2596,7 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         <label className="mm-admin__field">Delivery instructions<textarea name="deliveryInstructions" maxLength={1000} rows={3} value={plan.deliveryInstructions}
           onChange={event => setPlan(current => ({ ...current, deliveryInstructions: event.target.value }))} placeholder="Gate, access or delivery instructions" /></label>
       </div></details></> : null}
-      {plan.collection.kind === "door" ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
+      {plan.collection.kind === "door" && (!inlineSide || inlineSide === "schedule") ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
         <h4>When can the courier collect?</h4>
         <p className="mm-admin__helper">{details.collectionTimeMode === "preferred_instructions" ? "Choose preferred hours between 08:00 and 17:00 (SAST). These are sent as a driver note, not a booked time slot." : "Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed."}</p>
         <div className="mm-delivery__grid">
@@ -2566,16 +2609,16 @@ function EmbeddedDeliveryEditor({ details, disabled = false, save, searchPoints,
         </div><details><summary>Collection timing</summary><p className="mm-admin__helper">Courier cut-offs and business days apply. Bob Go may move collection to the next available business day.</p></details>
       </section> : null}
       {editing && editSide === "collection" && !scheduleOnly ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders. The date and time are for this order only.</label> : null}
-      <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label>
-      <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
-      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
-        {editing ? <button type="button" className="mm-admin__text-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); }}>Cancel editing</button> : null}</div>
+      {!inlineSide ? <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label> : null}
+      <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !inlineSide && !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
+      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !inlineSide && !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
+        {editing ? <button type="button" className="mm-admin__secondary-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); onClose?.(); }}>Cancel editing</button> : null}</div>
     </fieldset></form> : null}
     {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled || Boolean(shownPlan.collection.kind === "door" && collectionScheduleProblem(shownPlan.collectionSchedule, true))} onClick={onContinue}>Continue to parcel</button></div> : null}
-    <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
+    {!inlineSide ? <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
       <form onSubmit={savePrivateNote}><label className="mm-admin__field">Private note<textarea name="privateNote" rows={3} maxLength={3000} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} /></label>
         <button type="submit" className="mm-admin__secondary-button" disabled={disabled || note === details.privateNote}>Save private note</button></form>
-    </details>
+    </details> : null}
     {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
     {message ? <p className="mm-admin__helper" role="status">{message}</p> : null}
   </section>;
@@ -2655,13 +2698,15 @@ const deliveryEditorCss = `
 // END_MM_DELIVERY_EDITOR
 
 // BEGIN_MM_DELIVERY_PROGRESS
-interface DeliveryProgressProps { current: 1 | 2 | 3 | 4; paused?: boolean }
+interface DeliveryProgressProps { current: 1 | 2 | 3 | 4; paused?: boolean; parcelFirst?: boolean }
 
-function EmbeddedDeliveryProgress({ current, paused = false }: DeliveryProgressProps) {
-  return <div className="mm-delivery__progress">
+function EmbeddedDeliveryProgress({ current, paused = false, parcelFirst = false }: DeliveryProgressProps) {
+  const labels = parcelFirst ? ["Parcel", "Choose & book", "Print & track"] : ["Check details", "Box & weight", "Choose & book", "Print & track"];
+  const step = parcelFirst ? Math.max(1, current - 1) : current;
+  return <div className="mm-delivery__progress" style={{ "--mm-delivery-count": `' / ${labels.length}'` } as import("react").CSSProperties}>
     <style dangerouslySetInnerHTML={{ __html: deliveryProgressCss }} />
-    <ol aria-label="Delivery steps">{["Check details", "Box & weight", "Choose & book", "Print & track"].map((label, index) => <li key={label}
-      aria-current={current === index + 1 ? "step" : undefined} aria-label={current === index + 1 ? `Step ${current} of 4: ${label}` : undefined} data-complete={!paused && index + 1 < current ? "true" : undefined}>
+    <ol aria-label="Delivery steps">{labels.map((label, index) => <li key={label}
+      aria-current={step === index + 1 ? "step" : undefined} aria-label={step === index + 1 ? `Step ${step} of ${labels.length}: ${label}` : undefined} data-complete={!paused && index + 1 < step ? "true" : undefined}>
       <span className="mm-delivery__step-number" aria-hidden="true">{index + 1}</span><span>{label}</span>
     </li>)}</ol>
   </div>;
@@ -2669,7 +2714,7 @@ function EmbeddedDeliveryProgress({ current, paused = false }: DeliveryProgressP
 
 const deliveryProgressCss = `
 .mm-delivery__progress{margin:16px 0;min-width:0}.mm-delivery__progress ol{display:grid;grid-template-columns:1fr;gap:8px;list-style:none;padding:0;margin:0}
-.mm-delivery__progress li:not([aria-current=step]){display:none}.mm-delivery__progress li[aria-current=step] .mm-delivery__step-number::after{content:" / 4"}
+.mm-delivery__progress li:not([aria-current=step]){display:none}.mm-delivery__progress li[aria-current=step] .mm-delivery__step-number::after{content:var(--mm-delivery-count," / 4")}
 .mm-delivery__progress li{display:flex;align-items:center;gap:7px;padding:10px 8px;border:1px solid var(--mm-border,#a69e95);font-size:12px;line-height:1.4;min-width:0;overflow-wrap:normal}
 .mm-delivery__progress li[aria-current=step]{border-color:var(--mm-sage,#7d896d);background:var(--mm-soft,#e3e6de);font-weight:700;box-shadow:inset 0 -2px var(--mm-sage,#7d896d)}
 .mm-delivery__step-number{flex:none;font-weight:700}.mm-delivery__progress li[data-complete=true] .mm-delivery__step-number{color:var(--mm-ink,#302a24)}
@@ -2686,10 +2731,11 @@ interface DeliveryStepFlowProps {
   onReview: (step: 1 | 2) => void;
   children: [ReactNode, ReactNode, ReactNode, ReactNode];
   locked?: boolean;
+  parcelFirst?: boolean;
 }
 const deliveryStepTitles = ["Delivery details", "Parcel", "Courier", "Waybill & tracking"];
 
-function EmbeddedDeliveryStepFlow({ current, onReview, children, locked = false }: DeliveryStepFlowProps) {
+function EmbeddedDeliveryStepFlow({ current, onReview, children, locked = false, parcelFirst = false }: DeliveryStepFlowProps) {
   const active = useRef<HTMLDivElement>(null), previous = useRef(current);
   useEffect(() => {
     if (previous.current !== current) active.current?.focus({ preventScroll: true });
@@ -2697,8 +2743,8 @@ function EmbeddedDeliveryStepFlow({ current, onReview, children, locked = false 
   }, [current]);
   return <div className="mm-delivery__flow">
     <style dangerouslySetInnerHTML={{ __html: deliveryStepFlowCss }} />
-    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
-    <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${current}: ${deliveryStepTitles[current - 1]}`}>
+    {!locked && (current === 3 || current === 2 && !parcelFirst) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
+    <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${parcelFirst ? Math.max(1, current - 1) : current}: ${deliveryStepTitles[current - 1]}`}>
       {children[current - 1]}
     </div>
   </div>;
@@ -2773,7 +2819,7 @@ function EmbeddedParcelEditor({ value, change, disabled = false, loadPackages }:
     change({ ...value, weightGrams: preset ? String(preset.grams) : "" });
   }
   return <section className="mm-admin__parcel-editor" aria-label="Packed parcel">
-    <h4>2. Check the parcel</h4>
+    <h4>Check the parcel</h4>
     <style dangerouslySetInnerHTML={{ __html: `.mm-admin__packing-reference{margin:14px 0;font-size:13px}.mm-admin__packing-reference summary{min-height:44px;padding:12px 0;cursor:pointer}.mm-admin__packing-reference dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 14px}.mm-admin__packing-reference dt,.mm-admin__packing-reference dd{margin:0}.mm-admin__packing-reference dd{white-space:nowrap}.mm-admin__parcel-editor>button{max-width:100%;white-space:normal}` }} />
     <label className="mm-admin__field">Choose a box<select value={selected} disabled={disabled || loading} onChange={event => choose(event.target.value)}>
       <option value="">Enter dimensions myself</option><option value={movingModestyBoxPreset.id}>{movingModestyBoxPreset.name} · {movingModestyBoxPreset.lengthCm} × {movingModestyBoxPreset.widthCm} × {movingModestyBoxPreset.heightCm} cm</option>

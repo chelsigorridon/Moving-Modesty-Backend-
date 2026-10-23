@@ -12,9 +12,11 @@ const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("../framer/AdminPortal.tsx", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const address = { company: "", line1: "10 Example Street", line2: "", suburb: "Example", city: "Cape Town", province: "Western Cape", postalCode: "7800" };
-const plan = { version: 1, collection: { kind: "door", address, contact: { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" } },
+const basePlan = { version: 1, collection: { kind: "door", address, contact: { name: "TEST Sender", email: "sender@example.invalid", phone: "0821234567" } },
   delivery: { kind: "door", address: { ...address, line1: "20 Example Road" }, contact: { name: "TEST Buyer", email: "buyer@example.invalid", phone: "0827654321" } },
   collectionInstructions: "", deliveryInstructions: "", customerApprovedPickup: false, collectionSchedule: { date: "2099-07-16", after: "09:00", before: "16:00" } };
+const dropOff = { id: "1156", providerSlug: "ie", name: "Constantia Emporium" };
+const plan = { ...basePlan, collectionOptions: { door: basePlan.collection, doorSchedule: basePlan.collectionSchedule, pickupPoint: { kind: "pickup_point", contact: basePlan.collection.contact, point: dropOff } } };
 function sample(overrides: any = {}) {
   return { id: "MM-GUIDED-TEST", address: "20 Example Road", paymentStatus: "Paid", status: "Ready", deliveryMethod: "Courier", deliveryFee: 99,
     deliveryDetails: { revision: 1, plan, draftPlan: plan, privateNote: "", canEdit: true },
@@ -58,31 +60,28 @@ async function compare(ctx: any) {
   await ctx.click("Compare couriers");
 }
 
-test("a new order shows address details first and defers the sender locker choice until comparison", async () => {
-  await harness(sample({ deliveryDetails: { revision: 0, plan: null, draftPlan: plan, privateNote: "", canEdit: true } }), async ({ doc, click, step, calls }) => {
-    assert.equal(step(), "1"); assert.equal(doc.querySelectorAll('[data-delivery-step]').length, 1);
-    assert.equal(doc.querySelector('.mm-admin__parcel-editor'), null); assert.equal(doc.querySelector('.mm-delivery__method-choices'), null);
-    assert.equal(calls.length, 0);
-    await click("Change collection");
-    assert.equal(doc.querySelector('select[name="collection.kind"]'), null);
-    assert.ok(doc.querySelector('[name="collection.line1"]'));
-    assert.equal(doc.querySelector('[name="delivery.line1"]'), null);
-    await click("Cancel editing"); assert.equal(step(), "1"); assert.equal(calls.length, 0);
-  });
+const saveAndQuote = (action: string, payload: any, order: any) => action === "save_delivery" ? { order: { ...order, deliveryDetails: { ...order.deliveryDetails, revision: order.deliveryDetails.revision + 1, plan: payload.plan, draftPlan: payload.plan } } } : action === "quote" ? { ...quotes, collectionDropOff: dropOff } : {};
+test("new orders start at parcel and explicitly reuse saved sender and checkout details without address re-entry", async () => {
+  await harness(sample({ deliveryDetails: { revision: 0, plan: null, draftPlan: plan, privateNote: "", canEdit: true } }), async ctx => {
+    assert.equal(ctx.step(), "2"); assert.equal(ctx.doc.querySelectorAll('[data-delivery-step]').length, 1);
+    assert.ok(ctx.doc.querySelector('.mm-admin__parcel-editor')); assert.equal(ctx.doc.querySelector('[name="collection.line1"]'), null);
+    assert.equal(ctx.calls.length, 0); await compare(ctx);
+    assert.equal(ctx.step(), "3"); assert.deepEqual(ctx.calls.map((c: any) => c.action), ["save_delivery", "quote"]);
+    assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].payload.plan.delivery)), plan.delivery);
+    assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].payload.plan.collectionOptions)), plan.collectionOptions);
+  }, saveAndQuote);
 });
 
 test("each slide shows one step without completed cards, and Back never contacts Bob Go", async () => {
-  await harness(sample(), async ({ doc, step, click, calls }) => {
+  await harness(sample(), async ({ doc, step, calls }) => {
     assert.equal(step(), "2"); assert.equal(doc.querySelector('.mm-admin__delivery-editor'), null);
     assert.equal((doc.querySelector('select') as HTMLSelectElement).value, "moving-modesty-scarf-box");
     assert.equal((doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "");
     assert.equal(doc.querySelector('input[inputmode="numeric"]'), null);
     assert.equal(doc.querySelector('.mm-delivery__completed'), null);
-    const change = [...doc.querySelectorAll('button')].find(node => node.textContent === "Edit delivery details") as HTMLButtonElement;
-    assert.ok(change.classList.contains("mm-admin__secondary-button"));
-    await act(async () => change.click()); assert.equal(step(), "1");
-    assert.equal(doc.querySelector('.mm-admin__parcel-editor'), null);
-    await click("Continue to parcel"); assert.equal(step(), "2"); assert.equal(calls.length, 0);
+    assert.equal([...doc.querySelectorAll('button')].some(node => node.textContent === "Edit delivery details"), false);
+    assert.equal(doc.querySelector('[aria-current="step"]')?.getAttribute('aria-label'), "Step 1 of 3: Parcel");
+    assert.equal(calls.length, 0);
   });
 });
 
@@ -102,25 +101,24 @@ test("quotes advance to one courier step, show every returned service and are in
     await ctx.click("Back to parcel");
     assert.equal(ctx.step(), "2"); assert.equal(ctx.doc.querySelector('.mm-admin__quote'), null);
     assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "393");
-    assert.equal((ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).checked, false);
+    assert.equal((ctx.doc.querySelector('.mm-admin__courier-check input') as HTMLInputElement).checked, true);
     assert.equal(ctx.calls.length, 1);
   }, action => action === "quote" ? quotes : {});
 });
 
-test("failed quote leaves the parcel available, exposes a useful error and never books", async () => {
+test("failed quote keeps collection choices visible and exposes a retry without jumping backwards", async () => {
   await harness(sample(), async ctx => {
-    await compare(ctx); assert.equal(ctx.step(), "2");
+    await compare(ctx); assert.equal(ctx.step(), "3");
     assert.match(ctx.doc.querySelector('[role="alert"]')?.textContent || "", /TEST quote unavailable/);
     assert.deepEqual(ctx.calls.map((call: any) => call.action), ["quote"]);
     assert.ok([...ctx.doc.querySelectorAll('button')].find((node: any) => node.textContent === "Compare couriers"));
+    assert.ok(ctx.doc.querySelector('[aria-label="How Zarina sends the parcel"]'));
   }, () => { throw new Error("TEST quote unavailable. Try again."); });
 });
 
 test("the visible edit buttons reach the customer address without provider calls, and cancelling preserves the parcel", async () => {
   await harness(sample(), async ctx => {
-    await ctx.input('select[name="packedWeightPreset"]', "267");
-    await ctx.click("Edit delivery details");
-    assert.equal(ctx.step(), "1");
+    await compare(ctx); assert.equal(ctx.step(), "3");
     const edit = [...ctx.doc.querySelectorAll('button')].find((node: HTMLButtonElement) => node.textContent === "Edit delivery address") as HTMLButtonElement;
     assert.ok(edit.classList.contains("mm-admin__secondary-button"));
     await ctx.click("Edit delivery address");
@@ -128,15 +126,15 @@ test("the visible edit buttons reach the customer address without provider calls
     assert.equal(ctx.doc.querySelector('[name="collection.line1"]'), null);
     assert.equal(ctx.doc.querySelector('button[type="submit"]')?.textContent, "Save delivery details");
     await ctx.click("Cancel editing");
-    assert.equal(ctx.step(), "2");
-    assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "267");
-    assert.equal(ctx.calls.length, 0);
-  });
+    assert.equal(ctx.step(), "3"); assert.equal(ctx.doc.querySelector('[name="delivery.line1"]'), null);
+    assert.equal(ctx.calls.length, 1); await ctx.click("Back to parcel");
+    assert.equal((ctx.doc.querySelector('select[name="packedWeightPreset"]') as HTMLSelectElement).value, "393");
+  }, saveAndQuote);
 });
 
 test("an empty rate response explains the next action instead of silently returning to parcel", async () => {
   await harness(sample(), async ctx => {
-    await compare(ctx); assert.equal(ctx.step(), "2");
+    await compare(ctx); assert.equal(ctx.step(), "3");
     assert.match(ctx.doc.querySelector('[role="alert"]')?.textContent || "", /No courier services found/);
     assert.deepEqual(ctx.calls.map((call: any) => call.action), ["quote"]);
     assert.equal(ctx.confirmations.length, 0);
@@ -188,7 +186,6 @@ test("the shared one-step layout is bundled once and both gates require explicit
   }
 });
 
-const dropOff = { id: "1156", providerSlug: "ie", name: "Constantia Emporium" };
 test("Constantia Emporium appears after courier comparison; choosing it changes only sender collection and requests a fresh locker-to-door price", async () => {
   await harness(sample(), async ctx => {
     assert.equal(ctx.doc.querySelector('[aria-label="How Zarina sends the parcel"]'), null);
@@ -198,7 +195,7 @@ test("Constantia Emporium appears after courier comparison; choosing it changes 
     assert.equal(choices.querySelectorAll('.mm-admin__secondary-button').length, 2, "Both options share the same style");
     assert.equal(choices.querySelector('[aria-pressed=true]')?.textContent, "Courier collects from Zarina");
     assert.ok(choices.compareDocumentPosition(ctx.doc.querySelector('.mm-admin__quote select')) & 4, "Choices come before the courier selector, not below booking");
-    assert.match(ctx.doc.body.textContent || "", /Both options deliver to the customer’s home/);
+    assert.match(ctx.doc.body.textContent || "", /Deliver to: 20 Example Road/);
     assert.equal(ctx.calls.length, 1);
     await ctx.click("Locker drop-off · Constantia Emporium");
     assert.deepEqual(ctx.calls.map((call: any) => call.action), ["quote", "save_delivery", "quote"]);
@@ -208,7 +205,8 @@ test("Constantia Emporium appears after courier comparison; choosing it changes 
     assert.deepEqual(JSON.parse(JSON.stringify(saved.plan.delivery)), plan.delivery, "Never move the customer to a locker");
     assert.equal(saved.rememberCollection, false); assert.equal(saved.expectedRevision, 1);
     assert.equal(ctx.calls[2].order.deliveryDetails.revision, 2); assert.equal(ctx.calls[2].payload.parcel.weightGrams, 393);
-    assert.equal(ctx.step(), "3"); assert.match(ctx.doc.body.textContent || "", /Zarina takes the parcel to the locker/);
+    assert.equal(ctx.step(), "3"); assert.match(ctx.doc.body.textContent || "", /Drop off at Constantia Emporium/);
+    assert.deepEqual(JSON.parse(JSON.stringify(saved.plan.collectionOptions.door)), plan.collection);
     assert.equal(ctx.doc.querySelector('[aria-label="How Zarina sends the parcel"] [aria-pressed=true]')?.textContent, "Locker drop-off · Constantia Emporium");
     await ctx.click("Locker drop-off · Constantia Emporium");
     assert.equal(ctx.calls.length, 3, "Selecting the current method does nothing");
@@ -227,19 +225,72 @@ test("Constantia Emporium appears after courier comparison; choosing it changes 
     : action === "quote" ? { ...quotes, collectionDropOff: dropOff, ...(order.deliveryDetails.plan.collection.kind === "pickup_point" ? { rates: [{ ...quotes.rates[0], providerName: "TEST Locker Courier", serviceName: "Locker to door", amount: 85, quoteToken: "mock-locker-origin" }] } : {}) } : {});
 });
 
-test("failed or expired drop-off choices never reuse a door quote or create a waybill", async () => {
-  for (const mode of ["expired", "save-failed", "readback-missing", "quote-failed"]) {
+test("failed drop-off choices never reuse a door quote, hide the choices or create a waybill", async () => {
+  for (const mode of ["save-failed", "readback-missing", "quote-failed"]) {
     let count = 0;
     await harness(sample(), async ctx => {
       await compare(ctx); await ctx.click("Locker drop-off · Constantia Emporium");
-      assert.equal(ctx.step(), "2"); assert.equal(ctx.doc.querySelector('.mm-admin__quote'), null); assert.ok(ctx.doc.querySelector('[role="alert"]'));
-      assert.equal(ctx.calls.filter((call: any) => call.action === "save_delivery").length, mode === "expired" ? 0 : 1);
+      assert.equal(ctx.step(), "3"); assert.ok(ctx.doc.querySelector('.mm-admin__quote')); assert.equal(ctx.doc.querySelector('.mm-admin__quote select'), null); assert.ok(ctx.doc.querySelector('[role="alert"]'));
+      assert.equal(ctx.calls.filter((call: any) => call.action === "save_delivery").length, 1);
       assert.equal(ctx.calls.filter((call: any) => call.action === "quote").length, mode === "quote-failed" ? 2 : 1);
       assert.equal(ctx.confirmations.length, 0); assert.equal(ctx.calls.some((call: any) => call.action === "book"), false);
     }, (action, payload, order) => {
-      if (action === "quote") { if (++count > 1) throw new Error("TEST drop-off rate unavailable"); return { ...quotes, collectionDropOff: dropOff, expires: Date.now() + (mode === "expired" ? -1000 : 600000) }; }
+      if (action === "quote") { if (++count > 1) throw new Error("TEST drop-off rate unavailable"); return { ...quotes, collectionDropOff: dropOff, expires: Date.now() + 600000 }; }
       if (mode === "save-failed") throw new Error("TEST locker unavailable");
       return mode === "readback-missing" ? {} : { order: { ...order, deliveryDetails: { ...order.deliveryDetails, revision: 2, plan: payload.plan, draftPlan: payload.plan } } };
     });
+  }
+});
+
+test("reopening a saved locker order still restores the collection address and this order's date without re-entry", async () => {
+  await harness(sample(), async ctx => {
+    await compare(ctx); await ctx.click("Locker drop-off · Constantia Emporium");
+    const stored = JSON.parse(JSON.stringify(ctx.props.order));
+    Object.assign(ctx.props, { key: "reopened", order: stored }); await ctx.render();
+    assert.equal(ctx.step(), "2");
+    await compare(ctx); await ctx.click("Courier collects from Zarina");
+    assert.equal(ctx.step(), "3"); assert.equal(ctx.doc.querySelector('[name="collection.line1"]'), null);
+    const saved = ctx.calls.filter((call: any) => call.action === "save_delivery").at(-1).payload.plan;
+    assert.deepEqual(JSON.parse(JSON.stringify(saved.collection)), plan.collection);
+    assert.deepEqual(JSON.parse(JSON.stringify(saved.collectionSchedule)), plan.collectionSchedule);
+    assert.deepEqual(JSON.parse(JSON.stringify(saved.delivery)), plan.delivery);
+    assert.equal(ctx.calls.some((call: any) => call.action === "book"), false);
+  }, saveAndQuote);
+});
+
+test("a missing collection window asks only for the date in place; locker drop-off does not need one", async () => {
+  const noDate = { ...plan, collectionSchedule: undefined, collectionOptions: { ...plan.collectionOptions, doorSchedule: undefined } };
+  await harness(sample({ deliveryDetails: { revision: 1, plan: noDate, draftPlan: noDate, privateNote: "", canEdit: true } }), async ctx => {
+    await compare(ctx); assert.equal(ctx.step(), "3"); assert.equal(ctx.calls.length, 0);
+    assert.ok(ctx.doc.querySelector('[name="collectionSchedule.date"]'));
+    assert.equal(ctx.doc.querySelector('[name="collection.line1"]'), null);
+    assert.equal(ctx.doc.querySelector('[name="delivery.line1"]'), null);
+    await ctx.click("Locker drop-off · Constantia Emporium");
+    assert.equal(ctx.step(), "3"); assert.equal(ctx.doc.querySelector('[name="collectionSchedule.date"]'), null);
+    assert.deepEqual(ctx.calls.map((call: any) => call.action), ["save_delivery", "quote"]);
+    assert.equal(ctx.calls[0].payload.plan.collectionSchedule, undefined);
+    assert.equal(ctx.calls[1].payload.parcel.weightGrams, 393);
+  }, saveAndQuote);
+});
+
+test("inline address saves preserve the other address, parcel and both methods, and refresh quotes in place", async () => {
+  for (const side of ["collection", "delivery"]) {
+    await harness(sample(), async ctx => {
+      await compare(ctx); await ctx.click(side === "collection" ? "Edit collection details" : "Edit delivery address");
+      assert.equal(ctx.calls.length, 1);
+      assert.equal((ctx.doc.querySelector(`[name="${side}.line1"]`) as HTMLInputElement).value, plan[side as "collection" | "delivery"].address.line1);
+      await ctx.input(`[name="${side}.line1"]`, "30 Updated Street");
+      await act(async () => ctx.doc.querySelector('.mm-admin__delivery-editor form').dispatchEvent(new ctx.dom.window.Event("submit", { bubbles: true, cancelable: true })));
+      assert.equal(ctx.step(), "3"); assert.equal(ctx.doc.querySelector(`[name="${side}.line1"]`), null);
+      assert.deepEqual(ctx.calls.map((call: any) => call.action), ["quote", "save_delivery", "quote"]);
+      const changed = ctx.calls[1].payload.plan, opposite = side === "collection" ? "delivery" : "collection";
+      assert.equal(changed[side].address.line1, "30 Updated Street");
+      assert.deepEqual(JSON.parse(JSON.stringify(changed[opposite])), plan[opposite]);
+      assert.equal(changed.collectionOptions.pickupPoint.point.id, "1156");
+      assert.equal(ctx.calls[2].payload.parcel.weightGrams, 393);
+      assert.equal(ctx.calls[1].payload.confirmed, true);
+      assert.equal(ctx.calls[1].payload.rememberCollection, false);
+      assert.equal(ctx.calls.some((call: any) => call.action === "book"), false);
+    }, saveAndQuote);
   }
 });

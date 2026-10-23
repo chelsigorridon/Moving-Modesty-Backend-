@@ -7,10 +7,11 @@ interface DeliveryStepFlowProps {
   onReview: (step: 1 | 2) => void;
   children: [ReactNode, ReactNode, ReactNode, ReactNode];
   locked?: boolean;
+  parcelFirst?: boolean;
 }
 const deliveryStepTitles = ["Delivery details", "Parcel", "Courier", "Waybill & tracking"];
 
-export default function DeliveryStepFlow({ current, onReview, children, locked = false }: DeliveryStepFlowProps) {
+export default function DeliveryStepFlow({ current, onReview, children, locked = false, parcelFirst = false }: DeliveryStepFlowProps) {
   const active = useRef<HTMLDivElement>(null), previous = useRef(current);
   useEffect(() => {
     if (previous.current !== current) active.current?.focus({ preventScroll: true });
@@ -18,8 +19,8 @@ export default function DeliveryStepFlow({ current, onReview, children, locked =
   }, [current]);
   return <div className="mm-delivery__flow">
     <style dangerouslySetInnerHTML={{ __html: deliveryStepFlowCss }} />
-    {!locked && (current === 2 || current === 3) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
-    <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${current}: ${deliveryStepTitles[current - 1]}`}>
+    {!locked && (current === 3 || current === 2 && !parcelFirst) ? <button type="button" className="mm-admin__secondary-button mm-delivery__back" onClick={() => onReview(current === 2 ? 1 : 2)}>{current === 2 ? "Edit delivery details" : "Back to parcel"}</button> : null}
+    <div key={current} ref={active} tabIndex={-1} className="mm-delivery__active-step" data-delivery-step={current} role="region" aria-label={`Step ${parcelFirst ? Math.max(1, current - 1) : current}: ${deliveryStepTitles[current - 1]}`}>
       {children[current - 1]}
     </div>
   </div>;

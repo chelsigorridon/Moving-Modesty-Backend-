@@ -34,6 +34,7 @@ import { deliveryEditBlocker, type CourierEndpoint, type CourierPlan } from "./d
 import { getOrderSyncConfiguration, orderSyncView } from "./integrations/bobgo/order-sync-policy";
 import { getLinkedBookingConfiguration } from "./integrations/bobgo/linked-booking-policy";
 import { cancellationRequested, handedOverStatuses, previousWaybills } from "./integrations/bobgo/waybill-change-policy";
+import { withCollectionOptions } from "./shipping/collection-options";
 
 export type { AdminOrder } from "./admin-types";
 export type AdminProduct = {
@@ -311,7 +312,7 @@ export async function getAdminSnapshot(options: { orderNumber?: string; includeP
     db.select().from(orderRefunds).where(inArray(orderRefunds.orderId, scope)).orderBy(desc(orderRefunds.createdAt)),
     db.select({ orderId: inventoryMovements.orderId, variantId: inventoryMovements.variantId,
       type: inventoryMovements.type, quantity: inventoryMovements.quantity }).from(inventoryMovements).where(inArray(inventoryMovements.orderId, scope)),
-    db.select().from(courierSettings).where(eq(courierSettings.id, "sender")).limit(1),
+    db.select().from(courierSettings).where(inArray(courierSettings.id, ["sender", "sender-door", "sender-pickup_point"])),
     db.select().from(bobgoOrderSync).where(and(eq(bobgoOrderSync.environment, bobGo.environment), inArray(bobgoOrderSync.orderId, scope))),
     db.select().from(orderDeliveryHistory).where(inArray(orderDeliveryHistory.orderId, scope)).orderBy(desc(orderDeliveryHistory.createdAt)),
   ]);
@@ -358,14 +359,19 @@ export async function getAdminSnapshot(options: { orderNumber?: string; includeP
       const customer = readOrderCustomer(order.customerSnapshot, { firstName: order.customerFirstName ?? "", lastName: order.customerLastName ?? "", email: order.customerEmail ?? "", phone: order.customerPhone });
       const shipment = shipmentByOrder.get(order.id);
       const defaultContact = { name: bobGo.senderName, email: bobGo.senderEmail, phone: bobGo.senderPhone };
-      const defaultCollection: CourierEndpoint = senderSettings[0]?.collection || (bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug
+      const defaultCollection: CourierEndpoint = senderSettings.find(row => row.id === "sender")?.collection || (bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug
         ? { kind: "pickup_point", contact: defaultContact, point: { id: bobGo.pickupPointLocationId, providerSlug: bobGo.pickupPointProviderSlug, name: bobGo.senderLocationName } }
         : { kind: "door", contact: defaultContact, address: { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" } });
-      const draftPlan: CourierPlan = order.courierPlan || { version: 1, collection: defaultCollection,
+      const savedDoor = senderSettings.find(row => row.id === "sender-door")?.collection || (defaultCollection.kind === "door" ? defaultCollection : undefined);
+      const savedPoint = senderSettings.find(row => row.id === "sender-pickup_point")?.collection || (defaultCollection.kind === "pickup_point" ? defaultCollection : undefined);
+      const dropOff: CourierEndpoint | undefined = savedPoint || (bobGo.pickupPointLocationId && bobGo.pickupPointProviderSlug ? { kind: "pickup_point", contact: defaultCollection.contact,
+        point: { id: bobGo.pickupPointLocationId, providerSlug: bobGo.pickupPointProviderSlug, name: bobGo.senderLocationName } } : undefined);
+      const draftPlan: CourierPlan = withCollectionOptions(order.courierPlan || { version: 1, collection: defaultCollection,
         delivery: { kind: "door", contact: { name: order.recipientName || `${customer.firstName} ${customer.lastName}`.trim(), email: customer.email, phone: customer.phone || "" },
           address: { company: "", line1: order.line1 || "", line2: order.line2 || "", suburb: order.suburb || "", city: order.city || "",
             province: (order.province || "Western Cape") as import("./delivery-input").CourierAddress["province"], postalCode: order.postalCode || "" } },
-        collectionInstructions: "", deliveryInstructions: order.deliveryNotes || "", customerApprovedPickup: false };
+        collectionInstructions: "", deliveryInstructions: order.deliveryNotes || "", customerApprovedPickup: false },
+        { ...(savedDoor?.kind === "door" ? { door: savedDoor } : {}), ...(dropOff?.kind === "pickup_point" ? { pickupPoint: dropOff } : {}) });
       const editBlocker = deliveryEditBlocker(order, shipment);
       const history = deliveryHistory.filter(row => row.orderId === order.id);
       const cancellationPending = cancellationRequested(history, shipment);
@@ -462,7 +468,7 @@ export async function getAdminSnapshot(options: { orderNumber?: string; includeP
         order.province,
         order.postalCode,
       ]),
-      deliveryDetails: order.deliveryMethod === "courier" ? { revision: order.deliveryRevision, plan: order.courierPlan, draftPlan,
+      deliveryDetails: order.deliveryMethod === "courier" ? { revision: order.deliveryRevision, plan: order.courierPlan ? draftPlan : null, draftPlan,
         collectionTimeMode: linkedOrder ? "preferred_instructions" as const : undefined,
         privateNote: order.privateNote || "", canEdit: !editBlocker, blockedReason: editBlocker || undefined,
         previousWaybills: previousWaybills(history),

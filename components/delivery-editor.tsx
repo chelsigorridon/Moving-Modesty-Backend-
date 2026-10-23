@@ -8,7 +8,8 @@ type PickupPoint = { id: string; providerSlug: string; name: string };
 type CourierEndpoint = { kind: "door"; contact: CourierContact; address: CourierAddress }
   | { kind: "pickup_point"; contact: CourierContact; point: PickupPoint };
 type CourierPlan = { version: 1; collection: CourierEndpoint; delivery: CourierEndpoint;
-  collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean; collectionSchedule?: CollectionSchedule };
+  collectionInstructions: string; deliveryInstructions: string; customerApprovedPickup: boolean; collectionSchedule?: CollectionSchedule;
+  collectionOptions?: { door?: Extract<CourierEndpoint, { kind: "door" }>; pickupPoint?: Extract<CourierEndpoint, { kind: "pickup_point" }>; doorSchedule?: CollectionSchedule } };
 
 type DeliveryPointResult = PickupPoint & { description: string; type: string };
 type DeliveryEditorDetails = { revision: number; plan: CourierPlan | null; draftPlan: CourierPlan; privateNote: string; canEdit: boolean; blockedReason?: string;
@@ -24,14 +25,16 @@ interface DeliveryEditorProps {
   changeWaybill?: (payload: Record<string, unknown>) => Promise<void>;
   guided?: boolean;
   onContinue?: () => void;
+  inlineSide?: "collection" | "delivery" | "schedule";
+  onClose?: () => void;
 }
 const emptyCourierAddress: CourierAddress = { company: "", line1: "", line2: "", suburb: "", city: "", province: "Western Cape", postalCode: "" };
 const deliveryProvinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "North West", "Northern Cape", "Western Cape"];
 
-export default function DeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill, guided = false, onContinue }: DeliveryEditorProps) {
-  const [editing, setEditing] = useState(false);
-  const [scheduleOnly, setScheduleOnly] = useState(false);
-  const [editSide, setEditSide] = useState<"collection" | "delivery">("delivery");
+export default function DeliveryEditor({ details, disabled = false, save, searchPoints, onEditingChange, changeWaybill, guided = false, onContinue, inlineSide, onClose }: DeliveryEditorProps) {
+  const [editing, setEditing] = useState(Boolean(inlineSide));
+  const [scheduleOnly, setScheduleOnly] = useState(inlineSide === "schedule");
+  const [editSide, setEditSide] = useState<"collection" | "delivery">(inlineSide === "collection" || inlineSide === "schedule" ? "collection" : "delivery");
   const [saving, setSaving] = useState(false);
   const [plan, setPlan] = useState<CourierPlan>(() => structuredClone(details.draftPlan));
   const [confirmed, setConfirmed] = useState(false);
@@ -55,7 +58,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     } catch (caught) { setChangeError(caught instanceof Error ? caught.message : "The waybill change could not be confirmed. Refresh the order before continuing."); }
     finally { setSaving(false); }
   }
-  const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : emptyCourierAddress,
+  const doorAddresses = useRef({ collection: details.draftPlan.collection.kind === "door" ? details.draftPlan.collection.address : details.draftPlan.collectionOptions?.door?.address || emptyCourierAddress,
     delivery: details.draftPlan.delivery.kind === "door" ? details.draftPlan.delivery.address : emptyCourierAddress });
   function changeEndpoint(side: "collection" | "delivery", endpoint: CourierEndpoint) {
     setPlan(current => ({ ...current, [side]: endpoint, ...(side === "collection" && endpoint.kind === "pickup_point" ? { collectionSchedule: undefined } : {}) })); setConfirmed(false);
@@ -75,7 +78,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
           suburb: text(`${side}.suburb`, current.address.suburb), city: text(`${side}.city`, current.address.city), province: text(`${side}.province`, current.address.province), postalCode: text(`${side}.postalCode`, current.address.postalCode) } };
     }
     return { ...plan, collection: endpoint("collection"), delivery: endpoint("delivery"),
-      collectionSchedule: plan.collection.kind === "door" ? {
+      collectionSchedule: plan.collection.kind === "door" && (plan.collectionSchedule || form.has("collectionSchedule.date")) ? {
         date: text("collectionSchedule.date", plan.collectionSchedule?.date), after: text("collectionSchedule.after", plan.collectionSchedule?.after), before: text("collectionSchedule.before", plan.collectionSchedule?.before),
       } : undefined,
       collectionInstructions: text("collectionInstructions", plan.collectionInstructions), deliveryInstructions: text("deliveryInstructions", plan.deliveryInstructions),
@@ -87,11 +90,11 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     const form = new FormData(event.currentTarget), next = readDeliveryForm(form);
     if (next.delivery.kind !== "door") { setError("Enter the customer’s home delivery address. Locker drop-off is for Zarina’s collection location only."); return; }
     if ([next.collection, next.delivery].some(value => value.kind === "pickup_point" && !value.point.id)) { setError("Choose each pickup point from the Bob Go search results."); return; }
-    if (next.collection.kind === "door") { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
+    if (next.collection.kind === "door" && (!inlineSide || inlineSide === "schedule")) { const problem = collectionScheduleProblem(next.collectionSchedule, true); if (problem) { setError(problem); return; } }
     setSaving(true);
     try {
-      await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: form.has("confirmed"), rememberCollection: form.has("remember") });
-      setEditing(false); onEditingChange?.(false); setConfirmed(false); setMessage("Delivery details saved.");
+      await save({ action: "delivery", expectedRevision: details.revision, plan: next, confirmed: inlineSide ? true : form.has("confirmed"), rememberCollection: form.has("remember") });
+      setEditing(false); onEditingChange?.(false); setConfirmed(false); setMessage("Delivery details saved."); onClose?.();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Delivery details could not be saved."); }
     finally { setSaving(false); }
   }
@@ -140,7 +143,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
   </form> : null;
   return <section className="mm-admin__delivery-editor" aria-label="Delivery setup and notes">
     <style dangerouslySetInnerHTML={{ __html: deliveryEditorCss }} />
-    <div className="mm-delivery__heading"><strong>{details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!guided || !details.canEdit ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
+    <div className="mm-delivery__heading"><strong>{inlineSide ? inlineSide === "schedule" ? "Collection date & hours" : inlineSide === "collection" ? "Edit collection details" : "Edit delivery address" : details.canEdit ? "1. Check delivery details" : "Delivery details"}</strong>{!inlineSide && (!guided || !details.canEdit) ? <span className="mm-admin__helper">{!details.canEdit ? action === "prepare_replacement" ? "Cancelled · setup locked" : action === "check_cancellation" ? "Cancellation pending" : "Booking locked" : details.plan ? "Confirmed" : "Check before continuing"}</span> : null}</div>
     {!details.canEdit && action !== "cancel_waybill" ? changeForm : null}
     {!guided || !editing ? <div className="mm-delivery__grid mm-delivery__summary">{(["collection", "delivery"] as const).map(side => <div className="mm-delivery__address-card" key={side}>
       <strong>{side === "collection" ? "From Zarina" : "To the customer"}</strong><p>{summaryEndpoint(shownPlan[side], side)}</p>
@@ -158,7 +161,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
         <p className="mm-admin__helper">{side === "collection" ? "Choose a method to check its address or select a drop-off point." : "Only switch to a pickup point if the customer agrees."}</p>
       </> : null}
       <details className="mm-delivery__contact"><summary>Contact details</summary><p className="mm-admin__helper">{shownPlan[side].contact.name}<br />{shownPlan[side].contact.phone}<br />{shownPlan[side].contact.email}</p></details>
-      {details.canEdit && !editing ? <button type="button" className={side === "delivery" ? "mm-admin__secondary-button" : "mm-admin__text-button"} disabled={disabled || saving} onClick={() => edit(side)}>{side === "collection" ? "Change collection" : "Edit delivery address"}</button> : null}
+      {details.canEdit && !editing ? <button type="button" className="mm-admin__secondary-button" disabled={disabled || saving} onClick={() => edit(side)}>{side === "collection" ? "Edit collection details" : "Edit delivery address"}</button> : null}
     </div>)}</div> : null}
     {details.canEdit && !editing && !guided ? <p className="mm-admin__helper">Courier names, services and prices appear after you confirm the details and compare quotes. Locker or counter choices can limit the eligible couriers.</p> : null}
     {!editing && (shownPlan.collectionInstructions || shownPlan.deliveryInstructions) ? <details><summary>Courier instructions</summary><p>{shownPlan.collectionInstructions}</p><p>{shownPlan.deliveryInstructions}</p></details> : null}
@@ -187,7 +190,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
     }}><fieldset disabled={disabled || saving} className="mm-delivery__fieldset">
       {editing ? <><p className="mm-admin__helper">{scheduleOnly ? "Update collection for this parcel." : "The other address stays unchanged."}</p>
       {!scheduleOnly ? <DeliveryEndpointFields key={editSide} side={editSide} value={plan[editSide]}
-        allowCollectionMethodChoice={!guided || details.draftPlan.collection.kind === "pickup_point"}
+        allowCollectionMethodChoice={!inlineSide && (!guided || details.draftPlan.collection.kind === "pickup_point")}
         changeKind={kind => changeKind(editSide, kind)} change={value => changeEndpoint(editSide, value)} searchPoints={searchPoints} /> : null}
       <details><summary>Courier instructions (optional)</summary><div className="mm-delivery__grid">
         <label className="mm-admin__field">Collection instructions<textarea name="collectionInstructions" maxLength={1000} rows={3} value={plan.collectionInstructions}
@@ -195,7 +198,7 @@ export default function DeliveryEditor({ details, disabled = false, save, search
         <label className="mm-admin__field">Delivery instructions<textarea name="deliveryInstructions" maxLength={1000} rows={3} value={plan.deliveryInstructions}
           onChange={event => setPlan(current => ({ ...current, deliveryInstructions: event.target.value }))} placeholder="Gate, access or delivery instructions" /></label>
       </div></details></> : null}
-      {plan.collection.kind === "door" ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
+      {plan.collection.kind === "door" && (!inlineSide || inlineSide === "schedule") ? <section className="mm-delivery__schedule" aria-label="Requested collection schedule">
         <h4>When can the courier collect?</h4>
         <p className="mm-admin__helper">{details.collectionTimeMode === "preferred_instructions" ? "Choose preferred hours between 08:00 and 17:00 (SAST). These are sent as a driver note, not a booked time slot." : "Choose a window between 08:00 and 17:00 (SAST). Collection time is requested, not guaranteed."}</p>
         <div className="mm-delivery__grid">
@@ -208,16 +211,16 @@ export default function DeliveryEditor({ details, disabled = false, save, search
         </div><details><summary>Collection timing</summary><p className="mm-admin__helper">Courier cut-offs and business days apply. Bob Go may move collection to the next available business day.</p></details>
       </section> : null}
       {editing && editSide === "collection" && !scheduleOnly ? <label className="mm-delivery__check"><input type="checkbox" name="remember" checked={remember} onChange={event => setRemember(event.target.checked)} />Use these sender collection details for future orders. The date and time are for this order only.</label> : null}
-      <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label>
-      <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
-      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
-        {editing ? <button type="button" className="mm-admin__text-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); }}>Cancel editing</button> : null}</div>
+      {!inlineSide ? <label className="mm-delivery__check"><input type="checkbox" name="confirmed" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I have checked both addresses and contact details.</label> : null}
+      <p id={`${hintId}-details`} className="mm-admin__helper mm-delivery__action-hint">{disabled || saving ? "Please wait." : !inlineSide && !confirmed ? "Tick to confirm the details." : "No courier is booked yet."}</p>
+      <div className="mm-delivery__actions"><button type="submit" className="mm-admin__button mm-delivery__primary-action" aria-describedby={`${hintId}-details`} disabled={disabled || saving || !inlineSide && !confirmed}>{saving ? "Saving…" : editing ? "Save delivery details" : "Confirm delivery details"}</button>
+        {editing ? <button type="button" className="mm-admin__secondary-button" onClick={() => { setEditing(false); setPlan(structuredClone(details.draftPlan)); onEditingChange?.(false); setError(""); setConfirmed(false); onClose?.(); }}>Cancel editing</button> : null}</div>
     </fieldset></form> : null}
     {guided && !editing && details.canEdit && details.plan && onContinue ? <div className="mm-delivery__step-actions"><button type="button" className="mm-admin__button mm-delivery__primary-action" disabled={disabled || Boolean(shownPlan.collection.kind === "door" && collectionScheduleProblem(shownPlan.collectionSchedule, true))} onClick={onContinue}>Continue to parcel</button></div> : null}
-    <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
+    {!inlineSide ? <details className="mm-delivery__private"><summary>Private order note</summary><p className="mm-admin__helper">For Zarina’s records only. Editable after booking; never sent to the courier or customer.</p>
       <form onSubmit={savePrivateNote}><label className="mm-admin__field">Private note<textarea name="privateNote" rows={3} maxLength={3000} value={note} onChange={event => setNote(event.target.value)} disabled={disabled} /></label>
         <button type="submit" className="mm-admin__secondary-button" disabled={disabled || note === details.privateNote}>Save private note</button></form>
-    </details>
+    </details> : null}
     {error ? <p className="mm-admin__error" role="alert">{error}</p> : null}
     {message ? <p className="mm-admin__helper" role="status">{message}</p> : null}
   </section>;
