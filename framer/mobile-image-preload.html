@@ -1,0 +1,15 @@
+<!-- Moving Modesty: home-only mobile hero preload. Keep candidates aligned with the native hero. -->
+<script>
+(() => {
+    if (window.location.pathname !== "/") return;
+    const image = document.createElement("link");
+    image.rel = "preload";
+    image.setAttribute("as", "image");
+    image.media = "(max-width: 767.98px)";
+    image.setAttribute("fetchpriority", "high");
+    image.href = "https://framerusercontent.com/images/wnStLOHAXmHtzQHuKvTjK2ioovw.png?width=1445&height=1088";
+    image.setAttribute("imagesrcset", "https://framerusercontent.com/images/wnStLOHAXmHtzQHuKvTjK2ioovw.png?scale-down-to=512&width=1445&height=1088 512w,https://framerusercontent.com/images/wnStLOHAXmHtzQHuKvTjK2ioovw.png?scale-down-to=1024&width=1445&height=1088 1024w,https://framerusercontent.com/images/wnStLOHAXmHtzQHuKvTjK2ioovw.png?width=1445&height=1088 1445w");
+    image.setAttribute("imagesizes", "100vw");
+    document.head.appendChild(image);
+})();
+</script>

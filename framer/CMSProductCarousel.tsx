@@ -4,6 +4,7 @@ import {
     useMemo,
     useRef,
     useState,
+    version as reactVersion,
     type CSSProperties,
     type PointerEvent as ReactPointerEvent,
 } from "react"
@@ -32,6 +33,8 @@ interface CMSProductCarouselProps {
     interval?: number
     imageFit?: "cover" | "contain"
     imagePosition?: "center" | "top" | "bottom"
+    imageSizes?: string
+    collectionIndex?: number
     arrowBackground?: string
     arrowColour?: string
     dotColour?: string
@@ -98,6 +101,8 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
         interval = 4,
         imageFit = "cover",
         imagePosition = "center",
+        imageSizes = "100vw",
+        collectionIndex = 0,
         arrowBackground = "rgba(250, 248, 244, 0.94)",
         arrowColour = "#738063",
         dotColour = "#738063",
@@ -160,6 +165,15 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
     }
 
     const active = images[current] ?? images[0]
+    // Framer's one-based Item Index follows CMS sorting, including new products.
+    // Leave unbound instances eager; only explicitly indexed later cards are lazy.
+    const priorityImage = collectionIndex === 1 && current === 0
+    const imageLoading = current > 0 || collectionIndex <= 1 ? "eager" : "lazy"
+    const priorityValue: "high" | "auto" = priorityImage ? "high" : "auto"
+    // Framer's React 18 renderer needs lowercase; React 19 recognizes camel case.
+    const priorityAttributes = Number.parseInt(reactVersion, 10) >= 19
+        ? { fetchPriority: priorityValue }
+        : { fetchpriority: priorityValue }
     const carouselClassName = isStatic
         ? "mm-product-carousel mm-carousel-static"
         : "mm-product-carousel"
@@ -242,6 +256,10 @@ export default function CMSProductCarousel(props: CMSProductCarouselProps) {
                         key={(active.src || "product-image") + current}
                         src={active.src}
                         srcSet={active.srcSet}
+                        sizes={imageSizes}
+                        loading={imageLoading}
+                        {...priorityAttributes}
+                        decoding="async"
                         alt={active.alt || "Product image " + (current + 1)}
                         initial={isStatic ? false : { opacity: 0 }}
                         animate={{ opacity: 1 }}
@@ -458,6 +476,20 @@ addPropertyControls<CMSProductCarouselProps>(CMSProductCarousel, {
         title: "Image Position",
         options: ["center", "top", "bottom"],
         defaultValue: "center",
+    },
+    imageSizes: {
+        type: ControlType.String,
+        title: "Image Sizes",
+        defaultValue: "100vw",
+        description: "Responsive image width hint; does not change the layout.",
+    },
+    collectionIndex: {
+        type: ControlType.Number,
+        title: "Item Index",
+        defaultValue: 0,
+        min: 0,
+        step: 1,
+        description: "Bind to the collection's Item Index to prioritize its first image.",
     },
     arrowBackground: {
         type: ControlType.Color,

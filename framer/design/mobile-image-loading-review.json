@@ -1,0 +1,46 @@
+{
+  "status": "published",
+  "publishedVersion": "acc2e4876",
+  "publishedUrl": "https://movingmodesty.com",
+  "projectId": "HSoQpURWMbVB013b2Lkg",
+  "description": "Public website image scheduling and responsive image hints only; no design changes.",
+  "carousel": {
+    "codeFileId": "PKQMgK1",
+    "amina": {"pagePath": "/amina", "instanceId": "nZ_1mD8fT", "collectionId": "B9AnDkKQg", "imageSizes": "(min-width: 1200px) 276px, (min-width: 768px) calc((100vw - 152px) / 2), (min-width: 388px) 316px, calc(100vw - 72px)"},
+    "hawa": {"pagePath": "/hawa", "instanceId": "u0ltwLvj0", "collectionId": "rSeI2ffJY", "imageSizes": "(min-width: 1200px) 276px, (min-width: 768px) calc((100vw - 152px) / 2), (min-width: 388px) 316px, calc(100vw - 72px)"},
+    "priority": "Bind collectionIndex to Framer's one-based collection Item Index. First item's initial image eager/high; later cards native-lazy/auto. User-selected slides eager/auto. Unbound uses eager/auto.",
+    "imageSourcesAndCropsUnchanged": true,
+    "carouselCssAndControlsUnchanged": true
+  },
+  "home": {
+    "customCodeLocation": "headStart",
+    "sourceFile": "framer/mobile-image-preload.html",
+    "restriction": "Runs only on / and preloads only up to 767.98px; shares exact native hero srcset to avoid duplicate candidates.",
+    "nativeHeroId": "UtxReIA1X",
+    "nativeHeroAndAnimationUnchanged": true
+  },
+  "ordersChanged": 0,
+  "waybillsChanged": 0,
+  "syncSettingsChanged": false,
+  "securityPrivacyDraftsChanged": false,
+  "published": true,
+  "verification": {
+    "isolatedRegressionTestsPassed": 466,
+    "react18ImageAndHydrationChecksPassed": 10,
+    "appAndFramerTypechecksPassed": true,
+    "productionBuildPassed": true,
+    "framerCodeDiagnostics": [],
+    "framerReadinessErrors": [],
+    "framerReadinessWarnings": [],
+    "canvasDesignAttributesUnchangedAtAllSixProductBreakpoints": true,
+    "carouselStylesByteForByteUnchanged": true,
+    "unrelatedLocalDraftHashesUnchanged": true,
+    "unrelatedFramerCodeFilesUnchanged": true,
+    "carouselSourceSha256Lf": "da5064200688139f7b0a1e61a92c3fbb3ad6be9281d177d9c176f4d50e8b7ad3",
+    "reviewUrl": "http://127.0.0.1:4192/",
+    "reviewType": "Read-only mirror of current public HTML/runtime with bounded loading-attribute changes. Checkout and form sending disabled; live stock checks are not part of this image review.",
+    "checkedViewportWidthsPx": [390, 768, 1280],
+    "newPageSpeedScore": null,
+    "performanceNote": "Live Lighthouse speed comparison awaits publication. Do not claim a measured LCP improvement from local attribute checks alone."
+  }
+}
