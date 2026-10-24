@@ -163,10 +163,11 @@ export default function ProductPurchase(props: Props) {
     const selectedVariant = variants.find(variant => variant.size === selectedSize)
     const liveSizes = variants.length ? variants.map(variant => variant.size) : availableSizes
     const stockCheckFailed = !isStatic && availabilityState === "error"
+    const allSizesUnavailable = availabilityState === "ready" && variants.length > 0 && variants.every(variant => !variant.available)
     const outOfStock = availabilityState === "ready" && Boolean(selectedSize) && selectedVariant?.available === false
     const actionLabel = adding ? "Adding…" : !isStatic && availabilityState === "loading" ? "Checking availability…"
         : stockCheckFailed ? availabilityIdentity ? "Retry stock check" : "Stock check unavailable"
-        : outOfStock ? "Out of stock" : message === "Added to bag" ? "Added to bag" : buttonLabel
+        : allSizesUnavailable ? "Sold out" : outOfStock ? "Out of stock" : message === "Added to bag" ? "Added to bag" : buttonLabel
 
     useEffect(() => {
         if (isStatic) return
@@ -379,7 +380,7 @@ export default function ProductPurchase(props: Props) {
             <button
                 className="mm-product-button"
                 type="button"
-                disabled={!isStatic && (adding || availabilityState === "loading" || !availabilityIdentity || (availabilityState === "ready" && Boolean(selectedSize) && !selectedVariant?.available))}
+                disabled={!isStatic && (adding || availabilityState === "loading" || !availabilityIdentity || allSizesUnavailable || (availabilityState === "ready" && Boolean(selectedSize) && !selectedVariant?.available))}
                 onClick={stockCheckFailed ? () => setAvailabilityRefresh(value => value + 1) : handleAdd}
                 aria-label={actionLabel + " — " + productName}
                 style={{
@@ -394,7 +395,7 @@ export default function ProductPurchase(props: Props) {
                     fontSize: 19,
                     fontWeight: 400,
                     lineHeight: 1,
-                    cursor: outOfStock || (stockCheckFailed && !availabilityIdentity) ? "not-allowed" : "pointer",
+                    cursor: allSizesUnavailable || outOfStock || (stockCheckFailed && !availabilityIdentity) ? "not-allowed" : "pointer",
                 }}
             >
                 {actionLabel}

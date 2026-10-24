@@ -1,0 +1,24 @@
+Sold-out purchase button - review build only
+
+Status: implemented and verified locally. Not committed, pushed or published.
+
+Changed files:
+- framer/ProductPurchase.tsx
+- tests/framer-product-purchase.test.ts
+
+The purchase button now says Sold out and is disabled when a successful, non-empty availability response confirms that every size is unavailable. This works before a size is selected and for one-size products. A partially available product retains its existing size-selection behaviour, configured purchase label and selected-size Out of stock message. Loading and failed checks retain Checking availability and Retry stock check rather than claiming a sold-out result. Restocking and refreshing recover the normal purchase action.
+
+Design: existing colours, fonts, dimensions, padding, borders and layout are unchanged. The sold-out action uses the existing not-allowed cursor.
+
+Verification:
+- 134 isolated automated tests passed, including six new sold-out-state regression cases.
+- Scoped lint, TypeScript after Next.js route-type generation, and dedicated Framer component type-check passed.
+- Optimized isolated Next.js production build passed.
+- Browser review of the actual purchase component with fixtures passed: all unavailable, mixed availability, all available and one-size unavailable.
+- Local review blocks live network connections and loads no production credentials.
+- Security/privacy and other pre-existing draft file hashes are unchanged.
+- No live stock, orders, payments, waybills, sync settings, Framer CMS or connection were accessed for mutation.
+
+Evidence: output/sold-out-button-review-20261024/verification.json and review-desktop.png.
+Current local review: http://127.0.0.1:63079/sold-out-review
+Release baseline: 580068eaf2f91a70957f26f37094f135dfe9ce02

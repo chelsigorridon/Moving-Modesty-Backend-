@@ -88,6 +88,44 @@ test("live stock editor accepts only confirmed backend availability and restores
     assert.equal(publishCalls, 3, "Saving a reviewed draft does not publish anything");
     await act(async () => button("Edit product"));
     assert.equal(doc.querySelector('[aria-label="Stock update review"]'), null);
+    // The bulk switch now describes its actual checked action: ticking means
+    // sold out for this colour, never a positive "available" setting.
+    const allSoldOut = () => doc.querySelector<HTMLInputElement>(`input[aria-label="Mark all sizes in ${baseline.colours[0].name} as sold out"]`)!;
+    assert.ok(allSoldOut());
+    assert.equal(allSoldOut().closest("label")?.textContent, "Mark all as sold out");
+    assert.equal(allSoldOut().checked, false);
+    const sizeChoices = [...saved.document.colours[0].variants].map((variant: any) => variant.available);
+    const counts = saved.document.colours[0].variants.map((variant: any) => [variant.stock, variant.stockVerified]);
+    const publishedBeforeBulk = publishCalls;
+    await act(async () => allSoldOut().click());
+    assert.equal(allSoldOut().checked, true);
+    assert.equal(publishCalls, publishedBeforeBulk, "Toggling does not publish a live change");
+    await act(async () => button("Save draft"));
+    assert.equal(saved.document.colours[0].available, false, "Checked bulk switch pauses every size through the colour gate");
+    assert.deepEqual(saved.document.colours[0].variants.map((variant: any) => variant.available), sizeChoices, "Size-specific choices are retained");
+    assert.deepEqual(saved.document.colours[0].variants.map((variant: any) => [variant.stock, variant.stockVerified]), counts, "The bulk switch never rewrites quantities");
+    assert.equal(publishCalls, publishedBeforeBulk, "Saving is still draft-only");
+    await act(async () => button("Edit product"));
+    assert.equal(allSoldOut().checked, true, "A saved sold-out colour reopens as checked");
+    await act(async () => allSoldOut().click());
+    assert.equal(allSoldOut().checked, false);
+    await act(async () => button("Save draft"));
+    assert.equal(saved.document.colours[0].available, true);
+    assert.deepEqual(saved.document.colours[0].variants.map((variant: any) => variant.available), sizeChoices, "Restoring the colour preserves an already unavailable individual size");
+    saved.document.colours[0].variants = [{ ...saved.document.colours[0].variants[0], size: "One size fits all", available: false }];
+    await act(async () => root.render(React.createElement(exports.default, { live: true })));
+    await act(async () => button("Edit product"));
+    assert.equal(allSoldOut().checked, true, "An unavailable one-size colour starts checked");
+    await act(async () => allSoldOut().click());
+    await act(async () => button("Save draft"));
+    assert.equal(saved.document.colours[0].available, true);
+    assert.equal(saved.document.colours[0].variants[0].available, true, "Unticking restores the sole size too");
+    await act(async () => button("Edit product"));
+    await act(async () => allSoldOut().click());
+    await act(async () => button("Save draft"));
+    assert.equal(saved.document.colours[0].available, false);
+    assert.equal(saved.document.colours[0].variants[0].available, false, "Ticking marks the sole size sold out");
+    assert.equal(publishCalls, publishedBeforeBulk, "No switch or draft-only save can publish implicitly");
   } finally {
     await act(async () => root.unmount()); dom.window.close();
     for (const name of names) { const descriptor = originalGlobals.get(name); if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); }

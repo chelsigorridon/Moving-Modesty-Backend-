@@ -1,0 +1,22 @@
+Colour sold-out label: local review, 24 October 2026
+
+Changed the shared product stock editor's colour availability control to
+"Mark all as sold out". Checked means the colour is unavailable, gating all
+its sizes. Unticking restores the colour without altering existing multi-size
+availability choices or stock quantities. One-size availability stays in sync.
+Regenerated the embedded Framer admin editor with the existing build script.
+
+Isolated verification includes the preceding unpublished storefront button fix:
+134 tests passed; lint, component types, production build and TypeScript passed.
+Report: output/colour-sold-out-review-20261024/verification.json
+No environment files copied; unrelated security/privacy draft hashes unchanged.
+
+Browser review used actual shared StockFields with sample stock only and all
+live connections blocked. Checked and unchecked Black: both sizes became
+unavailable when checked; Small was restored and the existing Large restriction
+remained when unchecked. Soft Pink and all quantities stayed unchanged.
+Screenshot: output/colour-sold-out-review-20261024/review-desktop.png
+Local preview: http://127.0.0.1:62941/colour-stock-review
+
+Nothing committed, pushed, published or changed in live stock, orders, payments,
+waybills, Framer connection, credentials or sync settings.
