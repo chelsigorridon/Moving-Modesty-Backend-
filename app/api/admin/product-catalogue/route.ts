@@ -32,9 +32,9 @@ export async function POST(request: Request) {
       const checked = z.object({ id: z.string().uuid(), expectedRevision: z.number().int().positive() }).safeParse(input);
       if (!checked.success) return apiJson({ error: "Invalid publish request." }, { status: 400 });
       const product = await publishLiveCatalogue(checked.data.id, checked.data.expectedRevision, admin.email);
-      return apiJson({ product, published: true, cmsSynced: true });
+      return apiJson({ product, published: true, stockSynced: true, cmsSynced: product.publicationTarget === "cms", publicationTarget: product.publicationTarget });
     }
-    const checked = catalogueSaveSchema.extend({ stockVersion: z.string().regex(/^[a-f0-9]{64}$/).optional() }).safeParse(input);
+    const checked = catalogueSaveSchema.extend({ stockVersion: z.string().regex(/^[a-f0-9]{64}$/).optional(), stockReviewConfirmed: z.boolean().optional() }).safeParse(input);
     if (!checked.success) return apiJson({ error: checked.error.issues[0]?.message || "Check the product information." }, { status: 400 });
     return apiJson({ product: await saveLiveCatalogue(checked.data), published: false });
   } catch (error) {

@@ -10,7 +10,9 @@ import {
   type CatalogueEditorErrors,
 } from "@/lib/catalogue-editor";
 
-type Draft = { id?: string; revision: number; cmsVersion?: string; stockVersion?: string; publishedRevision?: number; publicationState?: string; publicationError?: string; pageUrl?: string; document: CatalogueDocument };
+type Draft = { id?: string; revision: number; cmsVersion?: string; stockVersion?: string; publishedRevision?: number; publicationState?: string; publicationError?: string; pageUrl?: string; document: CatalogueDocument;
+  stockReviewRequired?: boolean; stockRecoveryNotice?: string;
+  stockConflicts?: Array<{ id: string; colour: string; size: string; currentStock: number; draftStock: number; currentStockVerified: boolean; draftStockVerified: boolean }> };
 type Props = { demo?: boolean; initialProducts?: Draft[]; apiBaseUrl?: string; framerTrial?: boolean; live?: boolean };
 type Colour = CatalogueDocument["colours"][number];
 const money = new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" });
@@ -45,6 +47,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [stockReviewConfirmed, setStockReviewConfirmed] = useState(false);
   const saving = useRef(false);
   const focusErrors = useRef(false);
   const inputFile = useRef<HTMLInputElement>(null);
@@ -91,9 +94,11 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
     const price = product ? usualProductPrice(product.document) : 0;
     setUsualPrice(price ? String(price) : ""); setStep(0); setPreview(false); setDirty(false);
     setErrors({}); setNotice(""); setError("");
+    setStockReviewConfirmed(false);
   }
   function replace(document: CatalogueDocument) {
     setCurrent(previous => previous && { ...previous, document }); setDirty(true); setNotice("");
+    setStockReviewConfirmed(false);
     const remaining = catalogueEditorErrors(document, demo);
     setErrors(previous => Object.fromEntries(Object.entries(previous).filter(([path]) =>
       path === "usualPrice" || (path === "description" && !document.description.trim()) || remaining[path])));
@@ -135,7 +140,11 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
       if (isNew) setStep(Object.keys(found).some(path => ["name", "slug", "description", "usualPrice"].includes(path)) ? 0 : 1);
       return;
     }
+    if (live && current.stockReviewRequired && !stockReviewConfirmed) {
+      setError("Check the stock quantities and tick the stock confirmation before saving."); setPreview(false); return;
+    }
     saving.current = true; setBusy(true);
+    let stockOnlyPublished = false;
     try {
       let saved: Draft;
       if (demo) {
@@ -143,7 +152,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
         saved = { ...current, id: current.id || crypto.randomUUID(), revision: current.revision + 1 };
       } else {
         const checked = catalogueDocumentSchema.parse(current.document);
-        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
+        const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ id: current.id, expectedRevision: current.revision, stockVersion: current.stockVersion, ...(live ? { stockReviewConfirmed } : {}), ...(framerTrial ? { expectedCmsVersion: current.cmsVersion } : {}), document: checked }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
         if (!response.ok) throw new Error(`${data.error || "Your changes could not be saved."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         if (framerTrial && (data.cmsSynced !== true || data.published !== false || !data.product?.cmsVersion)) throw new Error("Framer has not confirmed this TEST draft save. Your changes remain here; reload to check CMS before retrying.");
@@ -151,16 +160,18 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
       }
       // Keep the confirmed draft even if publication fails or times out.
       setCurrent(saved); setDirty(false);
+      setStockReviewConfirmed(false);
       setProducts(previous => previous.some(product => product.id === saved.id) ? previous.map(product => product.id === saved.id ? saved : product) : [...previous, saved]);
       if (publish && live) {
         const response = await adminRequest(`${base}${endpoint}`, { method: "POST", headers: headers(), body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }), signal: AbortSignal.timeout(60000) });
         const data = await response.json();
-        if (!response.ok || data.published !== true || data.cmsSynced !== true) throw new Error(`${data.error || "Publication could not be verified. Your saved draft is retained."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
+        stockOnlyPublished = ["inventory", "unchanged"].includes(data.publicationTarget) && data.stockSynced === true;
+        if (!response.ok || data.published !== true || (data.cmsSynced !== true && !stockOnlyPublished)) throw new Error(`${data.error || "Publication could not be verified. Your saved draft is retained."}${data.errorRef ? ` Reference: ${data.errorRef}` : ""}`);
         saved = data.product;
         setProducts(previous => previous.map(product => product.id === saved.id ? saved : product));
       }
       setCurrent(null); setDirty(false); setPreview(false); setStep(0);
-      setNotice(publish && live ? `${saved.document.name} published. Its page, collection card and checkout are connected.` : demo ? `${saved.document.name} saved for this demo. Refreshing will reset your changes.` : framerTrial ? "TEST draft saved and verified in Framer. The live website has not changed." : "Draft saved. The live website has not changed.");
+      setNotice(publish && live ? stockOnlyPublished ? `${saved.document.name}: stock and availability updated.` : `${saved.document.name} published. Its page, collection card and checkout are connected.` : demo ? `${saved.document.name} saved for this demo. Refreshing will reset your changes.` : framerTrial ? "TEST draft saved and verified in Framer. The live website has not changed." : "Draft saved. The live website has not changed.");
     } catch (error) { setError(error instanceof Error ? error.message : "Your changes could not be saved. They are still in the editor."); }
     finally { saving.current = false; setBusy(false); }
   }
@@ -253,6 +264,14 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
       <div className="mm-products__title"><h2 ref={heading} tabIndex={-1}>{isNew ? stages[step] : preview ? `Preview ${document.name}` : document.name}</h2><span>{dirty ? "Unsaved changes" : demo ? "Demo copy" : "Draft"}</span></div>
       <form onSubmit={submit} noValidate>
         <fieldset disabled={busy} className="mm-products__form">
+          {live && current.stockRecoveryNotice && <div className="mm-products__section" aria-label="Stock update review">
+            <p role="status">{current.stockRecoveryNotice}</p>
+            {current.stockReviewRequired && <>
+              <ul>{current.stockConflicts?.map(entry => <li key={entry.id}>{entry.colour} · {entry.size}: current stock {entry.currentStockVerified ? entry.currentStock : "not counted"}; saved draft {entry.draftStockVerified ? entry.draftStock : "not counted"}.</li>)}</ul>
+              <p>Check Stock &amp; availability against your physical stock and correct any quantities.</p>
+              <label className="mm-products__check"><input type="checkbox" checked={stockReviewConfirmed} onChange={event => setStockReviewConfirmed(event.target.checked)} />I have checked these quantities against my physical stock.</label>
+            </>}
+          </div>}
           {isNew ? step === 0 ? <DetailsFields {...detailsProps!} /> : step === 1 ? <>
             <ColourFields {...colourProps!} />
             <details className="mm-products__accordion" open><summary>Stock & availability</summary><StockFields {...stockProps!} /></details>
@@ -260,7 +279,7 @@ export default function ProductCatalogueEditor({ demo = false, initialProducts =
             <p className="mm-products__intro">Choose what you want to change.</p>
             <details className="mm-products__accordion"><summary>Product details <small>Name, description, price & sizes</small></summary><DetailsFields {...detailsProps!} /></details>
             <details className="mm-products__accordion"><summary>Colours & photos <small>Colour names and their images</small></summary><ColourFields {...colourProps!} /></details>
-            <details className="mm-products__accordion"><summary>Stock & availability <small>Quantities and what customers can buy</small></summary><StockFields {...stockProps!} /></details>
+            <details className="mm-products__accordion" open={current.stockReviewRequired || undefined}><summary>Stock & availability <small>Quantities and what customers can buy</small></summary><StockFields {...stockProps!} /></details>
           </>}
           <footer className="mm-products__footer">
             <div>{isNew && step > 0 ? <button type="button" onClick={() => { setStep(previous => previous - 1); setErrors({}); }}>Back</button> : !isNew && <button type="button" onClick={() => setPreview(!preview)}>{preview ? "Back to editing" : "Preview"}</button>}</div>

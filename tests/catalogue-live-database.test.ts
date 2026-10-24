@@ -21,15 +21,18 @@ test("live product drafts, publication, prices, stock reservations and paid dedu
     try { return await callback(tx); } finally { transactionScope = undefined; }
   }, options);
   const previous = process.env.PRODUCT_MANAGEMENT_ENABLED;
+  const previousAuthSecret = process.env.AUTH_SECRET;
+  process.env.AUTH_SECRET = "isolated-catalogue-test-secret-not-a-live-credential";
   process.env.PRODUCT_MANAGEMENT_ENABLED = "true";
-  let publishCalls = 0, authenticated = true;
+  let publishCalls = 0, authenticated = true, cmsFails = false;
+  class PreflightError extends Error {}
   function load(file: string): any {
     const absolute = resolve(root, file);
     if (/lib[\\/]db(?:[\\/]index)?\.ts$/.test(absolute)) return { db: database, requireDatabase: () => transactionScope ?? database };
     if (/lib[\\/]auth\.ts$/.test(absolute)) return { getRequestAdmin: async () => authenticated ? { email: "test@example.com", role: "owner" } : null };
     if (/lib[\\/]monitoring\.ts$/.test(absolute)) return { reportFailure: async () => ({ reference: "TEST-ONLY" }) };
     if (/integrations[\\/]payfast[\\/]configuration\.ts$/.test(absolute)) return { requirePayFastConfiguration: () => ({ environment: "production", merchantId: "12345678", merchantKey: "test-key", passphrase: "test-only", storeUrl: "https://store.test.invalid", processUrl: "https://test.invalid/payfast", validationUrl: "https://test.invalid/validate", enforceSourceIp: false }) };
-    if (/lib[\\/]framer-catalogue-live\.ts$/.test(absolute)) return { CataloguePublishPreflightError: Error, importCmsCatalogue: async () => [], publishCmsCatalogue: async (_doc: any, mapping: any) => { publishCalls++; return mapping; } };
+    if (/lib[\\/]framer-catalogue-live\.ts$/.test(absolute)) return { CataloguePublishPreflightError: PreflightError, importCmsCatalogue: async () => [], publishCmsCatalogue: async (_doc: any, mapping: any) => { publishCalls++; if (cmsFails) throw new PreflightError("Framer is view-only; no CMS write attempted."); return mapping; } };
     if (cache.has(absolute)) return cache.get(absolute);
     const compiledModule = { exports: {} }; cache.set(absolute, compiledModule.exports);
     const code = ts.transpileModule(readFileSync(absolute, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -63,6 +66,58 @@ test("live product drafts, publication, prices, stock reservations and paid dedu
     assert.equal((await storefront.resolveLiveCheckoutItem(sku)).stock, 3);
     const largeSku = `MM-${largeId.replaceAll("-", "").toUpperCase()}`;
     assert.equal((await storefront.resolveLiveCheckoutItem(largeSku)).available, false, "Large is independently switched off; Small stays available");
+    const baseline = structuredClone(saved.document);
+    const productBeforeStock = (await postgres.query("select * from products")).rows;
+    const cmsBefore = publishCalls;
+    cmsFails = true;
+    let edited = structuredClone(saved.document); edited.colours[0].variants[0].available = false;
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: edited });
+    saved = await live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com");
+    assert.equal(saved.publicationTarget, "inventory");
+    assert.equal(saved.publicationState, "idle");
+    assert.equal((await storefront.resolveLiveCheckoutItem(sku)).available, false);
+    assert.equal(publishCalls, cmsBefore, "Sold-out updates do not call an unavailable Framer publisher");
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: baseline });
+    saved = await live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com");
+    assert.deepEqual(saved.document, baseline, "Restoration preserves every original product field");
+    assert.equal((await storefront.resolveLiveCheckoutItem(sku)).available, true);
+    assert.equal((await storefront.resolveLiveCheckoutItem(largeSku)).available, false, "Restoration leaves intentionally unavailable sizes alone");
+    assert.equal(publishCalls, cmsBefore);
+    assert.deepEqual((await postgres.query("select * from products")).rows, productBeforeStock, "Availability updates leave product content/status records untouched");
+    const route = load("app/api/admin/product-catalogue/route.ts");
+    edited = structuredClone(saved.document); edited.colours[0].variants[0].stock = 0; edited.colours[0].variants[0].stockVerified = true;
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: edited });
+    const beforeStock = (await postgres.query<{ metadata: any }>("select metadata from catalogue_products where id=$1", [saved.id])).rows[0].metadata;
+    const response = await route.POST(new Request("https://backend.test/api/admin/product-catalogue", { method: "POST", headers: { Origin: "https://backend.test", "Content-Type": "application/json" }, body: JSON.stringify({ action: "publish", id: saved.id, expectedRevision: saved.revision }) }));
+    assert.equal(response.status, 200);
+    const confirmed = await response.json();
+    assert.equal(confirmed.published, true); assert.equal(confirmed.stockSynced, true);
+    assert.equal(confirmed.cmsSynced, false, "Backend stock updates must not claim a Framer publication");
+    assert.equal(confirmed.publicationTarget, "inventory");
+    saved = (await live.listLiveCatalogue())[0];
+    assert.equal((await storefront.resolveLiveCheckoutItem(sku)).stock, 0);
+    assert.equal((await storefront.resolveLiveCheckoutItem(sku)).available, false, "A counted zero is sold out even when the availability switch is on");
+    assert.deepEqual((await postgres.query<{ metadata: any }>("select metadata from catalogue_products where id=$1", [saved.id])).rows[0].metadata, beforeStock, "Stock-only publication preserves CMS mappings and hashes");
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: baseline });
+    saved = await live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com");
+    assert.deepEqual(saved.document, baseline);
+    assert.equal((await postgres.query("select * from orders")).rows.length, 0);
+    assert.equal((await postgres.query("select * from payments")).rows.length, 0);
+    assert.equal(publishCalls, cmsBefore);
+    // An earlier ambiguous CMS result must never be silently cleared by the
+    // new stock path; real CMS reconciliation is still required.
+    await postgres.query("update catalogue_products set publication_state='needs_review' where id=$1", [saved.id]);
+    await assert.rejects(live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com"), /previous publication needs checking/);
+    assert.equal((await live.listLiveCatalogue())[0].publicationState, "needs_review");
+    await postgres.query("update catalogue_products set publication_state='idle' where id=$1", [saved.id]);
+    edited = structuredClone(saved.document); edited.description += " Content change";
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: edited });
+    await assert.rejects(live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com"), /view-only/);
+    assert.equal((await live.listLiveCatalogue())[0].publicationState, "idle", "A verified no-write preflight failure does not pause the product");
+    assert.equal((await storefront.resolveLiveCheckoutItem(sku)).available, true);
+    saved = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: baseline });
+    saved = await live.publishLiveCatalogue(saved.id, saved.revision, "test@example.com");
+    cmsFails = false;
     const checkout = load("lib/checkout-order.ts"), payment = load("lib/integrations/payfast/checkout.ts");
     const checkoutInput = { checkoutToken: randomUUID(), stage: "complete", fulfilmentMethod: "collection",
       customer: { firstName: "TEST", lastName: "Customer", email: "test@example.com", phone: "0821234567" }, items: [{ sku: largeSku, quantity: 1 }] };
@@ -86,7 +141,7 @@ test("live product drafts, publication, prices, stock reservations and paid dedu
     await database.transaction((tx: any) => storefront.deductPaidStock(tx, orderId));
     await database.transaction((tx: any) => storefront.deductPaidStock(tx, orderId));
     assert.equal((await storefront.resolveLiveCheckoutItem(sku)).stock, 1, "Repeated payment callbacks deduct once");
-    await assert.rejects(live.saveLiveCatalogue({ id: saved.id, expectedRevision: 1, stockVersion: saved.stockVersion, document }), /Stock changed/);
+    await assert.rejects(live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document }), /Stock changed/);
     saved = (await live.listLiveCatalogue())[0];
     const changed = structuredClone(saved.document); changed.colours[0].variants[0].price = 510;
     let draft = await live.saveLiveCatalogue({ id: saved.id, expectedRevision: saved.revision, stockVersion: saved.stockVersion, document: changed });
@@ -100,17 +155,19 @@ test("live product drafts, publication, prices, stock reservations and paid dedu
     assert.equal((await postgres.query("select * from payments")).rows.length, 1);
     const unavailable = structuredClone(draft.document); unavailable.colours[0].available = false;
     draft = await live.saveLiveCatalogue({ id: draft.id, expectedRevision: draft.revision, stockVersion: draft.stockVersion, document: unavailable });
+    const beforeUnavailable = publishCalls;
     await live.publishLiveCatalogue(draft.id, draft.revision, "test@example.com");
+    assert.equal(publishCalls, beforeUnavailable, "Whole-colour availability is also backend-owned");
     assert.equal((await storefront.resolveLiveCheckoutItem(sku)).available, false);
     await assert.rejects(payment.createPayFastCheckout(paymentInput, "https://test.invalid/api/payments/payfast/checkout"), /no longer available/, "A stock change after the order was saved blocks payment initiation");
     assert.equal((await postgres.query("select * from payments")).rows.length, 1, "Rejected payment does not create another attempt");
-    const route = load("app/api/admin/product-catalogue/route.ts");
     authenticated = false;
     assert.equal((await route.GET(new Request("https://backend.test/api/admin/product-catalogue"))).status, 401);
     authenticated = true;
     assert.equal((await route.POST(new Request("https://backend.test/api/admin/product-catalogue", { method: "POST", headers: { Origin: "https://evil.test", "Content-Type": "application/json" }, body: "{}" }))).status, 403);
   } finally {
     if (previous === undefined) delete process.env.PRODUCT_MANAGEMENT_ENABLED; else process.env.PRODUCT_MANAGEMENT_ENABLED = previous;
+    if (previousAuthSecret === undefined) delete process.env.AUTH_SECRET; else process.env.AUTH_SECRET = previousAuthSecret;
     await postgres.close();
   }
 });

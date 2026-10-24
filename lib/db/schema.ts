@@ -79,6 +79,7 @@ export type CatalogueCmsMapping = {
   colours: Record<string, { cmsId?: string; slug: string; baseSku: string }>;
   variantSkus: Record<string, string>;
   stockVersion?: string;
+  stockBaseline?: Record<string, { stock: number; stockVerified: boolean }>;
 };
 
 // Live management is separate from the retained, unpublished trial records.

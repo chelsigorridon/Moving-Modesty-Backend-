@@ -1,0 +1,62 @@
+PRODUCT STOCK / SOLD-OUT PUBLICATION — REVIEW BUILD ONLY
+
+Scope
+- No new/revoked keys, environment updates, pushes or deployments.
+- No live products, orders, waybills, payments or sync settings changed.
+- Existing security/privacy drafts remain separate and untouched.
+
+Confirmed design problem
+The admin previously sent every stock/availability edit through a site-wide
+Framer publication. The existing storefront and checkout already obtain size
+availability and stock from the backend. A failed CMS publication also paused
+the entire product family, rather than just the intended size.
+This identifies an unnecessary dependency; it does NOT prove the exact SDK
+cause of the earlier live CMS publication failure.
+
+Local implementation
+- A strict content comparison recognizes only quantity, counted-stock state,
+  colour availability and size availability as backend-owned updates.
+- These changes commit catalogue publication and inventory in one transaction,
+  with the existing revision, inventory-version and ownership guards.
+- Names, prices, descriptions, photos, identities, product/colour/size ordering
+  and all other content changes still require the existing Framer connection.
+- CMS mappings/hashes are retained; stock updates do not claim a CMS publish.
+- The admin accepts a confirmed inventory response and shows a short, accurate
+  success message without changing the layout or styling.
+- Errors before any CMS write use safe messages and do not pause the product.
+- Any attempted CMS mutation with an uncertain result remains needs_review.
+- Expired operations cannot start subsequent guarded CMS writes or publishing.
+- Existing needs_review records are NOT silently unlocked or overwritten.
+
+Verification
+- 60 focused checks passed in the isolated review snapshot: product editing,
+  sold-out/restore, zero-count stock, independent sizes, cart stock checks,
+  stale stock/revision guards, publication response handling and CMS safeguards.
+- Isolated PostgreSQL (PGlite), SDK adapters and JSDOM; no live calls.
+- TypeScript passed.
+- Scoped ESLint and Git whitespace checks passed.
+- Optimized Next.js 16.3.8 production build passed (webpack).
+- Snapshot: .tmp/stock-publication-review-20261024
+- Build evidence: output/stock-publication-review/build-result.json
+- Unrelated drafts and all local environment files excluded from the snapshot.
+
+Release requirements / unresolved live state
+- Publish the backend AND regenerated Framer AdminPortal together, because the
+  new response distinguishes inventory-only updates from CMS publication.
+- The live Hawa record was already needs_review following the user's failed
+  publication. This review did not recover it. Verify the actual CMS state and
+  reconcile it explicitly before releasing its purchase pause.
+- Full content publishing with the live backend's Framer key is not verified by
+  this offline build. No assertion is made that the current key must be changed.
+
+Task files
+lib/catalogue-publication.ts
+lib/catalogue-live.ts
+lib/framer-catalogue-live.ts
+app/api/admin/product-catalogue/route.ts
+components/product-catalogue-editor.tsx
+framer/AdminPortal.tsx (generated product editor section only)
+tests/catalogue-publication.test.ts
+tests/catalogue-live-database.test.ts
+tests/framer-cms-unified.test.ts
+tests/catalogue-stock-editor-flow.test.ts

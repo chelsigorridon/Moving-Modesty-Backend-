@@ -1,0 +1,29 @@
+Draft stock recovery review - 24 October 2026
+
+Status: implemented and built locally for review. Not pushed or deployed.
+
+Recovery behaviour
+- Refresh untouched draft quantities from current inventory without losing saved content or availability edits.
+- Preserve deliberately edited quantities, requiring explicit physical-stock confirmation if inventory changed in the meantime.
+- Treat older drafts without a stock baseline conservatively: use current quantities and request review of the saved proposal.
+- Reject a stale save if another purchase happens after review. Confirmation does not bypass the inventory version check.
+- Keep publishing and needs-review records locked; recovery does not silently unlock an uncertain publication.
+- Recovery reads do not persist changes. Saving a reviewed draft does not publish or change live inventory.
+
+Verification
+- 128 isolated automated checks passed, including purchase/draft recovery, competing count edits, legacy drafts, subsequent purchases, API validation and editor confirmation behaviour.
+- TypeScript, scoped ESLint and whitespace checks passed.
+- Isolated optimized Next.js production build passed.
+- Evidence: output/draft-recovery-review-20261024/build-result.json, existing-tests-result.json and associated logs.
+- The release snapshot excluded unrelated security/privacy drafts and did not copy environment files or request live service calls.
+
+Scope preserved
+- Existing Framer connection unchanged; no keys created or replaced.
+- No live stock, orders, payments, waybills or sync settings changed.
+- Security/privacy draft file hashes remained unchanged.
+- Stock baseline is optional JSON metadata; no database migration was executed.
+
+Remaining live verification
+- This does not unpause the existing Hawa needs-review publication or establish that live full-site Framer publishing succeeds.
+- Actual counted stock still needs to be entered by the owner before automatic quantity-based stock management can be considered verified.
+- Prior audit reports are historical and have not been rewritten.

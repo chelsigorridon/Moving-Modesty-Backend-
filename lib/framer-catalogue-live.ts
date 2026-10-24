@@ -8,21 +8,30 @@ import { CatalogueConflictError } from "./catalogue-drafts";
 
 const projectUrl = "https://framer.com/projects/Moving-Modesty--HSoQpURWMbVB013b2Lkg";
 type Client = Awaited<ReturnType<typeof connect>>;
-export async function withCatalogueFramer<T>(work: (client: Client) => Promise<T>): Promise<T> {
+export async function withCatalogueFramer<T>(work: (client: Client, ensureActive: () => void) => Promise<T>): Promise<T> {
   const key = process.env.FRAMER_API_KEY;
-  if (!key || key === "[SENSITIVE]") throw new Error("The private Framer connection is not configured.");
+  if (!key || key === "[SENSITIVE]") throw new CataloguePublishPreflightError("The private Framer connection is not configured. Your live product has not changed.");
   let client: Client | undefined;
   let expired = false;
+  let workStarted = false;
   const connection = connect(process.env.FRAMER_PROJECT_URL || projectUrl, key).then(async value => {
     if (expired) { await value.disconnect(); throw new Error("Framer connection timed out."); }
     client = value;
     const info = await value.getProjectInfo();
     if (info.name !== "Moving Modesty") throw new Error("Unexpected Framer project.");
-    return work(value);
+    if (expired) throw new Error("Framer connection timed out.");
+    workStarted = true;
+    return work(value, () => { if (expired) throw new Error("Framer operation timed out. No further CMS edits will be started."); });
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([connection, new Promise<T>((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error("Framer has not confirmed the operation. Reload before retrying.")); }, 45000); })]); }
-  finally { if (timer) clearTimeout(timer); expired = true; if (client) await Promise.race([client.disconnect(), new Promise<void>(resolve => setTimeout(resolve, 1500))]); }
+  catch (error) {
+    // Connection/readiness failures happen before any CMS write. Preserve the
+    // live product and return a useful, allowlisted message, never SDK secrets.
+    if (!workStarted) throw new CataloguePublishPreflightError(framerPreflightMessage(error));
+    throw error;
+  }
+  finally { if (timer) clearTimeout(timer); expired = true; if (client) await Promise.race([client.disconnect().catch(() => undefined), new Promise<void>(resolve => setTimeout(resolve, 1500))]); }
 }
 async function collections(client: Client, preferredLayout?: CatalogueCmsMapping["cmsLayout"]) {
   const all = await client.getCollections();
@@ -100,8 +109,17 @@ export async function importCmsCatalogue(existing: Array<typeof products.$inferS
 }
 
 export class CataloguePublishPreflightError extends CatalogueConflictError {}
+function framerPreflightMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (/view.only|unauthori[sz]ed|forbidden|permission|access.denied/i.test(message)) return "Framer did not allow product publishing with the current connection. Website support needs to check its project permissions. Your live product has not changed.";
+  if (/unexpected framer project/i.test(message)) return "The Framer connection points to a different project. Your live product has not changed.";
+  if (/timed? out|timeout|has not confirmed/i.test(message)) return "Framer did not respond before product editing began. Your live product has not changed; please try again later.";
+  return "Framer could not complete the product publishing checks. Your live product has not changed; please ask website support to check the connection and CMS setup.";
+}
 export async function publishCmsCatalogue(document: CatalogueDocument, previous: CatalogueCmsMapping, familyOrder: string[] = []) {
-  return withCatalogueFramer(async client => {
+  return withCatalogueFramer(async (client, ensureActive) => {
+    let mutationStarted = false;
+    try {
     const { colours, families, familyFields, pageInfoField, unified } = await collections(client, previous.cmsLayout);
     const currentColours = await colours.getItems();
     const allFamilies = unified ? currentColours.filter(item => isPageInformation(item, pageInfoField)) : await families.getItems();
@@ -126,6 +144,8 @@ export async function publishCmsCatalogue(document: CatalogueDocument, previous:
       // Page-information rows must never become purchase/homepage colour cards.
       for (const name of ["Featured", "Show In Catalogue", "Has Carousel"]) familyData[requiredField(familyFields, name)] = { type: "boolean", value: false };
     }
+    ensureActive();
+    mutationStarted = true;
     await families.addItems([{ ...(family ? { id: family.id } : {}), slug: document.slug, draft: false, fieldData: familyData }]);
     mapping.familyCmsId = (await families.getItems()).find(item => item.slug === document.slug)!.id;
     const colourFields = await fieldsByName(colours);
@@ -152,20 +172,23 @@ export async function publishCmsCatalogue(document: CatalogueDocument, previous:
         hgqgdsqCt: { type: "link", value: ["amina", "hawa"].includes(document.slug) ? `/${document.slug}` : `/collection/${document.slug}` },
       };
       if (unified) data[pageInfoField!] = { type: "boolean", value: false };
+      ensureActive();
       await colours.addItems([{ ...(current ? { id: current.id } : {}), slug: identity.slug, draft: false, fieldData: data }]);
       identity.cmsId = (await colours.getItems()).find(item => item.slug === identity.slug)!.id;
     }
     const retained = new Set(document.colours.map(colour => mapping.colours[colour.id].cmsId));
     // Removed colours remain recoverable drafts, never physical deletions.
-    for (const item of owned) if (!retained.has(item.id)) await item.setAttributes({ draft: true });
+    for (const item of owned) if (!retained.has(item.id)) { ensureActive(); await item.setAttributes({ draft: true }); }
     const ordered = await colours.getItems();
     const rank = (item: CollectionItem) => {
       if (isPageInformation(item, pageInfoField)) return familyOrder.length + 1;
       const index = familyOrder.indexOf(text(item, pageField)); return index < 0 ? familyOrder.length : index;
     };
+    ensureActive();
     await colours.setItemOrder(ordered.map((item, index) => ({ item, index })).sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index).map(entry => entry.item.id));
     const preview = await client.agent.publish({ action: "preview" }) as { status?: string; confirmationHash?: string; errors?: unknown[]; warnings?: unknown[] };
     if (preview.status !== "ready" || !preview.confirmationHash || preview.errors?.length || preview.warnings?.length) throw new Error("Framer needs a publish review.");
+    ensureActive();
     const published = await client.agent.publish({ action: "confirm_publish", confirmationHash: preview.confirmationHash }) as { status?: string };
     if (published.status !== "published") throw new Error("Framer did not confirm publication.");
     const after = await colours.getItems();
@@ -173,6 +196,12 @@ export async function publishCmsCatalogue(document: CatalogueDocument, previous:
     const updatedFamily = (await families.getItems()).find(item => item.id === mapping.familyCmsId)!;
     mapping.cmsHash = fingerprint([...updated, updatedFamily]);
     return mapping;
+    } catch (error) {
+      if (!mutationStarted && !(error instanceof CataloguePublishPreflightError)) throw new CataloguePublishPreflightError(framerPreflightMessage(error));
+      // Once a CMS write was attempted, keep the existing fail-closed rule:
+      // only reconciliation can establish whether that write took effect.
+      throw error;
+    }
   });
 }
 

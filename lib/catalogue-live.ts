@@ -7,6 +7,8 @@ import type { CatalogueCmsMapping } from "./db/schema";
 import { cataloguePublicationIssues, catalogueVariantSku, type CatalogueSaveInput } from "./catalogue-input";
 import { CatalogueConflictError } from "./catalogue-drafts";
 import { importCmsCatalogue, publishCmsCatalogue, CataloguePublishPreflightError } from "./framer-catalogue-live";
+import { inventoryOnlyPublication } from "./catalogue-publication";
+import { recoverCatalogueStock, catalogueStockBaseline } from "./catalogue-stock-recovery";
 
 export function liveCatalogueEnabled() { return process.env.PRODUCT_MANAGEMENT_ENABLED === "true"; }
 export type CatalogueDatabase = ReturnType<typeof requireDatabase>;
@@ -19,14 +21,22 @@ export async function listLiveCatalogue(database = requireDatabase()) {
   const records = await database.select().from(catalogueProducts).orderBy(catalogueProducts.createdAt);
   return Promise.all(records.map(async row => {
     const stock = await database.select().from(productVariants).where(eq(productVariants.productId, row.productId));
-    const document = structuredClone(row.document);
+    let document = structuredClone(row.document);
+    const stockVersion = inventoryVersion(stock);
+    const staleDraft = row.publicationState === "idle" && row.revision !== row.publishedRevision && row.metadata.stockVersion !== stockVersion;
+    const recovery = staleDraft ? recoverCatalogueStock(document, row.metadata.stockBaseline, stock) : null;
+    if (recovery) document = recovery.document;
     // Never replace an intentional draft edit with a live stock count.
     if (row.revision === row.publishedRevision) for (const colour of document.colours) for (const variant of colour.variants) {
       const actual = stock.find(entry => entry.id === variant.id);
       if (actual) { variant.stock = actual.stockOnHand; variant.stockVerified = actual.stockVerified; }
     }
     return { id: row.id, revision: row.revision, publishedRevision: row.publishedRevision, publicationState: row.publicationState,
-      publicationError: row.publicationError, stockVersion: row.revision === row.publishedRevision ? inventoryVersion(stock) : row.metadata.stockVersion,
+      publicationError: row.publicationError, stockVersion: row.publicationState === "idle" ? stockVersion : row.metadata.stockVersion,
+      stockReviewRequired: Boolean(recovery?.conflicts.length), stockConflicts: recovery?.conflicts || [],
+      stockRecoveryNotice: recovery ? recovery.conflicts.length
+        ? "Stock changed since this draft was saved. Check the quantities below before saving."
+        : "Latest stock counts loaded. Your other draft changes have been kept." : undefined,
       document, pageUrl: `${process.env.STORE_URL || "https://holistic-brand-492217.framer.app"}${["amina", "hawa"].includes(row.slug) ? `/${row.slug}` : `/collection/${row.slug}`}` };
   }));
 }
@@ -44,7 +54,7 @@ export async function initializeLiveCatalogue(database = requireDatabase()) {
   });
 }
 
-export async function saveLiveCatalogue(input: CatalogueSaveInput & { stockVersion?: string }, database = requireDatabase()) {
+export async function saveLiveCatalogue(input: CatalogueSaveInput & { stockVersion?: string; stockReviewConfirmed?: boolean }, database = requireDatabase()) {
   return database.transaction(async tx => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('mm-catalogue-management', 0))`);
     const all = await tx.select().from(catalogueProducts).for("update");
@@ -61,8 +71,13 @@ export async function saveLiveCatalogue(input: CatalogueSaveInput & { stockVersi
     const owners = await tx.select({ id: productVariants.id, productId: productVariants.productId }).from(productVariants).where(inArray(productVariants.id, incomingIds));
     if (owners.some(owner => owner.productId !== row?.productId)) throw new CatalogueConflictError("A size belongs to another product.");
     if (row && input.stockVersion !== inventoryVersion(stock)) throw new CatalogueConflictError("Stock changed while you were editing. Reload to see the current quantities.");
+    if (row && row.revision !== row.publishedRevision && row.metadata.stockVersion !== inventoryVersion(stock)
+      && recoverCatalogueStock(row.document, row.metadata.stockBaseline, stock).conflicts.length && input.stockReviewConfirmed !== true) {
+      throw new CatalogueConflictError("Stock changed for an edited quantity. Check the latest counts and confirm your physical stock before saving.");
+    }
     const metadata: CatalogueCmsMapping = structuredClone(row?.metadata || { colours: {}, variantSkus: {} });
     metadata.stockVersion = inventoryVersion(stock);
+    metadata.stockBaseline = catalogueStockBaseline(stock);
     for (const colour of input.document.colours) {
       metadata.colours[colour.id] ||= { slug: `${input.document.slug}-${colour.id.slice(0, 8)}`, baseSku: `MM-${colour.id.replaceAll("-", "").toUpperCase()}` };
       for (const variant of colour.variants) metadata.variantSkus[variant.id] ||= catalogueVariantSku(variant.id);
@@ -82,55 +97,70 @@ export async function saveLiveCatalogue(input: CatalogueSaveInput & { stockVersi
 }
 
 export async function publishLiveCatalogue(id: string, expectedRevision: number, actor: string, database = requireDatabase()) {
-  const row = await database.transaction(async tx => {
+  const staged = await database.transaction(async tx => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('mm-catalogue-management', 0))`);
     const all = await tx.select().from(catalogueProducts).for("update");
     const row = all.find(item => item.id === id);
     if (!row || row.revision !== expectedRevision) throw new CatalogueConflictError("Reload this product before publishing.");
     if (all.some(item => item.publicationState === "publishing")) throw new CatalogueConflictError("Another publish is in progress. Wait before trying again.");
-    if (row.publishedRevision === row.revision && row.publicationState === "idle") return row;
+    if (row.publicationState !== "idle") throw new CatalogueConflictError("The previous publication needs checking before retrying. Your saved draft is retained.");
+    if (row.publishedRevision === row.revision) return { row, target: "unchanged" as const };
     const issues = cataloguePublicationIssues(row.document);
     if (issues.length) throw new CatalogueConflictError(issues[0]);
     const stock = await tx.select().from(productVariants).where(eq(productVariants.productId, row.productId)).for("update");
     if (row.metadata.stockVersion !== inventoryVersion(stock)) throw new CatalogueConflictError("Stock changed since this draft was saved. Reload and save it again.");
+    if (row.publishedRevision && inventoryOnlyPublication(row.document, row.publishedDocument)) {
+      // Stock already drives the live size selector and checkout. Commit these
+      // changes atomically; a site-wide CMS publish is neither needed nor safe.
+      await commitPublishedCatalogue(tx, row, row.metadata, actor, true);
+      return { row, target: "inventory" as const };
+    }
     await tx.update(catalogueProducts).set({ publicationState: "publishing", publicationError: null, updatedAt: new Date() }).where(eq(catalogueProducts.id, id));
-    return row;
+    return { row, target: "cms" as const };
   });
-  if (row.publishedRevision === row.revision && row.publicationState === "idle") return (await listLiveCatalogue(database)).find(item => item.id === id)!;
+  const { row } = staged;
+  if (staged.target !== "cms") return { ...(await listLiveCatalogue(database)).find(item => item.id === id)!, publicationTarget: staged.target };
   try {
     const familyOrder = (await database.select().from(catalogueProducts)).sort((a, b) => a.document.homepageOrder - b.document.homepageOrder).map(item => item.slug);
     const metadata = await publishCmsCatalogue(row.document, row.metadata, familyOrder);
     await database.transaction(async tx => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('mm-catalogue-management', 0))`);
-      const [current] = await tx.select().from(catalogueProducts).where(eq(catalogueProducts.id, id)).for("update");
-      if (current.revision !== row.revision) throw new CatalogueConflictError("Publishing changed unexpectedly. Ask support to reconcile this product.");
-      const actual = await tx.select().from(productVariants).where(eq(productVariants.productId, row.productId)).for("update");
-      if (row.metadata.stockVersion !== inventoryVersion(actual)) throw new CatalogueConflictError("Inventory changed during publication. Checkout remains paused for this product until reconciled.");
-      const [admin] = await tx.select().from(adminUsers).where(eq(adminUsers.email, actor)).limit(1);
-      const retained = new Set<string>();
-      for (const colour of row.document.colours) for (const variant of colour.variants) {
-        retained.add(variant.id);
-        const previous = actual.find(item => item.id === variant.id);
-        if (previous && previous.productId !== row.productId) throw new CatalogueConflictError("Variant ownership mismatch.");
-        const stockVerified = variant.stockVerified ?? previous?.stockVerified ?? true;
-        await tx.insert(productVariants).values({ id: variant.id, productId: row.productId, sku: previous?.sku || metadata.variantSkus[variant.id],
-          size: variant.size, colour: colour.name, price: variant.price.toFixed(2), stockOnHand: variant.stock, stockVerified, active: colour.available && variant.available })
-          .onConflictDoUpdate({ target: productVariants.id, set: { size: variant.size, colour: colour.name, price: variant.price.toFixed(2),
-            stockOnHand: variant.stock, stockVerified, active: colour.available && variant.available, updatedAt: new Date() } });
-        const difference = variant.stock - (previous?.stockOnHand || 0);
-        if (difference) await tx.insert(inventoryMovements).values({ variantId: variant.id, type: previous ? "correction" : "stock_received", quantity: difference,
-          adminUserId: admin?.id, note: `Product editor stock update by ${actor}` });
-      }
-      for (const variant of actual) if (!retained.has(variant.id)) await tx.update(productVariants).set({ active: false, updatedAt: new Date() }).where(eq(productVariants.id, variant.id));
-      await tx.update(products).set({ name: row.document.name, description: row.document.description, category: row.document.category,
-        primaryImageUrl: row.document.homepageImage.url, status: "active", updatedAt: new Date() }).where(eq(products.id, row.productId));
-      await tx.update(catalogueProducts).set({ metadata, publishedDocument: row.document, publishedRevision: row.revision, publicationState: "idle",
-        publishedAt: new Date(), updatedAt: new Date(), publicationError: null }).where(eq(catalogueProducts.id, id));
+      await commitPublishedCatalogue(tx, row, metadata, actor);
     });
-    return (await listLiveCatalogue(database)).find(item => item.id === id)!;
+    return { ...(await listLiveCatalogue(database)).find(item => item.id === id)!, publicationTarget: "cms" as const };
   } catch (error) {
     // A timeout may have published CMS content. Fail closed; never claim success or silently release checkout.
     await database.update(catalogueProducts).set({ publicationState: error instanceof CataloguePublishPreflightError ? "idle" : "needs_review", publicationError: error instanceof CataloguePublishPreflightError ? error.message : "Publication could not be verified. Ask support to check CMS and inventory before retrying.", updatedAt: new Date() }).where(eq(catalogueProducts.id, id));
     throw error;
   }
+}
+
+async function commitPublishedCatalogue(tx: CatalogueTransaction, row: typeof catalogueProducts.$inferSelect, metadata: CatalogueCmsMapping, actor: string, inventoryOnly = false) {
+  const [current] = await tx.select().from(catalogueProducts).where(eq(catalogueProducts.id, row.id)).for("update");
+  if (!current || current.revision !== row.revision) throw new CatalogueConflictError("Publishing changed unexpectedly. Ask support to reconcile this product.");
+  const actual = await tx.select().from(productVariants).where(eq(productVariants.productId, row.productId)).for("update");
+  if (row.metadata.stockVersion !== inventoryVersion(actual)) throw new CatalogueConflictError("Inventory changed during publication. Reload and check stock before retrying.");
+  const [admin] = await tx.select().from(adminUsers).where(eq(adminUsers.email, actor)).limit(1);
+  const retained = new Set<string>();
+  for (const colour of row.document.colours) for (const variant of colour.variants) {
+    retained.add(variant.id);
+    const previous = actual.find(item => item.id === variant.id);
+    if (previous && previous.productId !== row.productId) throw new CatalogueConflictError("Variant ownership mismatch.");
+    const stockVerified = variant.stockVerified ?? previous?.stockVerified ?? true;
+    if (inventoryOnly) {
+      if (!previous) throw new CatalogueConflictError("A published size is missing. Ask support to check the product before updating stock.");
+      await tx.update(productVariants).set({ stockOnHand: variant.stock, stockVerified, active: colour.available && variant.available, updatedAt: new Date() }).where(eq(productVariants.id, variant.id));
+    } else await tx.insert(productVariants).values({ id: variant.id, productId: row.productId, sku: previous?.sku || metadata.variantSkus[variant.id],
+      size: variant.size, colour: colour.name, price: variant.price.toFixed(2), stockOnHand: variant.stock, stockVerified, active: colour.available && variant.available })
+      .onConflictDoUpdate({ target: productVariants.id, set: { size: variant.size, colour: colour.name, price: variant.price.toFixed(2),
+        stockOnHand: variant.stock, stockVerified, active: colour.available && variant.available, updatedAt: new Date() } });
+    const difference = variant.stock - (previous?.stockOnHand || 0);
+    if (difference) await tx.insert(inventoryMovements).values({ variantId: variant.id, type: previous ? "correction" : "stock_received", quantity: difference,
+      adminUserId: admin?.id, note: `Product editor stock update by ${actor}` });
+  }
+  for (const variant of actual) if (!retained.has(variant.id)) await tx.update(productVariants).set({ active: false, updatedAt: new Date() }).where(eq(productVariants.id, variant.id));
+  if (!inventoryOnly) await tx.update(products).set({ name: row.document.name, description: row.document.description, category: row.document.category,
+    primaryImageUrl: row.document.homepageImage.url, status: "active", updatedAt: new Date() }).where(eq(products.id, row.productId));
+  await tx.update(catalogueProducts).set({ metadata, publishedDocument: row.document, publishedRevision: row.revision, publicationState: "idle",
+    publishedAt: new Date(), updatedAt: new Date(), publicationError: null }).where(eq(catalogueProducts.id, row.id));
 }

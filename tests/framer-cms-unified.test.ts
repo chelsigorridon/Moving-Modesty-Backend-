@@ -58,7 +58,7 @@ function colour(doc: any) {
 function mapping(doc: any, layout = "products-v1") {
   return { familyCmsId: doc.slug, cmsLayout: layout, colours: { [doc.colours[0].id]: { cmsId: `${doc.slug}-black`, slug: `${doc.slug}-black`, baseSku: `${doc.slug.toUpperCase()}-BLK` } }, variantSkus: { [doc.colours[0].variants[0].id]: `${doc.slug.toUpperCase()}-BLK-S` } };
 }
-function harness(options: { legacy?: boolean; pendingCanvas?: boolean; unifiedRows?: boolean } = {}) {
+function harness(options: { legacy?: boolean; pendingCanvas?: boolean; unifiedRows?: boolean; connectError?: string; readError?: string; writeError?: string } = {}) {
   const docs = [document(), document("hawa")];
   const writes: any[] = [], published: any[] = [];
   function collection(id: string, name: string, fields: Record<string, string>, rows: any[]) {
@@ -66,6 +66,7 @@ function harness(options: { legacy?: boolean; pendingCanvas?: boolean; unifiedRo
       async getFields() { return Object.entries(fields).map(([name, id]) => ({ id, name, type: name === "Is Product Page" ? "boolean" : "string" })); },
       async getItems() { return structuredClone(rows); },
       async addItems(items: any[]) {
+        if (options.writeError) throw new Error(options.writeError);
         for (const item of items) {
           writes.push({ collection: name, item: structuredClone(item) });
           const found = rows.find(row => row.id === item.id || row.slug === item.slug);
@@ -81,7 +82,7 @@ function harness(options: { legacy?: boolean; pendingCanvas?: boolean; unifiedRo
   const families = collection("legacy-families", "ProductCatalogue", legacyFields, docs.map(doc => ({ id: doc.slug, slug: doc.slug, draft: false, fieldData: familyData(doc, false) })));
   const client = {
     async getProjectInfo() { return { name: "Moving Modesty" }; },
-    async getCollections() { return options.legacy ? [products, families] : [products]; },
+    async getCollections() { if (options.readError) throw new Error(options.readError); return options.legacy ? [products, families] : [products]; },
     async disconnect() {},
     agent: { async publish(input: any) {
       published.push(input);
@@ -98,7 +99,7 @@ function harness(options: { legacy?: boolean; pendingCanvas?: boolean; unifiedRo
     const compiled = ts.transpileModule(readFileSync(absolute, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     const localRequire = (name: string) => {
       if (name === "server-only") return {};
-      if (name === "framer-api") return { connect: async () => client };
+      if (name === "framer-api") return { connect: async () => { if (options.connectError) throw new Error(options.connectError); return client; } };
       if (name.startsWith(".")) return load(resolve(dirname(absolute), name) + ".ts");
       return require(name);
     };
@@ -149,6 +150,30 @@ test("two-collection catalogue migration preserves legacy and unified publishing
       const h = harness({ pendingCanvas: true });
       await assert.rejects(h.cms.publishCmsCatalogue(h.docs[0], mapping(h.docs[0])), /unpublished changes/);
       assert.equal(h.writes.length, 0);
+    });
+    await t.test("connection failures identify permissions without exposing raw SDK data", async () => {
+      const h = harness({ connectError: "This project opened view-only. SECRET-CREDENTIAL-DO-NOT-LOG" });
+      await assert.rejects(h.cms.publishCmsCatalogue(h.docs[0], mapping(h.docs[0])), (error: any) => {
+        assert.ok(error instanceof h.cms.CataloguePublishPreflightError);
+        assert.match(error.message, /current connection.*project permissions/);
+        assert.doesNotMatch(error.message, /SECRET-CREDENTIAL/); return true;
+      });
+      assert.equal(h.writes.length, 0); assert.equal(h.published.length, 0);
+    });
+    await t.test("read failures before any CMS write are safe preflight failures", async () => {
+      const h = harness({ readError: "Internal provider response SECRET-CREDENTIAL-DO-NOT-LOG" });
+      await assert.rejects(h.cms.publishCmsCatalogue(h.docs[0], mapping(h.docs[0])), (error: any) => {
+        assert.ok(error instanceof h.cms.CataloguePublishPreflightError);
+        assert.match(error.message, /live product has not changed/);
+        assert.doesNotMatch(error.message, /SECRET-CREDENTIAL/); return true;
+      });
+      assert.equal(h.writes.length, 0);
+    });
+    await t.test("an attempted CMS mutation stays uncertain and cannot release checkout", async () => {
+      const h = harness({ writeError: "Provider disconnected after accepting a write" });
+      await assert.rejects(h.cms.publishCmsCatalogue(h.docs[0], mapping(h.docs[0])), (error: any) => {
+        assert.equal(error instanceof h.cms.CataloguePublishPreflightError, false); return true;
+      });
     });
     await t.test("reconciliation only reads and rejects altered page content", async () => {
       const h = harness();
